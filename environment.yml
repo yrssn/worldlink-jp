@@ -1,0 +1,9 @@
+name: spider_jp_worldlink
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -r backend/requirements.txt

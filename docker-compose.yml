@@ -1,0 +1,73 @@
+version: "3.8"
+
+# ============================================================
+# 应用服务（backend + frontend + redis）
+# MySQL 使用独立容器，通过外部网络 mysql-net 连接
+#
+# 使用方法:
+#   1. 先启动 MySQL（外部容器，名字假设为 mysql，所在网络 mysql-net）
+#   2. 在 mysql 中创建数据库 spider_jp_worldlink（或开启 backend 自动建库逻辑）
+#   3. 准备 backend/.env（参考 backend/.env.example）
+#      - MYSQL_HOST 写 mysql 容器名（如 mysql），MYSQL_PORT 写容器内端口 3306
+#      - REDIS_HOST 写 redis（服务名）
+#   4. 启动:  docker-compose up -d --build
+# ============================================================
+
+services:
+  backend:
+    build: ./backend
+    image: spider-jp-worldlink-backend:latest
+    container_name: worldlink-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # 兜底：未在 .env 改时，使用容器内网络
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-2}
+    expose:
+      - "8009"
+    ports:
+      - "8009:8009"
+    volumes:
+      - backend-uploads:/app/uploads
+    depends_on:
+      - redis
+    networks:
+      - app-net
+      - mysql-net
+
+  frontend:
+    build: ./frontend
+    image: spider-jp-worldlink-frontend:latest
+    container_name: worldlink-frontend
+    restart: unless-stopped
+    ports:
+      - "9278:80"
+    depends_on:
+      - backend
+    networks:
+      - app-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: worldlink-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-123456}
+      --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - app-net
+
+volumes:
+  backend-uploads:
+  redis-data:
+
+networks:
+  app-net:
+    driver: bridge
+  mysql-net:
+    external: true
