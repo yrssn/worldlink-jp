@@ -11,8 +11,13 @@ venv/
 .env.local
 .env.*.local
 backend/.env
+backend/.env.server
 !backend/.env.example
 !backend/.env.docker.example
+!backend/.env.server.example
+
+docker/redis/.env
+!docker/redis/.env.example
 
 # Node
 node_modules/

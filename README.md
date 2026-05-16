@@ -10,15 +10,13 @@
 spider_jp_worldlink/
 ├── REQUIREMENTS.md           # 详细需求 / 接口 / 数据模型
 ├── environment.yml           # conda 环境定义
-├── backend/                  # FastAPI 后端
+├── docker-compose.yml        # 后端 + 前端 + 内置 Redis
+├── docker/redis/             # 可选：单独起 Redis
+├── backend/
 │   ├── requirements.txt
-│   ├── alembic.ini
-│   ├── alembic/
-│   ├── .env.example
-│   └── app/
-└── frontend/                 # Vue3 前端
-    ├── package.json
-    └── src/
+│   ├── .env.example / .env.docker.example / .env.server.example
+│   ...
+└── frontend/
 ```
 
 ## 二、后端：用 Conda 启动
@@ -134,18 +132,16 @@ docker network create mysql-net
 
 ### 2. 准备后端 .env
 
+服务器可参考 **`backend/.env.server.example`**（字段与本地 `backend/.env` 对齐，无真实密钥）。复制后改名：
+
 ```bash
-cd spider_jp_worldlink
-cp backend/.env.docker.example backend/.env
-# 编辑 backend/.env：
-#   - MYSQL_HOST 写【MySQL 容器名】(例如 mysql)，MYSQL_PORT=3306（容器内端口）
-#   - MYSQL_USER / MYSQL_PASSWORD / MYSQL_DB 与你的 MySQL 实例一致
-#   - REDIS_HOST=redis (compose 内部服务名)，REDIS_PASSWORD 与 docker-compose.yml 中一致
-#   - SECRET_KEY、FERNET_KEY 改成强随机串
-#       生成 FERNET_KEY：
-#       python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-#   - APIFY_TOKEN 填你的
+cp backend/.env.server.example backend/.env
+# 按服务器实际修改 MYSQL_*、REDIS_*、SECRET_KEY、FERNET_KEY、APIFY_TOKEN 等
 ```
+
+### 2.1 可选：单独起 Redis 镜像
+
+根目录 `docker-compose.yml` 已包含 Redis；若你希望与 MySQL 一样**单独维护 Redis**，见 **[docker/redis/README.md](./docker/redis/README.md)**（`docker network create worldlink-redis-net` + `docker/redis/docker-compose.yml`），并在主 compose 中去掉内置 `redis`、让 `backend` 加入同一网络。
 
 ### 3. 启动
 
