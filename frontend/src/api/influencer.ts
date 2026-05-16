@@ -40,6 +40,7 @@ export interface Influencer {
   fb_followers?: number | null
   fb_likes?: number | null
   fb_rating?: number | null
+  fb_rating_count?: number | null
   status: InfluencerStatus
   source: InfluencerSource
   notes?: string | null

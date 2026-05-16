@@ -74,9 +74,10 @@ export async function download(
     if (plain) filename = plain[1]
   }
 
-  const blob = new Blob([res.data], {
-    type: res.headers?.['content-type'] || 'application/octet-stream',
-  })
+  const rawCt = res.headers?.['content-type']
+  const contentType =
+    typeof rawCt === 'string' ? rawCt : 'application/octet-stream'
+  const blob = new Blob([res.data], { type: contentType })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
