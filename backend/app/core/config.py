@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Optional
+from urllib.parse import quote_plus
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,15 +57,22 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_uri(self) -> str:
+        # 用户名/密码可能含 @ # : 等，必须编码后再拼进 URI，否则 PyMySQL 解析错误 → 登录等接口 500
+        user = quote_plus(self.mysql_user, safe="")
+        password = quote_plus(self.mysql_password, safe="")
         return (
-            f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
+            f"mysql+pymysql://{user}:{password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}"
             f"?charset={self.mysql_charset}"
         )
 
     @property
     def redis_url(self) -> str:
-        auth = f":{self.redis_password}@" if self.redis_password else ""
+        if self.redis_password:
+            pw = quote_plus(self.redis_password, safe="")
+            auth = f":{pw}@"
+        else:
+            auth = ""
         return f"redis://{auth}{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
 
