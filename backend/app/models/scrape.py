@@ -28,12 +28,12 @@ class ScrapeTaskType(str, enum.Enum):
         适用 = 手上已有一批主页 URL（例如从其他渠道导出）
 
     - ``fb_posts_by_page``：
-        Actor1 = apify/facebook-posts-scraper  （抓帖子）
-        Actor2 = apify/facebook-pages-scraper  （抓主页）
-        机制 = 给定 Page URL → 抓他们最近的帖子 → AI 看帖子内容打分
+        Actor1 = cleansyntax/facebook-profile-posts-scraper  （主页 URL / ID / 关键词搜帖）
+        Actor2 = apify/facebook-pages-scraper
+        机制 = 给定主页 URL（或关键词 / profile id）→ 抓帖子 → AI 看帖子内容打分
               → 通过的帖子对应的 author Page URL 去重 → 抓主页详情 → 建联
-        费用 ≈ posts $10/1000 + pages $6.6/1000 + LLM token
-        适用 = 已知一批潜在 Page，想看他们发的内容是否契合再决定要不要建联
+        费用 ≈ profile-posts ~$6/1000 results + pages $6.6/1000 + LLM token
+        适用 = 已知 Page 或想按关键词搜公开帖，再评估作者是否契合
 
     - ``fb_posts_by_hashtag``：
         Actor1 = apify/facebook-hashtag-scraper  （hashtag 找帖子）

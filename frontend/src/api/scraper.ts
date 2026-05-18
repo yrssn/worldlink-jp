@@ -126,6 +126,13 @@ export const scraperApi = {
       { url: `/scraper/tasks/${id}/pages/export`, method: 'GET', params: { only_passed } },
       `task_${id}_pages.csv`,
     ),
+  /** 勾选帖子后，按作者主页抓 facebook-pages-scraper 并合并到任务 page_results */
+  scrapeAuthorPagesFromPosts: (taskId: number, postIds: number[]) =>
+    http.post<unknown, { msg: string }>(
+      `/scraper/tasks/${taskId}/scrape-author-pages`,
+      { post_ids: postIds },
+      { timeout: 600000 }
+    ),
 }
 
 /** 各任务类型的元信息：UI 渲染、文案、费用提示 */
@@ -141,9 +148,12 @@ export interface TaskTypeMeta {
     startUrls?: boolean
     postsPerPage?: boolean
     searchPostsOptions?: boolean  // fb_posts_by_search 专属：location_uid / 日期 / 排序
+    /** fb_posts_by_page：cleansyntax actor 的模式与可选日期 */
+    profilePostsOptions?: boolean
   }
 }
 
+/** 新建任务可选类型（后端仍支持其它类型，仅隐藏入口） */
 export const TASK_TYPES: TaskTypeMeta[] = [
   {
     value: 'fb_search',
@@ -154,20 +164,12 @@ export const TASK_TYPES: TaskTypeMeta[] = [
     needs: { keywords: true, locations: true }
   },
   {
-    value: 'fb_pages',
-    label: '主页 URL 抓详情',
-    summary:
-      '使用 apify/facebook-pages-scraper：给定一批 Facebook 主页 URL，抓取主页完整资料（粉丝/点赞/邮箱/电话/地址/评分等）。',
-    pricing: '约 $6.6 / 1000 pages',
-    needs: { startUrls: true }
-  },
-  {
     value: 'fb_posts_by_page',
-    label: '主页 → 抓帖子 → AI → 抓主页 → 建联',
+    label: '主页 / 关键词 / ID → 抓帖子 → AI → 抓主页',
     summary:
-      '使用 apify/facebook-posts-scraper 抓给定主页的最近帖子；若启用 AI，按帖子内容评估；通过的帖子作者去重，再用 facebook-pages-scraper 抓其主页详情。',
-    pricing: 'posts $10/1000 + pages $6.6/1000 + LLM',
-    needs: { startUrls: true, postsPerPage: true }
+      '第一步使用 cleansyntax/facebook-profile-posts-scraper：可选「按主页 URL」「按关键词搜帖」「按 Profile 数字 ID」抓公开帖子；第二步 AI 评估后聚合作者主页，再用 facebook-pages-scraper 抓详情。第一步的条数上限由「每目标帖子数」映射为 actor 的 max_posts（0 表示不限制，费用风险自负）。',
+    pricing: '约 $6 / 1000 条（profile actor）+ pages $6.6/1000 + LLM',
+    needs: { postsPerPage: true, profilePostsOptions: true }
   },
   {
     value: 'fb_posts_by_hashtag',
@@ -176,13 +178,5 @@ export const TASK_TYPES: TaskTypeMeta[] = [
       '使用 apify/facebook-hashtag-scraper：按 hashtag（不含 #）搜帖子；AI 过滤后聚合作者主页，再用 facebook-pages-scraper 抓详情。',
     pricing: 'posts $10/1000 + pages $6.6/1000 + LLM',
     needs: { hashtags: true }
-  },
-  {
-    value: 'fb_posts_by_search',
-    label: '任意关键词 → 抓帖子 → AI → 抓主页 → 建联（第三方）',
-    summary:
-      '使用 scrapeforge/facebook-search-posts（第三方）：任意关键词搜帖子，最灵活；支持 location_uid（FB 内部地区 ID）、日期区间、按最新排序；AI 过滤后聚合作者主页，再用 facebook-pages-scraper 抓详情。',
-    pricing: 'posts ≈ $10-15/1000 + pages $6.6/1000 + LLM',
-    needs: { keywords: true, searchPostsOptions: true }
   }
 ]

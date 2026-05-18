@@ -1,0 +1,42 @@
+# ============================================================
+# 独立 Redis（与主应用 compose 分开起）
+#
+# 使用前请先创建网络（主应用 backend 也要加入同一网络）：
+#   docker network create worldlink-redis-net
+#
+# 启动：
+#   cd docker/redis
+#   cp .env.example .env
+#   # 编辑 .env 里的 REDIS_PASSWORD
+#   docker compose up -d
+#
+# 应用 backend/.env 需一致：
+#   REDIS_HOST=redis
+#   REDIS_PORT=6379
+#   REDIS_PASSWORD=同上
+#
+# 根目录若不用内置 redis：删掉 docker-compose.yml 里的 redis 服务，
+# 为 backend 增加 networks: - worldlink-redis-net（external: true），
+# 并去掉 backend 的 depends_on: redis。
+# ============================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: worldlink-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-changeme_redis_password}
+      --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - worldlink-redis-net
+
+volumes:
+  redis-data:
+
+networks:
+  worldlink-redis-net:
+    external: true

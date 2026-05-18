@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_user, get_db, is_admin
 from app.db.session import SessionLocal
 from app.models.post import Post
-from app.models.scrape import ScrapeTask, ScrapeTaskStatus
+from app.models.scrape import ScrapeTask, ScrapeTaskStatus, ScrapeTaskType
 from app.models.user import User
 from app.schemas.common import Msg, Page
 from app.schemas.post import PostOut
-from app.schemas.scrape import ScrapeTaskCreate, ScrapeTaskOut
+from app.schemas.scrape import ScrapeAuthorPagesBody, ScrapeTaskCreate, ScrapeTaskOut
 from app.services import scrape_service
 from app.utils.csv_export import build_csv, csv_response
 
@@ -80,6 +80,33 @@ def cancel_task(
     task.status = ScrapeTaskStatus.canceled
     db.commit()
     return Msg()
+
+
+@router.post("/{tid}/scrape-author-pages", response_model=Msg)
+def scrape_author_pages_from_posts(
+    tid: int,
+    body: ScrapeAuthorPagesBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """勾选帖子后，按作者主页 URL 抓 facebook-pages-scraper 并合并到 page_results。"""
+    task = db.get(ScrapeTask, tid)
+    if not task or (task.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.task_type not in (
+        ScrapeTaskType.fb_posts_by_page,
+        ScrapeTaskType.fb_posts_by_hashtag,
+        ScrapeTaskType.fb_posts_by_search,
+    ):
+        raise HTTPException(status_code=400, detail="仅 fb_posts_* 任务支持此操作")
+    if task.status not in (ScrapeTaskStatus.success, ScrapeTaskStatus.partial):
+        raise HTTPException(status_code=400, detail="请等任务成功完成后再抓主页")
+    try:
+        info = scrape_service.append_author_pages_for_selected_posts(db, task, body.post_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    n = int(info.get("pages_count") or 0)
+    return Msg(msg=f"已更新主页列表，当前共 {n} 条 Page 记录（与历史结果已按 URL 合并）")
 
 
 @router.get("/{tid}/posts", response_model=Page[PostOut])

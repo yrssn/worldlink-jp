@@ -19,8 +19,9 @@ class PostOut(BaseModel):
     likes: int
     comments_count: int
     shares: int
-    reactions: Optional[dict[str, Any]]
-    media: Optional[list[Any]]
+    reactions: Optional[Any] = None
+    # DB JSON：可能是附件数组，也可能是 hashtag Video 的 image 单对象 dict
+    media: Optional[Any] = None
 
     author_name: Optional[str]
     author_url: Optional[str]

@@ -32,11 +32,17 @@ const postTotal = ref(0)
 const postPage = ref(1)
 const postPageSize = ref(20)
 const postOnlyPassed = ref(false)
+const selectedPostIds = ref<number[]>([])
+const scrapingAuthorPages = ref(false)
 
 const activeTab = ref<'pages' | 'posts'>('pages')
 
 const isPostsTask = computed(() =>
   task.value?.task_type?.startsWith('fb_posts_') ?? false
+)
+
+const deferHomepageScrape = computed(
+  () => !!(task.value?.extra_input && (task.value.extra_input as Record<string, unknown>).defer_homepage_scrape)
 )
 
 const meta = computed(() =>
@@ -114,6 +120,30 @@ async function contactPost(row: PostItem) {
   await influencerApi.fromScrape({ post_id: row.id })
   ElMessage.success('已加入建联模块')
   refresh()
+}
+
+function postRowSelectable(row: PostItem) {
+  return !!(row.author_url && String(row.author_url).trim())
+}
+
+function onPostsSelectionChange(rows: PostItem[]) {
+  selectedPostIds.value = rows.map((r) => r.id)
+}
+
+async function scrapeAuthorPagesFromSelected() {
+  if (!selectedPostIds.value.length) {
+    ElMessage.warning('请先勾选至少一条带作者主页链接的帖子')
+    return
+  }
+  scrapingAuthorPages.value = true
+  try {
+    const r = await scraperApi.scrapeAuthorPagesFromPosts(id.value, selectedPostIds.value)
+    ElMessage.success(r.msg || '完成')
+    selectedPostIds.value = []
+    await refresh()
+  } finally {
+    scrapingAuthorPages.value = false
+  }
 }
 
 watch([pagePage, pageOnlyPassed], () => loadPages())
@@ -200,7 +230,25 @@ onMounted(refresh)
 
     <el-tabs v-model="activeTab" style="margin-top: 16px">
       <el-tab-pane v-if="isPostsTask" label="帖子列表（第一步）" name="posts">
-        <div style="display: flex; justify-content: flex-end; margin-bottom: 8px; gap: 8px">
+        <el-alert
+          v-if="deferHomepageScrape"
+          type="success"
+          show-icon
+          :closable="false"
+          style="margin-bottom: 10px"
+          title="本任务为「先抓帖」模式"
+          description="系统不会自动抓博主主页。请在下表勾选你认可的帖子，再点「对选中作者抓主页」；抓到的主页会出现在「待审核博主」标签页。"
+        />
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 8px; gap: 8px; flex-wrap: wrap">
+          <el-button
+            v-if="isPostsTask"
+            type="primary"
+            :loading="scrapingAuthorPages"
+            :disabled="!selectedPostIds.length"
+            @click="scrapeAuthorPagesFromSelected"
+          >
+            对选中作者抓主页
+          </el-button>
           <el-switch
             v-if="task.enable_ai_filter"
             v-model="postOnlyPassed"
@@ -211,7 +259,8 @@ onMounted(refresh)
             导出帖子（CSV）
           </el-button>
         </div>
-        <el-table :data="posts" border>
+        <el-table :data="posts" border @selection-change="onPostsSelectionChange">
+          <el-table-column type="selection" width="42" :selectable="postRowSelectable" />
           <el-table-column prop="id" label="ID" width="70" />
           <el-table-column prop="author_name" label="作者" width="150" />
           <el-table-column label="文本">

@@ -17,13 +17,19 @@ class ScrapeTaskCreate(BaseModel):
     address: Optional[str] = None
     start_urls: Optional[list[str]] = None
     max_items: int = Field(50, ge=1, le=1000)
-    posts_per_page: int = Field(10, ge=1, le=200)
+    posts_per_page: int = Field(10, ge=0, le=500)
     page_limit: int = Field(50, ge=1, le=500)
     extra_input: Optional[dict[str, Any]] = None
 
     enable_ai_filter: bool = False
     llm_provider_id: Optional[int] = None
     prompt_template_id: Optional[int] = None
+
+
+class ScrapeAuthorPagesBody(BaseModel):
+    """任务详情中勾选帖子后，按作者主页 URL 去抓 facebook-pages-scraper 结果并合并。"""
+
+    post_ids: list[int] = Field(..., min_length=1)
 
 
 class ScrapeTaskOut(BaseModel):

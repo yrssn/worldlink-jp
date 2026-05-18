@@ -44,6 +44,16 @@ async function handleLogout() {
           <el-menu-item index="/llm/providers">厂商配置</el-menu-item>
           <el-menu-item index="/llm/prompts">提示词模板</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="bitbrowser">
+          <template #title>
+            <el-icon><Monitor /></el-icon>
+            <span>比特抓取</span>
+          </template>
+          <el-menu-item index="/bitbrowser/connect">本机连接</el-menu-item>
+          <el-menu-item index="/bitbrowser/windows">浏览器窗口</el-menu-item>
+          <el-menu-item index="/bitbrowser/saved">系统登记</el-menu-item>
+          <el-menu-item index="/bitbrowser/platforms">平台管理</el-menu-item>
+        </el-sub-menu>
         <el-sub-menu index="scraper">
           <template #title>
             <el-icon><Search /></el-icon>

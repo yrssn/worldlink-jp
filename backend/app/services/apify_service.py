@@ -20,17 +20,20 @@
    - 费用: ~$6.6 / 1000 pages
    - Docs: https://apify.com/apify/facebook-pages-scraper
 
-3) ``run_fb_posts``  Page URL → 帖子
+3) ``run_fb_posts``  Page URL → 帖子（官方 actor，备用）
    - Actor: apify/facebook-posts-scraper
    - Input: startUrls=[{url}, ...], resultsLimit
-            （也支持每个主页限制条数：每个 startUrl 自带 resultsLimit）
-   - Output: text/likes/comments/shares/reactions/media/url/author/...
    - 费用: ~$10 / 1000 posts
-   - Docs: https://apify.com/apify/facebook-posts-scraper
+
+3b) ``run_fb_profile_posts``  主页 URL / 数字 ID / 关键词 → 帖子（fb_posts_by_page 默认用此）
+   - Actor: cleansyntax/facebook-profile-posts-scraper
+   - Input: endpoint + urls_text | ids_text | keywords_text + max_posts + 可选日期
+   - 费用: ~$6 / 1000 results（以 Apify 定价页为准）
+   - Docs: https://apify.com/cleansyntax/facebook-profile-posts-scraper
 
 4) ``run_fb_hashtag``  hashtag → 帖子
    - Actor: apify/facebook-hashtag-scraper
-   - Input: hashtags=[ "tokyo", "cafe" ]  (不带 # 前缀), resultsLimit
+   - Input: keywordList=[ "tokyo", "cafe" ]  (官方字段名；不带 #), resultsLimit
    - Output: 与 posts-scraper 类似
    - 费用: ~$10 / 1000 posts
    - Docs: https://apify.com/apify/facebook-hashtag-scraper
@@ -155,6 +158,45 @@ def run_fb_posts(
     return _run_actor(settings.apify_fb_posts_actor, run_input)
 
 
+# ---------- 3b) Facebook Profile & Posts (cleansyntax) ----------
+def run_fb_profile_posts(
+    endpoint: str,
+    urls_text: str | None = None,
+    ids_text: str | None = None,
+    keywords_text: str | None = None,
+    max_posts: int = 0,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """cleansyntax/facebook-profile-posts-scraper：按 endpoint 选用 urls_text / ids_text / keywords_text。
+
+    官方 input-schema 枚举（节选）：
+      - profile_posts_by_url, profile_posts, search_posts_by_keyword, details_by_id, ...
+    """
+    ep = (endpoint or "").strip()
+    if not ep:
+        raise ValueError("facebook-profile-posts-scraper 需要 endpoint")
+
+    run_input: dict[str, Any] = {
+        "endpoint": ep,
+        "max_posts": int(max_posts),
+    }
+    if urls_text and urls_text.strip():
+        run_input["urls_text"] = urls_text.strip()
+    if ids_text and ids_text.strip():
+        run_input["ids_text"] = ids_text.strip()
+    if keywords_text and keywords_text.strip():
+        run_input["keywords_text"] = keywords_text.strip()
+    if start_date:
+        run_input["start_date"] = str(start_date).strip()
+    if end_date:
+        run_input["end_date"] = str(end_date).strip()
+    if extra:
+        run_input.update(extra)
+    return _run_actor(settings.apify_fb_profile_posts_actor, run_input)
+
+
 # ---------- 4) Facebook Hashtag Scraper ----------
 def run_fb_hashtag(
     hashtags: list[str],
@@ -163,15 +205,15 @@ def run_fb_hashtag(
 ) -> dict[str, Any]:
     """按 hashtag 抓帖子。
 
-    输入字段（官方 facebook-hashtag-scraper）：
-      - hashtags: array<string>  不带 # 前缀，例如 ["tokyo", "cafe"]
-      - resultsLimit: integer
+    官方 input-schema 必填字段为 ``keywordList``（不是 hashtags）：
+      - keywordList: array<string>  单个词作 hashtag，不要含空格/特殊符号
+      - resultsLimit: integer  每个关键词结果上限
     """
     tags = [t.lstrip("#").strip() for t in (hashtags or []) if t and t.strip()]
     if not tags:
         raise ValueError("facebook-hashtag-scraper 需要至少一个 hashtag")
     run_input: dict[str, Any] = {
-        "hashtags": tags,
+        "keywordList": tags,
         "resultsLimit": int(max_items),
     }
     if extra:

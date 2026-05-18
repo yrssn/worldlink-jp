@@ -47,9 +47,16 @@ class Settings(BaseSettings):
     # 五种 actor 默认 ID（可在 .env 中覆盖）：
     apify_fb_search_actor: str = "apify/facebook-search-scraper"        # 关键词→Pages
     apify_fb_pages_actor: str = "apify/facebook-pages-scraper"          # URL→主页详情
-    apify_fb_posts_actor: str = "apify/facebook-posts-scraper"          # PageURL→帖子
+    apify_fb_posts_actor: str = "apify/facebook-posts-scraper"          # PageURL→帖子（备用）
+    apify_fb_profile_posts_actor: str = "cleansyntax/facebook-profile-posts-scraper"  # 主页 URL/ID→帖子
     apify_fb_hashtag_actor: str = "apify/facebook-hashtag-scraper"      # hashtag→帖子
     apify_fb_search_posts_actor: str = "scrapeforge/facebook-search-posts"  # 任意关键词→帖子(第三方)
+
+    # ===== BitBrowser 比特浏览器（本地 Local API）=====
+    # 文档：https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou
+    # 每个登录用户在「浏览器窗口」页自行配置本机地址与 API Token（存 users 表），此处仅全局超时与分页
+    bitbrowser_http_timeout_sec: float = 60.0
+    bitbrowser_list_page_size: int = 100
 
     # ===== Default admin =====
     default_admin_username: str = "admin"

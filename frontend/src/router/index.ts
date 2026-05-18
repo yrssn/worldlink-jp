@@ -38,6 +38,30 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '任务详情' }
       },
       {
+        path: 'bitbrowser/connect',
+        name: 'bitbrowser-connect',
+        component: () => import('@/views/bitbrowser/connect/ConnectView.vue'),
+        meta: { title: '本机连接' }
+      },
+      {
+        path: 'bitbrowser/windows',
+        name: 'bitbrowser-windows',
+        component: () => import('@/views/bitbrowser/WindowsView.vue'),
+        meta: { title: '浏览器窗口' }
+      },
+      {
+        path: 'bitbrowser/saved',
+        name: 'bitbrowser-saved',
+        component: () => import('@/views/bitbrowser/saved/SavedCatalogView.vue'),
+        meta: { title: '系统登记' }
+      },
+      {
+        path: 'bitbrowser/platforms',
+        name: 'bitbrowser-platforms',
+        component: () => import('@/views/bitbrowser/PlatformsView.vue'),
+        meta: { title: '平台管理' }
+      },
+      {
         path: 'influencers',
         name: 'influencers',
         component: () => import('@/views/influencer/InfluencersView.vue'),
