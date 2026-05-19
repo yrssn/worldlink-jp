@@ -372,6 +372,7 @@ def bitbrowser_sync_meta(
 @router.post("/windows/{browser_id}/open", response_model=BitBrowserOpenResponse)
 def open_bitbrowser_window(
     browser_id: str,
+    headless: bool = Query(False, description="无头模式：向 BitBrowser 传入启动参数 --headless"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -390,7 +391,7 @@ def open_bitbrowser_window(
             detail="该窗口不在你的缓存列表中，请先点击「从本机同步」",
         )
     try:
-        data = bitbrowser_service.open_browser_window(browser_id.strip(), user)
+        data = bitbrowser_service.open_browser_window(browser_id.strip(), user, headless=headless)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:

@@ -223,13 +223,19 @@ def health_check_local(user: User) -> dict[str, Any]:
     return _post_local(ctx, "/health", {})
 
 
-def open_browser_window(browser_id: str, user: User) -> dict[str, Any]:
-    """``POST /browser/open`` 打开指定窗口，返回 ws / http / driver 等（见官方文档）。"""
+def open_browser_window(browser_id: str, user: User, *, headless: bool = False) -> dict[str, Any]:
+    """``POST /browser/open`` 打开指定窗口，返回 ws / http / driver 等（见官方文档）。
+
+    ``headless`` 为 True 时向 BitBrowser 传入 ``args: ["--headless"]``（官方 Local API）。
+    """
     ctx = client_context_from_user(user)
     bid = (browser_id or "").strip()
     if not bid:
         raise ValueError("browser_id 不能为空")
-    resp = _post_local(ctx, "/browser/open", {"id": bid}, timeout_sec=120.0)
+    payload: dict[str, Any] = {"id": bid}
+    if headless:
+        payload["args"] = ["--headless"]
+    resp = _post_local(ctx, "/browser/open", payload, timeout_sec=120.0)
     if not resp.get("success"):
         msg = resp.get("msg") or resp.get("message") or str(resp)
         raise RuntimeError(f"BitBrowser /browser/open 失败: {msg}")

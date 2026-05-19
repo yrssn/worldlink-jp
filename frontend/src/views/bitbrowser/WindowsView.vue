@@ -205,20 +205,20 @@ async function confirmCatalogSave() {
   }
 }
 
-async function openWindow(row: BitBrowserWindow) {
+async function openWindow(row: BitBrowserWindow, headless = false) {
   if (!connReady.value) {
     ElMessage.warning('请先到「比特抓取 → 本机连接」页面配置本机地址与 Token')
     return
   }
   openingId.value = row.browser_id
   try {
-    const r = await bitbrowserApi.openWindow(row.browser_id)
+    const r = await bitbrowserApi.openWindow(row.browser_id, { headless })
     const d = (r.data ?? {}) as Record<string, unknown>
     openResultTitle.value = row.name ? `${row.name}（${row.browser_id}）` : row.browser_id
     openResultKv.value = buildOpenResultKv(d)
     openResultJson.value = JSON.stringify(d, null, 2)
     openResultVisible.value = true
-    ElMessage.success('已打开窗口')
+    ElMessage.success(headless ? '已打开窗口（无头模式）' : '已打开窗口（可见）')
   } catch (e: unknown) {
     const ax = e as { response?: { data?: { detail?: string } }; message?: string }
     const detail =
@@ -274,9 +274,15 @@ onMounted(async () => {
           <a href="https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou" target="_blank" rel="noreferrer">官方文档</a>
           ）。在
           <router-link to="/bitbrowser/connect">本机连接</router-link>
-          保存地址且<strong>本地服务可用</strong>时，进入本页会自动拉一次全量列表；也可手动「从本机同步」。「打开」调用
+          保存地址且<strong>本地服务可用</strong>时，进入本页会自动拉一次全量列表；也可手动「从本机同步」。「打开」为拆分按钮：主按钮
+          <strong>可见窗口</strong>
+          ；点右侧
+          <strong>▼</strong>
+          可选
+          <strong>无头（--headless）</strong>
+          ，调用
           <code>POST /browser/open</code>
-          ，弹窗展示
+          。弹窗展示
           <code>ws</code>
           /
           <code>http</code>
@@ -373,17 +379,26 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column prop="last_ip" label="最近 IP" min-width="128" show-overflow-tooltip />
       <el-table-column prop="updated_at" label="同步时间" width="158" />
-      <el-table-column label="操作" width="88" fixed="right" align="center">
+      <el-table-column label="打开" width="132" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button
-            size="small"
+          <el-dropdown
+            split-button
             type="primary"
+            size="small"
+            class="bb-open-split"
+            trigger="click"
             :disabled="!connReady"
             :loading="openingId === row.browser_id"
-            @click="openWindow(row)"
+            @click="openWindow(row, false)"
+            @command="(cmd: string) => cmd === 'headless' && openWindow(row, true)"
           >
             打开
-          </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="headless">打开（无头 · --headless）</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -448,6 +463,16 @@ onMounted(async () => {
   margin: 0 0 10px;
   font-size: 12px;
   color: #909399;
+}
+
+/* 拆分「打开」：主按钮 + 下拉箭头，避免用户找不到无头选项 */
+.bb-open-split {
+  max-width: 100%;
+}
+
+.bb-open-split :deep(.el-button:first-child) {
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 .bb-windows-table :deep(.el-table__cell) {

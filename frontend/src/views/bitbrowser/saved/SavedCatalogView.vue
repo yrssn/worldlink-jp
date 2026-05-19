@@ -127,7 +127,7 @@ async function copyOpenResultJson() {
   }
 }
 
-async function openWindow(row: BitBrowserCatalogRow) {
+async function openWindow(row: BitBrowserCatalogRow, headless = false) {
   if (!row.in_local_cache) {
     ElMessage.warning('该窗口已不在当前本机同步列表中，请先在比特浏览器恢复环境后，到「浏览器窗口」重新同步再打开')
     return
@@ -138,13 +138,13 @@ async function openWindow(row: BitBrowserCatalogRow) {
   }
   openingId.value = row.browser_id
   try {
-    const r = await bitbrowserApi.openWindow(row.browser_id)
+    const r = await bitbrowserApi.openWindow(row.browser_id, { headless })
     const d = (r.data ?? {}) as Record<string, unknown>
     openResultTitle.value = `${displayName(row)}（${row.browser_id}）`
     openResultKv.value = buildOpenResultKv(d)
     openResultJson.value = JSON.stringify(d, null, 2)
     openResultVisible.value = true
-    ElMessage.success('已打开窗口')
+    ElMessage.success(headless ? '已打开窗口（无头模式）' : '已打开窗口（可见）')
   } catch (e: unknown) {
     const ax = e as { response?: { data?: { detail?: string } }; message?: string }
     const detail =
@@ -192,7 +192,9 @@ onMounted(async () => {
           点击「保存到系统」。
         </p>
       </div>
-      <el-button @click="refresh">刷新</el-button>
+      <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
+        <el-button @click="refresh">刷新</el-button>
+      </div>
     </div>
 
     <el-table v-loading="loading" :data="list" border stripe>
@@ -229,19 +231,30 @@ onMounted(async () => {
       <el-table-column prop="port" label="端口" width="70" />
       <el-table-column prop="last_ip" label="最近 IP" width="120" show-overflow-tooltip />
       <el-table-column prop="updated_at" label="登记更新时间" width="170" />
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="success" plain @click="openCatalogDialog(row)">调整登记</el-button>
-          <el-button size="small" type="warning" plain @click="removeFromCatalog(row)">取消登记</el-button>
-          <el-button
-            size="small"
-            type="primary"
-            :disabled="!connReady || !row.in_local_cache"
-            :loading="openingId === row.browser_id"
-            @click="openWindow(row)"
-          >
-            打开
-          </el-button>
+          <div class="bb-saved-actions">
+            <el-button size="small" type="success" plain @click="openCatalogDialog(row)">调整登记</el-button>
+            <el-button size="small" type="warning" plain @click="removeFromCatalog(row)">取消登记</el-button>
+            <el-dropdown
+              split-button
+              type="primary"
+              size="small"
+              class="bb-open-split"
+              trigger="click"
+              :disabled="!connReady || !row.in_local_cache"
+              :loading="openingId === row.browser_id"
+              @click="openWindow(row, false)"
+              @command="(cmd: string) => cmd === 'headless' && openWindow(row, true)"
+            >
+              打开
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="headless">打开（无头 · --headless）</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -291,5 +304,22 @@ onMounted(async () => {
 .open-result-json :deep(textarea) {
   font-family: ui-monospace, monospace;
   font-size: 12px;
+}
+
+.bb-saved-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.bb-open-split {
+  max-width: 100%;
+}
+
+.bb-open-split :deep(.el-button:first-child) {
+  padding-left: 10px;
+  padding-right: 10px;
 }
 </style>

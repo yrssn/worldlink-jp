@@ -123,11 +123,14 @@ export const bitbrowserApi = {
     http.put<unknown, unknown>(`/bitbrowser/windows/${encodeURIComponent(browserId)}/catalog`, body),
   deleteWindowCatalog: (browserId: string) =>
     http.delete<unknown, { ok: boolean }>(`/bitbrowser/windows/${encodeURIComponent(browserId)}/catalog`),
-  openWindow: (browserId: string) =>
+  openWindow: (browserId: string, opts?: { headless?: boolean }) =>
     http.post<unknown, BitBrowserOpenResponse>(
       `/bitbrowser/windows/${encodeURIComponent(browserId)}/open`,
       {},
-      { timeout: 180000 }
+      {
+        timeout: 180000,
+        params: opts?.headless ? { headless: true } : {}
+      }
     ),
   localHealth: () =>
     http.get<unknown, { ok: boolean; bitbrowser?: unknown; error?: string; hint?: string; auth_hint?: string }>(

@@ -276,7 +276,7 @@ onMounted(refresh)
         >
           <div style="font-size: 12px">{{ currentMeta.summary }}</div>
           <div style="font-size: 12px; color: #b88230; margin-top: 4px">
-            💰 费用估算：{{ currentMeta.pricing }}
+<!--            💰 费用估算：{{ currentMeta.pricing }}-->
           </div>
         </el-alert>
 
