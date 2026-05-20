@@ -16,6 +16,8 @@ from app.schemas.bitbrowser import (
     BitBrowserCatalogRowOut,
     BitBrowserCatalogSave,
     BitBrowserOpenResponse,
+    BitBrowserRunningListOut,
+    BitBrowserRunningRowOut,
     BitBrowserPlatformCreate,
     BitBrowserPlatformOut,
     BitBrowserPlatformUpdate,
@@ -369,10 +371,50 @@ def bitbrowser_sync_meta(
     return BitBrowserSyncMetaOut(last_sync_at=user.bitbrowser_last_sync_at, cached_rows=n)
 
 
+@router.get("/running", response_model=BitBrowserRunningListOut)
+def list_bitbrowser_running(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """本机当前存活已打开窗口（``POST /browser/pids/all``），仅返回属于当前登录用户的条目。"""
+    try:
+        rows = bitbrowser_service.list_running_windows_for_user(db, user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"无法连接 BitBrowser 本地服务 ({_user_local_hint(user)}): {e}",
+        ) from e
+    items = [BitBrowserRunningRowOut(**r) for r in rows]
+    return BitBrowserRunningListOut(items=items, count=len(items))
+
+
+@router.post("/windows/{browser_id}/close")
+def close_bitbrowser_window(
+    browser_id: str,
+    user: User = Depends(get_current_user),
+):
+    """``POST /browser/close`` 关闭指定窗口。"""
+    try:
+        ok = bitbrowser_service.close_browser_window(browser_id.strip(), user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"无法连接 BitBrowser 本地服务 ({_user_local_hint(user)}): {e}",
+        ) from e
+    return {"ok": ok}
+
+
 @router.post("/windows/{browser_id}/open", response_model=BitBrowserOpenResponse)
 def open_bitbrowser_window(
     browser_id: str,
     headless: bool = Query(False, description="无头模式：向 BitBrowser 传入启动参数 --headless"),
+    restart: bool = Query(False, description="目标已在运行时先关闭再 open（先关再开）"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -391,7 +433,9 @@ def open_bitbrowser_window(
             detail="该窗口不在你的缓存列表中，请先点击「从本机同步」",
         )
     try:
-        data = bitbrowser_service.open_browser_window(browser_id.strip(), user, headless=headless)
+        result = bitbrowser_service.open_browser_window(
+            browser_id.strip(), user, db, headless=headless, restart=restart
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
@@ -401,7 +445,18 @@ def open_bitbrowser_window(
             status_code=502,
             detail=f"无法连接 BitBrowser 本地服务 ({_user_local_hint(user)}): {e}",
         ) from e
-    return BitBrowserOpenResponse(success=True, data=jsonable_encoder(data))
+    return BitBrowserOpenResponse(
+        success=True,
+        data=jsonable_encoder(result.get("data") or {}),
+        headless=bool(result.get("headless")),
+        restarted=bool(result.get("restarted")),
+        already_open=bool(result.get("already_open")),
+        reconnected=bool(result.get("reconnected")),
+        mode_switched=bool(result.get("mode_switched")),
+        pid=result.get("pid"),
+        closed_other_ids=list(result.get("closed_other_ids") or []),
+        hint=result.get("hint"),
+    )
 
 
 @router.get("/local-health")

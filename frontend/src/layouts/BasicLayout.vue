@@ -61,6 +61,14 @@ async function handleLogout() {
           </template>
           <el-menu-item index="/scraper/tasks">抓取任务</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="dm">
+          <template #title>
+            <el-icon><ChatDotRound /></el-icon>
+            <span>私信内容</span>
+          </template>
+          <el-menu-item index="/dm/contents">内容库</el-menu-item>
+          <el-menu-item index="/dm/categories">分类管理</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/influencers">
           <el-icon><User /></el-icon>
           <span>建联达人</span>

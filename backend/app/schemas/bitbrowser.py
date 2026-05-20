@@ -76,11 +76,44 @@ class BitBrowserSettingsUpdate(BaseModel):
     )
 
 
+class BitBrowserRunningRowOut(BaseModel):
+    """本机当前存活且属于当前登录用户的已打开窗口（``POST /browser/pids/all`` 过滤）。"""
+
+    browser_id: str
+    pid: int
+    name: Optional[str] = None
+    seq: Optional[int] = None
+    platform: Optional[str] = None
+    headless: bool = False
+    opened_at: Optional[str] = Field(None, description="最近一次成功 open 并写入缓存的时间（UTC ISO）")
+    hint: Optional[str] = None
+    open_data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="上次 /browser/open 返回的 data（按账号 Redis 缓存）",
+    )
+
+
+class BitBrowserRunningListOut(BaseModel):
+    items: list[BitBrowserRunningRowOut] = Field(default_factory=list)
+    count: int = 0
+
+
 class BitBrowserOpenResponse(BaseModel):
-    """``POST /browser/open`` 代理返回（data 字段以 BitBrowser 原始为准）。"""
+    """``POST /browser/open`` 代理返回（data 为 BitBrowser 连接信息；hint 为说明文案）。"""
 
     success: bool = True
     data: dict[str, Any] = Field(default_factory=dict)
+    headless: bool = False
+    restarted: bool = Field(False, description="是否先关闭再打开")
+    already_open: bool = Field(False, description="目标环境已在运行（同模式唤起/读缓存）")
+    reconnected: bool = Field(False, description="已在运行时再次 open 并成功拿到连接信息")
+    pid: Optional[int] = Field(None, description="已在运行时的进程 ID")
+    mode_switched: bool = Field(False, description="无头/可见模式切换时已先关再开")
+    closed_other_ids: list[str] = Field(
+        default_factory=list,
+        description="（已废弃）保留字段兼容；不再自动关闭其它环境",
+    )
+    hint: Optional[str] = None
 
 
 # ----- 自建平台 -----

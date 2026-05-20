@@ -8,6 +8,8 @@ import {
   type BitBrowserSyncMeta,
   type BitBrowserWindow
 } from '@/api/bitbrowser'
+import { useBitBrowserRunning } from '@/composables/useBitBrowserRunning'
+import BitBrowserRunningPanel from '@/components/bitbrowser/BitBrowserRunningPanel.vue'
 
 const list = ref<BitBrowserWindow[]>([])
 const loading = ref(false)
@@ -24,6 +26,9 @@ const health = ref<{
 const bbSettings = ref<BitBrowserSettings | null>(null)
 
 const connReady = computed(() => !!(bbSettings.value?.local_url || '').trim())
+
+const { runningList, runningLoading, runningPidMap, runningById, loadRunning, closeRunning } =
+  useBitBrowserRunning(connReady)
 
 const platforms = ref<BitBrowserPlatform[]>([])
 
@@ -56,6 +61,7 @@ async function refresh() {
   try {
     list.value = await bitbrowserApi.listWindows()
     await loadSyncMeta()
+    await loadRunning()
   } finally {
     loading.value = false
   }
@@ -140,45 +146,6 @@ async function sync() {
   }
 }
 
-const openingId = ref<string | null>(null)
-
-const OPEN_RESULT_LABELS: Record<string, string> = {
-  ws: 'WebSocket（CDP）',
-  http: '调试 HTTP',
-  driver: 'ChromeDriver 路径',
-  webdriver: 'WebDriver 地址',
-  coreVersion: '内核版本'
-}
-
-const openResultVisible = ref(false)
-const openResultTitle = ref('')
-const openResultJson = ref('')
-const openResultKv = ref<{ key: string; label: string; value: string }[]>([])
-
-function buildOpenResultKv(data: Record<string, unknown>) {
-  const priority = ['ws', 'http', 'driver', 'webdriver', 'coreVersion']
-  const kv: { key: string; label: string; value: string }[] = []
-  for (const k of priority) {
-    const v = data[k]
-    if (v != null && v !== '') kv.push({ key: k, label: OPEN_RESULT_LABELS[k] || k, value: String(v) })
-  }
-  for (const k of Object.keys(data)) {
-    if (priority.includes(k)) continue
-    const v = data[k]
-    if (v != null && typeof v !== 'object') kv.push({ key: k, label: k, value: String(v) })
-  }
-  return kv
-}
-
-async function copyOpenResultJson() {
-  try {
-    await navigator.clipboard.writeText(openResultJson.value)
-    ElMessage.success('已复制 JSON')
-  } catch {
-    ElMessage.warning('复制失败，请手动全选复制')
-  }
-}
-
 async function openCatalogDialog(row: BitBrowserWindow) {
   await loadPlatforms()
   catalogRow.value = row
@@ -202,33 +169,6 @@ async function confirmCatalogSave() {
     /* 拦截器已提示 */
   } finally {
     catalogSaving.value = false
-  }
-}
-
-async function openWindow(row: BitBrowserWindow, headless = false) {
-  if (!connReady.value) {
-    ElMessage.warning('请先到「比特抓取 → 本机连接」页面配置本机地址与 Token')
-    return
-  }
-  openingId.value = row.browser_id
-  try {
-    const r = await bitbrowserApi.openWindow(row.browser_id, { headless })
-    const d = (r.data ?? {}) as Record<string, unknown>
-    openResultTitle.value = row.name ? `${row.name}（${row.browser_id}）` : row.browser_id
-    openResultKv.value = buildOpenResultKv(d)
-    openResultJson.value = JSON.stringify(d, null, 2)
-    openResultVisible.value = true
-    ElMessage.success(headless ? '已打开窗口（无头模式）' : '已打开窗口（可见）')
-  } catch (e: unknown) {
-    const ax = e as { response?: { data?: { detail?: string } }; message?: string }
-    const detail =
-      ax.response?.data?.detail ||
-      (typeof ax.response?.data === 'string' ? ax.response.data : undefined) ||
-      ax.message ||
-      '打开窗口失败'
-    ElMessage.error(`${detail}。若无权限或环境已被收回，请先点「从本机同步」再试。`)
-  } finally {
-    openingId.value = null
   }
 }
 
@@ -265,37 +205,36 @@ onMounted(async () => {
         <div style="font-size: 12px; color: #888; margin-top: 6px">
           <span>上次成功同步：{{ formatLastSync(syncMeta?.last_sync_at) }}</span>
           <span style="margin-left: 12px">当前缓存：{{ syncMeta?.cached_rows ?? list.length }} 条</span>
+          <span style="margin-left: 12px">本机运行中：{{ runningList.length }} 个</span>
           <span v-if="autoSyncing" style="margin-left: 12px; color: #409eff">正在从本机自动同步…</span>
         </div>
-        <div style="font-size: 12px; color: #666; max-width: 720px; margin-top: 8px">
-          数据来自 BitBrowser 本地服务
-          <code>POST /browser/list</code>
-          （见
-          <a href="https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou" target="_blank" rel="noreferrer">官方文档</a>
-          ）。在
-          <router-link to="/bitbrowser/connect">本机连接</router-link>
-          保存地址且<strong>本地服务可用</strong>时，进入本页会自动拉一次全量列表；也可手动「从本机同步」。「打开」为拆分按钮：主按钮
-          <strong>可见窗口</strong>
-          ；点右侧
-          <strong>▼</strong>
-          可选
-          <strong>无头（--headless）</strong>
-          ，调用
-          <code>POST /browser/open</code>
-          。弹窗展示
-          <code>ws</code>
-          /
-          <code>http</code>
-          /
-          <code>driver</code>
-          等连接信息。是否已登记到本系统以 BitBrowser
-          <strong>窗口 ID</strong>
-          为准；「本系统」列汇总登记状态与操作；未登记点「保存」。已登记请到独立页
-          <router-link to="/bitbrowser/saved">系统登记</router-link>
-          查看本机是否仍在列表（同步后会自动比对并更新）。分类请先在
-          <router-link to="/bitbrowser/platforms">平台管理</router-link>
-          中建平台。
-        </div>
+<!--        <div style="font-size: 12px; color: #666; max-width: 720px; margin-top: 8px">-->
+<!--          数据来自 BitBrowser 本地服务-->
+<!--          <code>POST /browser/list</code>-->
+<!--          （见-->
+<!--          <a href="https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou" target="_blank" rel="noreferrer">官方文档</a>-->
+<!--          ）。在-->
+<!--          <router-link to="/bitbrowser/connect">本机连接</router-link>-->
+<!--          保存地址且<strong>本地服务可用</strong>时，进入本页会自动拉一次全量列表；也可手动「从本机同步」。操作列-->
+<!--          <strong>打开</strong>-->
+<!--          为可见窗口，-->
+<!--          <strong>无头</strong>-->
+<!--          为带-->
+<!--          <code>&#45;&#45;headless</code>-->
+<!--          的 API 打开；成功后弹窗展示-->
+<!--          <code>ws</code>-->
+<!--          /-->
+<!--          <code>http</code>-->
+<!--          /-->
+<!--          <code>driver</code>-->
+<!--          等连接信息。是否已登记到本系统以 BitBrowser-->
+<!--          <strong>窗口 ID</strong>-->
+<!--          为准；「本系统」列汇总登记状态与操作；未登记点「保存」。已登记请到独立页-->
+<!--          <router-link to="/bitbrowser/saved">系统登记</router-link>-->
+<!--          查看本机是否仍在列表（同步后会自动比对并更新）。分类请先在-->
+<!--          <router-link to="/bitbrowser/platforms">平台管理</router-link>-->
+<!--          中建平台。-->
+<!--        </div>-->
       </div>
       <div style="display: flex; gap: 8px; align-items: center">
         <el-button :disabled="!connReady" @click="checkHealth">检测本地服务</el-button>
@@ -321,7 +260,21 @@ onMounted(async () => {
       </template>
     </el-alert>
 
-    <p class="bb-table-hint">点击表格最左侧的展开图标，可查看完整窗口 ID、备注、平台账号、比特状态、分组等。</p>
+    <BitBrowserRunningPanel
+      v-if="connReady"
+      :list="runningList"
+      :loading="runningLoading"
+      :disabled="!connReady"
+      subtitle="仅查看运行状态与连接缓存；打开/无头/先关再开请到「系统登记」操作"
+      @close="closeRunning"
+      @refresh="loadRunning"
+    />
+
+    <p class="bb-table-hint">
+      本页用于从本机同步窗口列表与登记到系统；拉起浏览器请到
+      <router-link to="/bitbrowser/saved">系统登记</router-link>
+      。
+    </p>
 
     <el-table
       v-loading="loading"
@@ -379,26 +332,20 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column prop="last_ip" label="最近 IP" min-width="128" show-overflow-tooltip />
       <el-table-column prop="updated_at" label="同步时间" width="158" />
-      <el-table-column label="打开" width="132" fixed="right" align="center">
+      <el-table-column label="运行" width="120" align="center">
         <template #default="{ row }">
-          <el-dropdown
-            split-button
-            type="primary"
-            size="small"
-            class="bb-open-split"
-            trigger="click"
-            :disabled="!connReady"
-            :loading="openingId === row.browser_id"
-            @click="openWindow(row, false)"
-            @command="(cmd: string) => cmd === 'headless' && openWindow(row, true)"
-          >
-            打开
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="headless">打开（无头 · --headless）</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+          <template v-if="runningPidMap[row.browser_id]">
+            <el-tag type="success" size="small">PID {{ runningPidMap[row.browser_id] }}</el-tag>
+            <el-tag
+              v-if="runningById[row.browser_id]"
+              :type="runningById[row.browser_id].headless ? 'warning' : 'success'"
+              size="small"
+              style="margin-left: 4px"
+            >
+              {{ runningById[row.browser_id].headless ? '无头' : '可见' }}
+            </el-tag>
+          </template>
+          <el-tag v-else type="info" size="small">未运行</el-tag>
         </template>
       </el-table-column>
     </el-table>
@@ -429,50 +376,14 @@ onMounted(async () => {
         <el-button type="primary" :loading="catalogSaving" @click="confirmCatalogSave">确定</el-button>
       </template>
     </el-dialog>
-
-    <el-dialog v-model="openResultVisible" title="拉起窗口 · /browser/open 返回" width="720px" destroy-on-close>
-      <p style="margin: 0 0 12px; font-size: 13px; color: #606266">
-        窗口：{{ openResultTitle }}
-      </p>
-      <p style="margin: 0 0 12px; font-size: 12px; color: #909399">
-        以下为 BitBrowser 本地服务在窗口启动后返回的连接信息（勿泄露）；可用 CDP / Selenium 等按官方文档接入。
-      </p>
-      <el-descriptions v-if="openResultKv.length" :column="1" border size="small">
-        <el-descriptions-item v-for="item in openResultKv" :key="item.key" :label="item.label">
-          <span style="word-break: break-all; font-family: ui-monospace, monospace; font-size: 12px">{{ item.value }}</span>
-        </el-descriptions-item>
-      </el-descriptions>
-      <div style="margin-top: 12px">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px">
-          <span style="font-size: 13px; font-weight: 500">完整 JSON</span>
-          <el-button size="small" @click="copyOpenResultJson">复制 JSON</el-button>
-        </div>
-        <el-input v-model="openResultJson" type="textarea" :rows="14" readonly class="open-result-json" />
-      </div>
-    </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.open-result-json :deep(textarea) {
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-}
-
 .bb-table-hint {
   margin: 0 0 10px;
   font-size: 12px;
   color: #909399;
-}
-
-/* 拆分「打开」：主按钮 + 下拉箭头，避免用户找不到无头选项 */
-.bb-open-split {
-  max-width: 100%;
-}
-
-.bb-open-split :deep(.el-button:first-child) {
-  padding-left: 10px;
-  padding-right: 10px;
 }
 
 .bb-windows-table :deep(.el-table__cell) {

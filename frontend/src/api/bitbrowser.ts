@@ -72,6 +72,31 @@ export interface BitBrowserSettings {
 export interface BitBrowserOpenResponse {
   success: boolean
   data: Record<string, unknown>
+  headless?: boolean
+  restarted?: boolean
+  already_open?: boolean
+  reconnected?: boolean
+  mode_switched?: boolean
+  pid?: number | null
+  closed_other_ids?: string[]
+  hint?: string | null
+}
+
+export interface BitBrowserRunningRow {
+  browser_id: string
+  pid: number
+  name?: string | null
+  seq?: number | null
+  platform?: string | null
+  headless?: boolean
+  opened_at?: string | null
+  hint?: string | null
+  open_data?: Record<string, unknown>
+}
+
+export interface BitBrowserRunningListOut {
+  items: BitBrowserRunningRow[]
+  count: number
 }
 
 export interface BitBrowserPlatform {
@@ -123,13 +148,19 @@ export const bitbrowserApi = {
     http.put<unknown, unknown>(`/bitbrowser/windows/${encodeURIComponent(browserId)}/catalog`, body),
   deleteWindowCatalog: (browserId: string) =>
     http.delete<unknown, { ok: boolean }>(`/bitbrowser/windows/${encodeURIComponent(browserId)}/catalog`),
-  openWindow: (browserId: string, opts?: { headless?: boolean }) =>
+  listRunning: () => http.get<unknown, BitBrowserRunningListOut>('/bitbrowser/running'),
+  closeWindow: (browserId: string) =>
+    http.post<unknown, { ok: boolean }>(`/bitbrowser/windows/${encodeURIComponent(browserId)}/close`, {}),
+  openWindow: (browserId: string, opts?: { headless?: boolean; restart?: boolean }) =>
     http.post<unknown, BitBrowserOpenResponse>(
       `/bitbrowser/windows/${encodeURIComponent(browserId)}/open`,
       {},
       {
         timeout: 180000,
-        params: opts?.headless ? { headless: true } : {}
+        params: {
+          ...(opts?.headless ? { headless: true } : {}),
+          ...(opts?.restart ? { restart: true } : {})
+        }
       }
     ),
   localHealth: () =>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   bitbrowserApi,
@@ -7,11 +7,15 @@ import {
   type BitBrowserPlatform,
   type BitBrowserSettings
 } from '@/api/bitbrowser'
+import { useBitBrowserRunning } from '@/composables/useBitBrowserRunning'
+import BitBrowserRunningPanel from '@/components/bitbrowser/BitBrowserRunningPanel.vue'
 
 const list = ref<BitBrowserCatalogRow[]>([])
 const loading = ref(false)
 const bbSettings = ref<BitBrowserSettings | null>(null)
 const connReady = computed(() => !!(bbSettings.value?.local_url || '').trim())
+const { runningList, runningLoading, runningPidMap, runningById, loadRunning, closeRunning } =
+  useBitBrowserRunning(connReady)
 
 const platforms = ref<BitBrowserPlatform[]>([])
 const catalogDialogVisible = ref(false)
@@ -32,6 +36,7 @@ const OPEN_RESULT_LABELS: Record<string, string> = {
 }
 const openResultVisible = ref(false)
 const openResultTitle = ref('')
+const openResultHint = ref('')
 const openResultJson = ref('')
 const openResultKv = ref<{ key: string; label: string; value: string }[]>([])
 
@@ -55,6 +60,7 @@ async function refresh() {
   loading.value = true
   try {
     list.value = await bitbrowserApi.listCatalog()
+    await loadRunning()
   } finally {
     loading.value = false
   }
@@ -127,7 +133,24 @@ async function copyOpenResultJson() {
   }
 }
 
-async function openWindow(row: BitBrowserCatalogRow, headless = false) {
+async function presentOpenResult(
+  row: BitBrowserCatalogRow,
+  data: Record<string, unknown>,
+  headless: boolean,
+  hint?: string | null
+) {
+  openResultTitle.value = `${displayName(row)}（${row.browser_id}）`
+  openResultHint.value = hint || (headless ? '无头模式不会显示浏览器界面。' : '')
+  openResultKv.value = buildOpenResultKv(data)
+  openResultJson.value = JSON.stringify(data, null, 2)
+  if (!headless) {
+    await new Promise((r) => setTimeout(r, 400))
+  }
+  await nextTick()
+  openResultVisible.value = true
+}
+
+async function openWindow(row: BitBrowserCatalogRow, headless = false, restart = false) {
   if (!row.in_local_cache) {
     ElMessage.warning('该窗口已不在当前本机同步列表中，请先在比特浏览器恢复环境后，到「浏览器窗口」重新同步再打开')
     return
@@ -138,13 +161,34 @@ async function openWindow(row: BitBrowserCatalogRow, headless = false) {
   }
   openingId.value = row.browser_id
   try {
-    const r = await bitbrowserApi.openWindow(row.browser_id, { headless })
+    const r = await bitbrowserApi.openWindow(row.browser_id, { headless, restart })
     const d = (r.data ?? {}) as Record<string, unknown>
-    openResultTitle.value = `${displayName(row)}（${row.browser_id}）`
-    openResultKv.value = buildOpenResultKv(d)
-    openResultJson.value = JSON.stringify(d, null, 2)
-    openResultVisible.value = true
-    ElMessage.success(headless ? '已打开窗口（无头模式）' : '已打开窗口（可见）')
+    if (r.already_open) {
+      if (Object.keys(d).length) {
+        await presentOpenResult(row, d, headless, r.hint)
+        ElMessage.success(r.reconnected ? '已唤起并刷新连接信息' : '已显示缓存的连接信息')
+      } else {
+        openResultTitle.value = `${displayName(row)}（${row.browser_id}）`
+        openResultHint.value = r.hint || `已在运行（PID ${r.pid ?? '—'}）`
+        openResultKv.value = []
+        openResultJson.value = ''
+        openResultVisible.value = true
+        ElMessage.info(r.hint || '该环境已在运行')
+      }
+      await loadRunning()
+      return
+    }
+    await presentOpenResult(row, d, headless, r.hint)
+    if (r.mode_switched) {
+      ElMessage.success('已切换无头/可见模式并重新打开')
+    } else if (headless) {
+      ElMessage.success('已打开（无头，无界面）')
+    } else if (r.restarted || restart) {
+      ElMessage.success('已先关再开')
+    } else {
+      ElMessage.success('已打开窗口（可见）')
+    }
+    await loadRunning()
   } catch (e: unknown) {
     const ax = e as { response?: { data?: { detail?: string } }; message?: string }
     const detail =
@@ -197,6 +241,19 @@ onMounted(async () => {
       </div>
     </div>
 
+    <BitBrowserRunningPanel
+      v-if="connReady"
+      :list="runningList"
+      :loading="runningLoading"
+      :disabled="!connReady"
+      @close="closeRunning"
+      @refresh="loadRunning"
+    />
+
+    <p style="margin: 0 0 10px; font-size: 12px; color: #909399">
+      同一环境仅一个进程（无头/可见不能并存）；不同环境可同时运行。同模式「打开」= 唤起并返回连接信息；切换模式会自动先关再开。
+    </p>
+
     <el-table v-loading="loading" :data="list" border stripe>
       <el-table-column label="本机列表" width="120" align="center">
         <template #default="{ row }">
@@ -231,29 +288,55 @@ onMounted(async () => {
       <el-table-column prop="port" label="端口" width="70" />
       <el-table-column prop="last_ip" label="最近 IP" width="120" show-overflow-tooltip />
       <el-table-column prop="updated_at" label="登记更新时间" width="170" />
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="运行" width="120" align="center">
+        <template #default="{ row }">
+          <template v-if="runningPidMap[row.browser_id]">
+            <el-tag type="success" size="small">PID {{ runningPidMap[row.browser_id] }}</el-tag>
+            <el-tag
+              v-if="runningById[row.browser_id]"
+              :type="runningById[row.browser_id].headless ? 'warning' : 'success'"
+              size="small"
+              style="margin-left: 4px"
+            >
+              {{ runningById[row.browser_id].headless ? '无头' : '可见' }}
+            </el-tag>
+          </template>
+          <el-tag v-else type="info" size="small">未运行</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="360" fixed="right">
         <template #default="{ row }">
           <div class="bb-saved-actions">
             <el-button size="small" type="success" plain @click="openCatalogDialog(row)">调整登记</el-button>
             <el-button size="small" type="warning" plain @click="removeFromCatalog(row)">取消登记</el-button>
-            <el-dropdown
-              split-button
-              type="primary"
+            <el-button
               size="small"
-              class="bb-open-split"
-              trigger="click"
+              type="primary"
               :disabled="!connReady || !row.in_local_cache"
               :loading="openingId === row.browser_id"
-              @click="openWindow(row, false)"
-              @command="(cmd: string) => cmd === 'headless' && openWindow(row, true)"
+              @click="openWindow(row, false, false)"
             >
               打开
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="headless">打开（无头 · --headless）</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            </el-button>
+            <el-button
+              size="small"
+              plain
+              :disabled="!connReady || !row.in_local_cache"
+              :loading="openingId === row.browser_id"
+              @click="openWindow(row, true, false)"
+            >
+              无头
+            </el-button>
+            <el-button
+              size="small"
+              type="warning"
+              plain
+              :disabled="!connReady || !row.in_local_cache"
+              :loading="openingId === row.browser_id"
+              @click="openWindow(row, false, true)"
+            >
+              先关再开
+            </el-button>
           </div>
         </template>
       </el-table-column>
@@ -281,8 +364,23 @@ onMounted(async () => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="openResultVisible" title="拉起窗口 · /browser/open 返回" width="720px" destroy-on-close>
+    <el-dialog
+      v-model="openResultVisible"
+      title="拉起窗口 · /browser/open 返回"
+      width="720px"
+      append-to-body
+      :z-index="10050"
+      destroy-on-close
+    >
       <p style="margin: 0 0 12px; font-size: 13px; color: #606266">窗口：{{ openResultTitle }}</p>
+      <el-alert
+        v-if="openResultHint"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+        :title="openResultHint"
+      />
       <p style="margin: 0 0 12px; font-size: 12px; color: #909399">以下为 BitBrowser 本地服务返回的连接信息（勿泄露）。</p>
       <el-descriptions v-if="openResultKv.length" :column="1" border size="small">
         <el-descriptions-item v-for="item in openResultKv" :key="item.key" :label="item.label">
@@ -296,6 +394,9 @@ onMounted(async () => {
         </div>
         <el-input v-model="openResultJson" type="textarea" :rows="14" readonly class="open-result-json" />
       </div>
+      <template #footer>
+        <el-button type="primary" @click="openResultVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -314,12 +415,4 @@ onMounted(async () => {
   align-items: center;
 }
 
-.bb-open-split {
-  max-width: 100%;
-}
-
-.bb-open-split :deep(.el-button:first-child) {
-  padding-left: 10px;
-  padding-right: 10px;
-}
 </style>

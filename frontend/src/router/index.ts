@@ -62,6 +62,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '平台管理' }
       },
       {
+        path: 'dm/contents',
+        name: 'dm-contents',
+        component: () => import('@/views/dm/ContentsView.vue'),
+        meta: { title: '私信内容库' }
+      },
+      {
+        path: 'dm/categories',
+        name: 'dm-categories',
+        component: () => import('@/views/dm/CategoriesView.vue'),
+        meta: { title: '私信分类' }
+      },
+      {
         path: 'influencers',
         name: 'influencers',
         component: () => import('@/views/influencer/InfluencersView.vue'),

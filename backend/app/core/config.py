@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # 每个登录用户在「浏览器窗口」页自行配置本机地址与 API Token（存 users 表），此处仅全局超时与分页
     bitbrowser_http_timeout_sec: float = 60.0
     bitbrowser_list_page_size: int = 100
+    bitbrowser_headless_chrome_args: str = "--headless"
+
+    # ===== 私信内容图片上传目录（相对 backend 根目录）=====
+    dm_upload_dir: str = "uploads/dm"
 
     # ===== Default admin =====
     default_admin_username: str = "admin"
