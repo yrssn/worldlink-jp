@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox, type UploadAjaxError, type UploadProps, type UploadUserFile } from 'element-plus'
+import { ElMessage, ElMessageBox, type UploadProps, type UploadUserFile } from 'element-plus'
 import { dmApi, type DmCategory, type DmContent, type DmImageItem } from '@/api/dm'
 import { useAuthStore } from '@/store/auth'
 
@@ -157,7 +157,7 @@ const handleUpload: UploadProps['httpRequest'] = async (options) => {
     imageFileList.value = [...imageFileList.value, item]
     options.onSuccess?.(r)
   } catch (e) {
-    options.onError?.(e as UploadAjaxError)
+    options.onError?.(e as any)
   } finally {
     uploading.value = false
   }
