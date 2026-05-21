@@ -20,6 +20,7 @@ from app.models import bitbrowser as _bitbrowser_model  # noqa: F401
 from app.models import social_account as _social_account_model  # noqa: F401
 from app.models import dm as _dm_model  # noqa: F401
 from app.models import fb_group_scrape as _fb_group_scrape_model  # noqa: F401
+from app.models import apify_key as _apify_key_model  # noqa: F401
 from app.models.user import User, UserRole
 
 
@@ -28,6 +29,7 @@ def create_all() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_users_bitbrowser_columns()
     _ensure_bitbrowser_window_catalog_columns()
+    _ensure_apify_keys_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -80,6 +82,24 @@ def _ensure_bitbrowser_window_catalog_columns() -> None:
             "ALTER TABLE bitbrowser_window_catalog ADD COLUMN cached_env_platform VARCHAR(512) NULL"
         )
     for sql in patches:
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_apify_keys_columns() -> None:
+    """为 apify_keys 表补齐 exhausted_at 列。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "apify_keys" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("apify_keys")}
+    if "exhausted_at" not in cols:
+        sql = "ALTER TABLE apify_keys ADD COLUMN exhausted_at DATETIME NULL"
         try:
             logger.info("[schema-patch] {}", sql)
             with engine.begin() as conn:

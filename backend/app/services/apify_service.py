@@ -55,17 +55,32 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 
 
 # ---------- 内部工具 ----------
-def _get_client():
-    if not settings.apify_token:
-        raise RuntimeError("APIFY_TOKEN 未配置")
+def _resolve_token(db: Session | None = None) -> str:
+    """优先从 DB 中取 is_default=True 的 Key，否则回退到 settings.apify_token。"""
+    if db is not None:
+        try:
+            from app.models.apify_key import ApifyKey
+            row = db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).first()
+            if row and row.token:
+                return row.token
+        except Exception:  # noqa: BLE001
+            pass
+    if settings.apify_token:
+        return settings.apify_token
+    raise RuntimeError("未配置可用的 Apify Token（请在「Apify Key 管理」中添加并设置默认 Key）")
+
+
+def _get_client(db: Session | None = None):
+    token = _resolve_token(db)
     from apify_client import ApifyClient
 
-    return ApifyClient(settings.apify_token)
+    return ApifyClient(token)
 
 
 def _run_actor(
@@ -73,9 +88,10 @@ def _run_actor(
     run_input: dict[str, Any],
     *,
     timeout_secs: int = 600,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """统一调用 Actor 并把 dataset 全部拉回来。"""
-    client = _get_client()
+    client = _get_client(db)
     logger.info("[Apify] Start {} timeout={}s input={}", actor_id, timeout_secs, run_input)
     try:
         # wait_secs：客户端最长等待时间；timeout_secs：Actor 单次运行上限
@@ -127,6 +143,7 @@ def run_fb_search(
     locations: list[str] | None = None,
     max_items: int = 50,
     extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """关键词 + 位置 → 匹配的 Pages。
 
@@ -147,7 +164,7 @@ def run_fb_search(
         run_input["locations"] = locs
     if extra:
         run_input.update(extra)
-    return _run_actor(settings.apify_fb_search_actor, run_input)
+    return _run_actor(settings.apify_fb_search_actor, run_input, db=db)
 
 
 # ---------- 2) Facebook Pages Scraper ----------
@@ -155,6 +172,7 @@ def run_fb_pages(
     start_urls: list[str],
     max_items: int = 50,
     extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """主页 URL → 主页完整资料。"""
     urls = [u for u in (start_urls or []) if u]
@@ -166,7 +184,7 @@ def run_fb_pages(
     }
     if extra:
         run_input.update(extra)
-    return _run_actor(settings.apify_fb_pages_actor, run_input)
+    return _run_actor(settings.apify_fb_pages_actor, run_input, db=db)
 
 
 # ---------- 3) Facebook Posts Scraper ----------
@@ -175,6 +193,7 @@ def run_fb_posts(
     posts_per_page: int = 10,
     total_limit: Optional[int] = None,
     extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """按 Page URL 抓帖子。
 
@@ -192,7 +211,7 @@ def run_fb_posts(
         run_input["resultsLimit"] = int(total_limit)
     if extra:
         run_input.update(extra)
-    return _run_actor(settings.apify_fb_posts_actor, run_input)
+    return _run_actor(settings.apify_fb_posts_actor, run_input, db=db)
 
 
 # ---------- 3b) Facebook Profile & Posts (cleansyntax) ----------
@@ -205,6 +224,7 @@ def run_fb_profile_posts(
     start_date: str | None = None,
     end_date: str | None = None,
     extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """cleansyntax/facebook-profile-posts-scraper：按 endpoint 选用 urls_text / ids_text / keywords_text。
 
@@ -231,7 +251,7 @@ def run_fb_profile_posts(
         run_input["end_date"] = str(end_date).strip()
     if extra:
         run_input.update(extra)
-    return _run_actor(settings.apify_fb_profile_posts_actor, run_input)
+    return _run_actor(settings.apify_fb_profile_posts_actor, run_input, db=db)
 
 
 # ---------- 4) Facebook Hashtag Scraper ----------
@@ -239,6 +259,7 @@ def run_fb_hashtag(
     hashtags: list[str],
     max_items: int = 50,
     extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """按 hashtag 抓帖子。
 
@@ -255,7 +276,7 @@ def run_fb_hashtag(
     }
     if extra:
         run_input.update(extra)
-    return _run_actor(settings.apify_fb_hashtag_actor, run_input)
+    return _run_actor(settings.apify_fb_hashtag_actor, run_input, db=db)
 
 
 # ---------- 5) Facebook Search Posts (第三方) ----------
@@ -268,6 +289,7 @@ def run_fb_search_posts(
     end_date: Optional[str] = None,
     recent_posts: bool = False,
     extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """任意关键词 → 直接搜帖子（第三方 actor）。
 
@@ -308,7 +330,7 @@ def run_fb_search_posts(
             run_input["end_date"] = end_date
         if extra:
             run_input.update(extra)
-        r = _run_actor(settings.apify_fb_search_posts_actor, run_input)
+        r = _run_actor(settings.apify_fb_search_posts_actor, run_input, db=db)
         merged_items.extend(r.get("items") or [])
         last_run_id = r.get("run_id") or last_run_id
         last_dataset_id = r.get("dataset_id") or last_dataset_id
@@ -331,6 +353,7 @@ def run_fb_groups(
     only_posts_newer_than: str | None = None,
     timeout_secs: int = 600,
     extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     """公开 Facebook 群组 URL → 帖子列表（Apify facebook-groups-scraper）。"""
     url = (group_url or "").strip()
@@ -350,4 +373,4 @@ def run_fb_groups(
         run_input["onlyPostsNewerThan"] = str(only_posts_newer_than).strip()
     if extra:
         run_input.update(extra)
-    return _run_actor(settings.apify_fb_groups_actor, run_input, timeout_secs=timeout_secs)
+    return _run_actor(settings.apify_fb_groups_actor, run_input, timeout_secs=timeout_secs, db=db)

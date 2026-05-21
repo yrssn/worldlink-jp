@@ -44,6 +44,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'Facebook群组维度抓取' }
       },
       {
+        path: 'scraper/apify-keys',
+        name: 'scraper-apify-keys',
+        component: () => import('@/views/scraper/ApifyKeysView.vue'),
+        meta: { title: 'Apify Key 管理' }
+      },
+      {
         path: 'bitbrowser/connect',
         name: 'bitbrowser-connect',
         component: () => import('@/views/bitbrowser/connect/ConnectView.vue'),

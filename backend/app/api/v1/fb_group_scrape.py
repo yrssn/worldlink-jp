@@ -226,6 +226,7 @@ def pull_fb_group_posts(
             search_group_year=opts.search_group_year,
             only_posts_newer_than=opts.only_posts_newer_than,
             timeout_secs=900,
+            db=db,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

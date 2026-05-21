@@ -166,7 +166,9 @@ def append_author_pages_for_selected_posts(
     cap = max(1, int(task.page_limit or 50))
     page_urls = page_urls[:cap]
 
-    pages_res = apify_service.run_fb_pages(start_urls=page_urls, max_items=len(page_urls))
+    pages_res = apify_service.run_fb_pages(
+        start_urls=page_urls, max_items=len(page_urls), db=db
+    )
     new_items: list[dict[str, Any]] = list(pages_res.get("items") or [])
 
     norm_to_pids: dict[str, list[int]] = defaultdict(list)
@@ -550,6 +552,7 @@ def _run_fb_search(db: Session, task: ScrapeTask) -> None:
         locations=locations or None,
         max_items=task.max_items,
         extra={k: v for k, v in extra_in.items() if k not in ("locations", "page_results")},
+        db=db,
     )
     _persist_page_results(db, task, result.get("items") or [],
                           result.get("run_id"), result.get("dataset_id"))
@@ -563,6 +566,7 @@ def _run_fb_pages(db: Session, task: ScrapeTask) -> None:
         start_urls=urls,
         max_items=task.max_items,
         extra={k: v for k, v in (task.extra_input or {}).items() if k != "page_results"},
+        db=db,
     )
     _persist_page_results(db, task, result.get("items") or [],
                           result.get("run_id"), result.get("dataset_id"))
@@ -645,6 +649,7 @@ def _run_post_pipeline(
             pages_res = apify_service.run_fb_pages(
                 start_urls=page_urls,
                 max_items=len(page_urls),
+                db=db,
             )
             for item in pages_res.get("items") or []:
                 url = item.get("pageUrl") or item.get("facebookUrl")
@@ -694,6 +699,7 @@ def _run_fb_posts_by_page(db: Session, task: ScrapeTask) -> None:
             start_date=str(start_date).strip() if start_date else None,
             end_date=str(end_date).strip() if end_date else None,
             extra=extra_in or None,
+            db=db,
         )
     elif endpoint == "profile_posts":
         ids_text = ids_text_val if isinstance(ids_text_val, str) and ids_text_val.strip() else None
@@ -708,6 +714,7 @@ def _run_fb_posts_by_page(db: Session, task: ScrapeTask) -> None:
             start_date=str(start_date).strip() if start_date else None,
             end_date=str(end_date).strip() if end_date else None,
             extra=extra_in or None,
+            db=db,
         )
     else:
         urls = [str(u).strip() for u in (task.start_urls or []) if u and str(u).strip()]
@@ -720,6 +727,7 @@ def _run_fb_posts_by_page(db: Session, task: ScrapeTask) -> None:
             start_date=str(start_date).strip() if start_date else None,
             end_date=str(end_date).strip() if end_date else None,
             extra=extra_in or None,
+            db=db,
         )
 
     _run_post_pipeline(
@@ -739,6 +747,7 @@ def _run_fb_posts_by_hashtag(db: Session, task: ScrapeTask) -> None:
         hashtags=tags,
         max_items=task.max_items,
         extra={k: v for k, v in (task.extra_input or {}).items() if k not in ("page_results", "defer_homepage_scrape")},
+        db=db,
     )
     _run_post_pipeline(db, task, result.get("items") or [],
                        result.get("run_id"), result.get("dataset_id"))
@@ -762,9 +771,9 @@ def _run_fb_posts_by_search(db: Session, task: ScrapeTask) -> None:
         start_date=passthrough.pop("start_date", None),
         end_date=passthrough.pop("end_date", None),
         recent_posts=bool(passthrough.pop("recent_posts", False)),
-        # 其余未知字段透传（例如 actor 升级后增加的可选字段）
         extra={k: v for k, v in extra_in.items()
                if k not in known_keys and k != "page_results"},
+        db=db,
     )
     _run_post_pipeline(db, task, result.get("items") or [],
                        result.get("run_id"), result.get("dataset_id"))

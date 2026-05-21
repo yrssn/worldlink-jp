@@ -61,6 +61,7 @@ async function handleLogout() {
           </template>
           <el-menu-item index="/scraper/tasks">抓取任务</el-menu-item>
           <el-menu-item index="/scraper/facebook-groups">Facebook群组维度</el-menu-item>
+          <el-menu-item index="/scraper/apify-keys">Apify Key 管理</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="dm">
           <template #title>
