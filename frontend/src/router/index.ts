@@ -38,6 +38,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '任务详情' }
       },
       {
+        path: 'scraper/facebook-groups',
+        name: 'scraper-facebook-groups',
+        component: () => import('@/views/scraper/facebook-group/FbGroupScrapesView.vue'),
+        meta: { title: 'Facebook群组维度抓取' }
+      },
+      {
         path: 'bitbrowser/connect',
         name: 'bitbrowser-connect',
         component: () => import('@/views/bitbrowser/connect/ConnectView.vue'),

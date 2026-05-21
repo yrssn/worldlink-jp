@@ -19,6 +19,7 @@ from app.models import influencer as _influencer_model  # noqa: F401
 from app.models import bitbrowser as _bitbrowser_model  # noqa: F401
 from app.models import social_account as _social_account_model  # noqa: F401
 from app.models import dm as _dm_model  # noqa: F401
+from app.models import fb_group_scrape as _fb_group_scrape_model  # noqa: F401
 from app.models.user import User, UserRole
 
 
