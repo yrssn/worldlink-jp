@@ -10,7 +10,7 @@ COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 
 COPY . .
-RUN npm run build
+RUN npm run build:docker
 
 # ---------- Stage 2: nginx ----------
 FROM nginx:1.27-alpine
