@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { fbGroupScrapeApi, type FbGroupScrape } from '@/api/fbGroupScrape'
+import {
+  fbGroupScrapeApi,
+  type FbGroupPullResult,
+  type FbGroupScrape,
+  type FbGroupViewOption
+} from '@/api/fbGroupScrape'
 import { useAuthStore } from '@/store/auth'
 
 const auth = useAuthStore()
@@ -20,6 +25,25 @@ const form = reactive({
   connection: '',
   title: '',
   remark: ''
+})
+
+const pullDialogVisible = ref(false)
+const pullTarget = ref<FbGroupScrape | null>(null)
+const pullLoading = ref(false)
+const pullForm = reactive({
+  results_limit: 5,
+  view_option: 'CHRONOLOGICAL' as FbGroupViewOption,
+  search_group_keyword: '',
+  search_group_year: '',
+  only_posts_newer_than: ''
+})
+
+const resultVisible = ref(false)
+const pullResult = ref<FbGroupPullResult | null>(null)
+const resultTab = ref('table')
+const displayColumns = computed(() => {
+  const keys = pullResult.value?.field_keys || []
+  return keys.slice(0, 24)
 })
 
 async function refresh() {
@@ -108,6 +132,62 @@ async function restoreRow(row: FbGroupScrape) {
   }
 }
 
+function openPull(row: FbGroupScrape) {
+  pullTarget.value = row
+  pullForm.results_limit = 5
+  pullForm.view_option = 'CHRONOLOGICAL'
+  pullForm.search_group_keyword = ''
+  pullForm.search_group_year = ''
+  pullForm.only_posts_newer_than = ''
+  pullDialogVisible.value = true
+}
+
+async function confirmPull() {
+  if (!pullTarget.value) return
+  pullLoading.value = true
+  try {
+    const r = await fbGroupScrapeApi.pull(pullTarget.value.id, {
+      results_limit: pullForm.results_limit,
+      view_option: pullForm.view_option,
+      search_group_keyword: pullForm.search_group_keyword.trim() || undefined,
+      search_group_year: pullForm.search_group_year.trim() || undefined,
+      only_posts_newer_than: pullForm.only_posts_newer_than.trim() || undefined
+    })
+    pullResult.value = r
+    pullDialogVisible.value = false
+    resultTab.value = 'table'
+    resultVisible.value = true
+    ElMessage.success(`拉取完成，共 ${r.count} 条（Apify run: ${r.apify_run_id || '—'}）`)
+  } catch {
+    /* 拦截器 */
+  } finally {
+    pullLoading.value = false
+  }
+}
+
+function cellText(val: unknown): string {
+  if (val == null) return ''
+  if (typeof val === 'object') {
+    try {
+      const s = JSON.stringify(val)
+      return s.length > 200 ? s.slice(0, 200) + '…' : s
+    } catch {
+      return String(val)
+    }
+  }
+  return String(val)
+}
+
+async function copyResultJson() {
+  if (!pullResult.value) return
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(pullResult.value.items, null, 2))
+    ElMessage.success('已复制全部 JSON')
+  } catch {
+    ElMessage.warning('复制失败')
+  }
+}
+
 function formatTime(iso: string | null | undefined) {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -123,7 +203,7 @@ onMounted(refresh)
       <div>
         <h3 style="margin: 0 0 6px 0">Facebook 群组维度抓取</h3>
         <p style="margin: 0; font-size: 12px; color: #666">
-          维护群组连接与说明，后续可在此维度下挂抓取任务。删除为软删除，保留创建人与时间记录。
+          维护群组连接后，可点「拉取」调用 Apify facebook-groups-scraper 测试（结果暂不入库，仅页面展示）。
         </p>
       </div>
       <el-button type="primary" @click="openCreate">新建记录</el-button>
@@ -184,9 +264,10 @@ onMounted(refresh)
           <el-tag v-else type="success" size="small">正常</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
           <template v-if="!row.deleted_at">
+            <el-button size="small" type="primary" plain @click="openPull(row)">拉取</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" plain @click="removeRow(row)">删除</el-button>
           </template>
@@ -223,6 +304,107 @@ onMounted(refresh)
         <el-button type="primary" @click="submitForm">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="pullDialogVisible"
+      title="拉取群组帖子（Apify 测试）"
+      width="560px"
+      destroy-on-close
+    >
+      <p v-if="pullTarget" style="margin: 0 0 12px; font-size: 12px; color: #606266">
+        群组：<code>{{ pullTarget.connection }}</code>
+      </p>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+        title="首次测试建议 resultsLimit=5，耗时约 1～3 分钟；需配置 APIFY_TOKEN。"
+      />
+      <el-form label-width="120px">
+        <el-form-item label="帖子条数">
+          <el-input-number v-model="pullForm.results_limit" :min="1" :max="500" />
+        </el-form-item>
+        <el-form-item label="排序 viewOption">
+          <el-select v-model="pullForm.view_option" style="width: 100%">
+            <el-option label="CHRONOLOGICAL（时间序）" value="CHRONOLOGICAL" />
+            <el-option label="RECENT_ACTIVITY（最新活动）" value="RECENT_ACTIVITY" />
+            <el-option label="TOP_POSTS（热门）" value="TOP_POSTS" />
+            <el-option label="CHRONOLOGICAL_LISTINGS（买卖类）" value="CHRONOLOGICAL_LISTINGS" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="搜索字母">
+          <el-input v-model="pullForm.search_group_keyword" placeholder="可选，如 a" />
+        </el-form-item>
+        <el-form-item label="搜索年份">
+          <el-input v-model="pullForm.search_group_year" placeholder="需配合搜索字母，如 2024" />
+        </el-form-item>
+        <el-form-item label="不早于">
+          <el-input v-model="pullForm.only_posts_newer_than" placeholder="如 2024-01-01 或 7 days" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pullDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pullLoading" @click="confirmPull">开始拉取</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer v-model="resultVisible" title="拉取结果（暂不入库）" size="85%" destroy-on-close>
+      <template v-if="pullResult">
+        <el-descriptions :column="2" border size="small" style="margin-bottom: 12px">
+          <el-descriptions-item label="条数">{{ pullResult.count }}</el-descriptions-item>
+          <el-descriptions-item label="群组 URL">{{ pullResult.group_url }}</el-descriptions-item>
+          <el-descriptions-item label="Apify run">{{ pullResult.apify_run_id || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="Dataset">{{ pullResult.apify_dataset_id || '—' }}</el-descriptions-item>
+        </el-descriptions>
+        <p style="font-size: 12px; color: #909399; margin: 0 0 8px">
+          字段共 {{ pullResult.field_keys.length }} 个；表格展示前 24 列，完整数据见「原始 JSON」。
+        </p>
+        <el-tabs v-model="resultTab">
+          <el-tab-pane label="表格预览" name="table">
+            <el-table :data="pullResult.items" border stripe max-height="520">
+              <el-table-column type="expand" width="44">
+                <template #default="{ row }">
+                  <pre class="fb-json-pre">{{ JSON.stringify(row, null, 2) }}</pre>
+                </template>
+              </el-table-column>
+              <el-table-column type="index" label="#" width="50" />
+              <el-table-column
+                v-for="col in displayColumns"
+                :key="col"
+                :prop="col"
+                :label="col"
+                min-width="140"
+                show-overflow-tooltip
+              >
+                <template #default="{ row }">{{ cellText(row[col]) }}</template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+          <el-tab-pane label="原始 JSON" name="json">
+            <div style="margin-bottom: 8px">
+              <el-button size="small" @click="copyResultJson">复制 JSON</el-button>
+            </div>
+            <el-input
+              type="textarea"
+              :rows="22"
+              readonly
+              :model-value="JSON.stringify(pullResult.items, null, 2)"
+              class="fb-json-area"
+            />
+          </el-tab-pane>
+          <el-tab-pane label="请求参数" name="input">
+            <el-input
+              type="textarea"
+              :rows="12"
+              readonly
+              :model-value="JSON.stringify(pullResult.input_used, null, 2)"
+              class="fb-json-area"
+            />
+          </el-tab-pane>
+        </el-tabs>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -234,6 +416,20 @@ onMounted(refresh)
 
 .fb-muted {
   color: #909399;
+  font-size: 12px;
+}
+
+.fb-json-pre {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11px;
+  max-height: 320px;
+  overflow: auto;
+  background: #f5f7fa;
+}
+
+.fb-json-area :deep(textarea) {
+  font-family: ui-monospace, monospace;
   font-size: 12px;
 }
 </style>

@@ -39,6 +39,11 @@
    - Docs: https://apify.com/apify/facebook-hashtag-scraper
 
 5) ``run_fb_search_posts``  任意关键词 → 帖子 (第三方 actor，更灵活)
+
+6) ``run_fb_groups``  群组 URL → 帖子
+   - Actor: apify/facebook-groups-scraper
+   - Input: startUrls, resultsLimit, viewOption, searchGroupKeyword, searchGroupYear, onlyPostsNewerThan
+   - Docs: https://apify.com/apify/facebook-groups-scraper
    - Actor: scrapeforge/facebook-search-posts
    - Input: searchQueries=[...], resultsLimit
    - Output: post 数据
@@ -63,24 +68,56 @@ def _get_client():
     return ApifyClient(settings.apify_token)
 
 
-def _run_actor(actor_id: str, run_input: dict[str, Any]) -> dict[str, Any]:
+def _run_actor(
+    actor_id: str,
+    run_input: dict[str, Any],
+    *,
+    timeout_secs: int = 600,
+) -> dict[str, Any]:
     """统一调用 Actor 并把 dataset 全部拉回来。"""
     client = _get_client()
-    logger.info("[Apify] Run {} input={}", actor_id, run_input)
-    run = client.actor(actor_id).call(run_input=run_input)
+    logger.info("[Apify] Start {} timeout={}s input={}", actor_id, timeout_secs, run_input)
+    try:
+        # wait_secs：客户端最长等待时间；timeout_secs：Actor 单次运行上限
+        run = client.actor(actor_id).call(
+            run_input=run_input,
+            wait_secs=timeout_secs,
+            timeout_secs=timeout_secs,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Apify 调用超时或失败 ({actor_id}): {e}") from e
     if not run:
         raise RuntimeError(f"Apify run {actor_id} returned empty")
+
+    status = str(run.get("status") or "").upper()
+    run_id = run.get("id")
+    if status and status != "SUCCEEDED":
+        msg = (
+            run.get("statusMessage")
+            or (run.get("meta") or {}).get("errorMessage")
+            or status
+        )
+        raise RuntimeError(
+            f"Apify run 未成功 (id={run_id}, status={status}): {msg}"
+        )
 
     dataset_id = run.get("defaultDatasetId")
     items: list[dict[str, Any]] = []
     if dataset_id:
         items = list(client.dataset(dataset_id).iterate_items())
 
-    logger.info("[Apify] Run {} done. items={}", actor_id, len(items))
+    logger.info(
+        "[Apify] Run {} finished run_id={} status={} items={}",
+        actor_id,
+        run_id,
+        status or "SUCCEEDED",
+        len(items),
+    )
     return {
-        "run_id": run.get("id"),
+        "run_id": run_id,
         "dataset_id": dataset_id,
         "items": items,
+        "status": status or "SUCCEEDED",
     }
 
 
@@ -281,3 +318,36 @@ def run_fb_search_posts(
         "dataset_id": last_dataset_id,
         "items": merged_items,
     }
+
+
+# ---------- 6) Facebook Groups Scraper ----------
+def run_fb_groups(
+    group_url: str,
+    *,
+    results_limit: int = 20,
+    view_option: str = "CHRONOLOGICAL",
+    search_group_keyword: str | None = None,
+    search_group_year: str | None = None,
+    only_posts_newer_than: str | None = None,
+    timeout_secs: int = 600,
+    extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """公开 Facebook 群组 URL → 帖子列表（Apify facebook-groups-scraper）。"""
+    url = (group_url or "").strip()
+    if not url:
+        raise ValueError("facebook-groups-scraper 需要群组 URL (startUrls)")
+    run_input: dict[str, Any] = {
+        "startUrls": [{"url": url}],
+        "viewOption": view_option or "CHRONOLOGICAL",
+    }
+    if results_limit and int(results_limit) > 0:
+        run_input["resultsLimit"] = int(results_limit)
+    if search_group_keyword and str(search_group_keyword).strip():
+        run_input["searchGroupKeyword"] = str(search_group_keyword).strip()
+    if search_group_year and str(search_group_year).strip():
+        run_input["searchGroupYear"] = str(search_group_year).strip()
+    if only_posts_newer_than and str(only_posts_newer_than).strip():
+        run_input["onlyPostsNewerThan"] = str(only_posts_newer_than).strip()
+    if extra:
+        run_input.update(extra)
+    return _run_actor(settings.apify_fb_groups_actor, run_input, timeout_secs=timeout_secs)

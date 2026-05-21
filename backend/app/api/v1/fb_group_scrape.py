@@ -10,10 +10,13 @@ from app.core.deps import get_current_user, get_db, is_admin
 from app.models.fb_group_scrape import FbGroupScrapeConfig
 from app.models.user import User
 from app.schemas.fb_group_scrape import (
+    FbGroupPullBody,
+    FbGroupPullOut,
     FbGroupScrapeCreate,
     FbGroupScrapeOut,
     FbGroupScrapeUpdate,
 )
+from app.services import apify_service
 
 router = APIRouter(prefix="/scraper/fb-group-scrapes", tags=["scraper-fb-group"])
 
@@ -39,6 +42,57 @@ def _to_out(row: FbGroupScrapeConfig) -> FbGroupScrapeOut:
         created_at=row.created_at,
         updated_at=row.updated_at,
         deleted_at=row.deleted_at,
+    )
+
+
+# 列表展示时优先展示的字段（其余字段仍会在 field_keys / 原始 JSON 中出现）
+_DISPLAY_FIELD_PRIORITY = (
+    "url",
+    "postUrl",
+    "text",
+    "message",
+    "postText",
+    "userName",
+    "author",
+    "authorName",
+    "time",
+    "timestamp",
+    "date",
+    "likes",
+    "likesCount",
+    "comments",
+    "commentsCount",
+    "shares",
+    "sharesCount",
+    "groupTitle",
+    "groupUrl",
+    "facebookId",
+    "postId",
+    "feedbackId",
+)
+
+
+def _collect_field_keys(items: list[dict]) -> list[str]:
+    keys: set[str] = set()
+    for it in items:
+        if isinstance(it, dict):
+            keys.update(it.keys())
+    ordered = [k for k in _DISPLAY_FIELD_PRIORITY if k in keys]
+    rest = sorted(k for k in keys if k not in ordered)
+    return ordered + rest
+
+
+def _normalize_group_url(connection: str) -> str:
+    raw = (connection or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="连接为空，请填写 Facebook 群组 URL")
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    if "facebook.com/groups/" in raw:
+        return f"https://{raw.lstrip('/')}"
+    raise HTTPException(
+        status_code=400,
+        detail="连接需为 Facebook 公开群组 URL，例如 https://www.facebook.com/groups/xxxxx",
     )
 
 
@@ -148,6 +202,63 @@ def soft_delete_fb_group_scrape(
     row.deleted_at = datetime.utcnow()
     db.commit()
     return {"ok": True}
+
+
+@router.post("/{record_id}/pull", response_model=FbGroupPullOut)
+def pull_fb_group_posts(
+    record_id: int,
+    body: FbGroupPullBody | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """调用 Apify ``facebook-groups-scraper`` 拉取该群组帖子（测试用，结果暂不入库）。"""
+    row = _get_or_404(db, user, record_id)
+    if row.deleted_at is not None:
+        raise HTTPException(status_code=400, detail="已删除的记录不可拉取")
+    opts = body or FbGroupPullBody()
+    group_url = _normalize_group_url(row.connection)
+    try:
+        result = apify_service.run_fb_groups(
+            group_url,
+            results_limit=opts.results_limit,
+            view_option=opts.view_option,
+            search_group_keyword=opts.search_group_keyword,
+            search_group_year=opts.search_group_year,
+            only_posts_newer_than=opts.only_posts_newer_than,
+            timeout_secs=900,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    items = result.get("items") or []
+    if not isinstance(items, list):
+        items = []
+    safe_items = [x for x in items if isinstance(x, dict)]
+
+    input_used = {
+        "startUrls": [{"url": group_url}],
+        "resultsLimit": opts.results_limit,
+        "viewOption": opts.view_option,
+    }
+    if opts.search_group_keyword:
+        input_used["searchGroupKeyword"] = opts.search_group_keyword
+    if opts.search_group_year:
+        input_used["searchGroupYear"] = opts.search_group_year
+    if opts.only_posts_newer_than:
+        input_used["onlyPostsNewerThan"] = opts.only_posts_newer_than
+
+    return FbGroupPullOut(
+        config_id=row.id,
+        group_url=group_url,
+        apify_run_id=result.get("run_id"),
+        apify_dataset_id=result.get("dataset_id"),
+        input_used=input_used,
+        count=len(safe_items),
+        field_keys=_collect_field_keys(safe_items),
+        items=safe_items,
+    )
 
 
 @router.post("/{record_id}/restore", response_model=FbGroupScrapeOut)

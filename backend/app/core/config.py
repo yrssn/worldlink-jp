@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     apify_fb_profile_posts_actor: str = "cleansyntax/facebook-profile-posts-scraper"  # 主页 URL/ID→帖子
     apify_fb_hashtag_actor: str = "apify/facebook-hashtag-scraper"      # hashtag→帖子
     apify_fb_search_posts_actor: str = "scrapeforge/facebook-search-posts"  # 任意关键词→帖子(第三方)
+    apify_fb_groups_actor: str = "apify/facebook-groups-scraper"  # 群组 URL → 帖子
 
     # ===== BitBrowser 比特浏览器（本地 Local API）=====
     # 文档：https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou
