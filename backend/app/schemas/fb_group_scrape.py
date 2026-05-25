@@ -67,3 +67,73 @@ class FbGroupPullOut(BaseModel):
     count: int = 0
     field_keys: list[str] = Field(default_factory=list, description="所有条目字段名并集")
     items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ─── 后台拉取任务 ───────────────────────────────────────────────
+
+class FbGroupPullTaskOut(BaseModel):
+    """后台拉取任务（返回给前端）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    config_id: int
+    config_title: Optional[str] = None
+    created_by_id: int
+    created_by_username: Optional[str] = None
+    status: str
+    params: Optional[dict[str, Any]] = None
+    apify_run_id: Optional[str] = None
+    apify_dataset_id: Optional[str] = None
+    result_count: int = 0
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FbGroupPullTaskCreate(BaseModel):
+    """提交后台拉取任务的请求体（与 FbGroupPullBody 相同字段）。"""
+
+    results_limit: int = Field(5, ge=1, le=500)
+    view_option: FbGroupViewOption = Field("CHRONOLOGICAL")
+    search_group_keyword: Optional[str] = None
+    search_group_year: Optional[str] = None
+    only_posts_newer_than: Optional[str] = None
+
+
+# ─── 帖子 ──────────────────────────────────────────────────────
+
+class FbGroupPostOut(BaseModel):
+    """群组帖子（结构化）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    task_id: int
+    config_id: int
+    legacy_id: str
+    post_url: Optional[str] = None
+    facebook_group_id: Optional[str] = None
+    group_title: Optional[str] = None
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    text: Optional[str] = None
+    post_time: Optional[datetime] = None
+    likes_count: int = 0
+    comments_count: int = 0
+    shares_count: int = 0
+    has_attachments: bool = False
+    has_shared_post: bool = False
+    raw_data: Optional[dict[str, Any]] = None
+    created_at: datetime
+
+
+class FbGroupPostPage(BaseModel):
+    """帖子分页响应。"""
+
+    total: int
+    page: int
+    page_size: int
+    items: list[FbGroupPostOut]

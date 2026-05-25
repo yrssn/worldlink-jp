@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   fbGroupScrapeApi,
-  type FbGroupPullResult,
+  type FbGroupPost,
+  type FbGroupPullTask,
   type FbGroupScrape,
   type FbGroupViewOption
 } from '@/api/fbGroupScrape'
@@ -12,39 +13,13 @@ import { useAuthStore } from '@/store/auth'
 const auth = useAuthStore()
 const isAdmin = computed(() => auth.isAdmin)
 
+// ─── 群组配置列表 ────────────────────────────────────────────────
 const list = ref<FbGroupScrape[]>([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const filter = reactive({
-  keyword: '',
-  include_deleted: false
-})
-
-const form = reactive({
-  connection: '',
-  title: '',
-  remark: ''
-})
-
-const pullDialogVisible = ref(false)
-const pullTarget = ref<FbGroupScrape | null>(null)
-const pullLoading = ref(false)
-const pullForm = reactive({
-  results_limit: 5,
-  view_option: 'CHRONOLOGICAL' as FbGroupViewOption,
-  search_group_keyword: '',
-  search_group_year: '',
-  only_posts_newer_than: ''
-})
-
-const resultVisible = ref(false)
-const pullResult = ref<FbGroupPullResult | null>(null)
-const resultTab = ref('table')
-const displayColumns = computed(() => {
-  const keys = pullResult.value?.field_keys || []
-  return keys.slice(0, 24)
-})
+const filter = reactive({ keyword: '', include_deleted: false })
+const form = reactive({ connection: '', title: '', remark: '' })
 
 async function refresh() {
   loading.value = true
@@ -67,10 +42,7 @@ function openCreate() {
 }
 
 function openEdit(row: FbGroupScrape) {
-  if (row.deleted_at) {
-    ElMessage.warning('已删除记录不可编辑，可点「恢复」')
-    return
-  }
+  if (row.deleted_at) { ElMessage.warning('已删除记录不可编辑，可点「恢复」'); return }
   editingId.value = row.id
   form.connection = row.connection
   form.title = row.title
@@ -81,60 +53,56 @@ function openEdit(row: FbGroupScrape) {
 async function submitForm() {
   const connection = form.connection.trim()
   const title = form.title.trim()
-  if (!connection) {
-    ElMessage.warning('请填写连接')
-    return
-  }
-  if (!title) {
-    ElMessage.warning('请填写标题')
-    return
-  }
+  if (!connection) { ElMessage.warning('请填写连接'); return }
+  if (!title) { ElMessage.warning('请填写标题'); return }
   try {
-    const payload = {
-      connection,
-      title,
-      remark: form.remark.trim() || undefined
-    }
+    const payload = { connection, title, remark: form.remark.trim() || undefined }
     if (editingId.value == null) {
-      await fbGroupScrapeApi.create(payload)
-      ElMessage.success('已创建')
+      await fbGroupScrapeApi.create(payload); ElMessage.success('已创建')
     } else {
-      await fbGroupScrapeApi.update(editingId.value, payload)
-      ElMessage.success('已更新')
+      await fbGroupScrapeApi.update(editingId.value, payload); ElMessage.success('已更新')
     }
     dialogVisible.value = false
     await refresh()
-  } catch {
-    /* 拦截器 */
-  }
+  } catch { /* 拦截器 */ }
 }
 
 async function removeRow(row: FbGroupScrape) {
   try {
-    await ElMessageBox.confirm(`确定删除「${row.title}」？（软删除，可恢复）`, '删除', {
-      type: 'warning'
-    })
-    await fbGroupScrapeApi.remove(row.id)
-    ElMessage.success('已删除')
+    await ElMessageBox.confirm(`确定删除「${row.title}」？（软删除，可恢复）`, '删除', { type: 'warning' })
+    await fbGroupScrapeApi.remove(row.id); ElMessage.success('已删除')
     await refresh()
-  } catch {
-    /* 取消 */
-  }
+  } catch { /* 取消 */ }
 }
 
 async function restoreRow(row: FbGroupScrape) {
   try {
-    await fbGroupScrapeApi.restore(row.id)
-    ElMessage.success('已恢复')
+    await fbGroupScrapeApi.restore(row.id); ElMessage.success('已恢复')
     await refresh()
-  } catch {
-    /* 拦截器 */
-  }
+  } catch { /* 拦截器 */ }
 }
+
+// ─── 后台拉取任务 ────────────────────────────────────────────────
+const pullDialogVisible = ref(false)
+const pullTarget = ref<FbGroupScrape | null>(null)
+const pullSubmitting = ref(false)
+const pullForm = reactive({
+  results_limit: 20,
+  view_option: 'CHRONOLOGICAL' as FbGroupViewOption,
+  search_group_keyword: '',
+  search_group_year: '',
+  only_posts_newer_than: ''
+})
+
+const taskPanelVisible = ref(false)
+const taskPanelConfig = ref<FbGroupScrape | null>(null)
+const tasks = ref<FbGroupPullTask[]>([])
+const tasksLoading = ref(false)
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 function openPull(row: FbGroupScrape) {
   pullTarget.value = row
-  pullForm.results_limit = 5
+  pullForm.results_limit = 20
   pullForm.view_option = 'CHRONOLOGICAL'
   pullForm.search_group_keyword = ''
   pullForm.search_group_year = ''
@@ -144,75 +112,153 @@ function openPull(row: FbGroupScrape) {
 
 async function confirmPull() {
   if (!pullTarget.value) return
-  pullLoading.value = true
+  pullSubmitting.value = true
   try {
-    const r = await fbGroupScrapeApi.pull(pullTarget.value.id, {
+    const task = await fbGroupScrapeApi.pull(pullTarget.value.id, {
       results_limit: pullForm.results_limit,
       view_option: pullForm.view_option,
       search_group_keyword: pullForm.search_group_keyword.trim() || undefined,
       search_group_year: pullForm.search_group_year.trim() || undefined,
       only_posts_newer_than: pullForm.only_posts_newer_than.trim() || undefined
     })
-    pullResult.value = r
     pullDialogVisible.value = false
-    resultTab.value = 'table'
-    resultVisible.value = true
-    ElMessage.success(`拉取完成，共 ${r.count} 条（Apify run: ${r.apify_run_id || '—'}）`)
-  } catch {
-    /* 拦截器 */
-  } finally {
-    pullLoading.value = false
+    ElMessage.success(`任务已提交（#${task.id}），正在后台拉取，可在「任务列表」查看进度`)
+    openTaskPanel(pullTarget.value)
+  } catch { /* 拦截器 */ } finally {
+    pullSubmitting.value = false
   }
 }
 
-function cellText(val: unknown): string {
-  if (val == null) return ''
-  if (typeof val === 'object') {
-    try {
-      const s = JSON.stringify(val)
-      return s.length > 200 ? s.slice(0, 200) + '…' : s
-    } catch {
-      return String(val)
-    }
-  }
-  return String(val)
+async function openTaskPanel(row: FbGroupScrape) {
+  taskPanelConfig.value = row
+  taskPanelVisible.value = true
+  await loadTasks()
+  startPoll()
 }
 
-async function copyResultJson() {
-  if (!pullResult.value) return
+async function loadTasks() {
+  if (!taskPanelConfig.value) return
+  tasksLoading.value = true
   try {
-    await navigator.clipboard.writeText(JSON.stringify(pullResult.value.items, null, 2))
-    ElMessage.success('已复制全部 JSON')
-  } catch {
-    ElMessage.warning('复制失败')
+    tasks.value = await fbGroupScrapeApi.listTasks(taskPanelConfig.value.id)
+  } catch { /* 拦截器 */ } finally {
+    tasksLoading.value = false
   }
 }
 
+function startPoll() {
+  stopPoll()
+  pollTimer = setInterval(async () => {
+    const hasActive = tasks.value.some(t => t.status === 'pending' || t.status === 'running')
+    if (!hasActive) { stopPoll(); return }
+    await loadTasks()
+  }, 4000)
+}
+
+function stopPoll() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+function onTaskPanelClose() {
+  stopPoll()
+  tasks.value = []
+  taskPanelConfig.value = null
+}
+
+function taskStatusType(status: string) {
+  if (status === 'done') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'running') return 'warning'
+  return 'info'
+}
+
+function taskStatusLabel(status: string) {
+  if (status === 'done') return '完成'
+  if (status === 'failed') return '失败'
+  if (status === 'running') return '执行中'
+  return '等待'
+}
+
+// ─── 帖子预览 ────────────────────────────────────────────────────
+const postsDrawerVisible = ref(false)
+const postsTask = ref<FbGroupPullTask | null>(null)
+const posts = ref<FbGroupPost[]>([])
+const postsTotal = ref(0)
+const postsPage = ref(1)
+const postsPageSize = ref(20)
+const postsKeyword = ref('')
+const postsLoading = ref(false)
+const postsDetailRow = ref<FbGroupPost | null>(null)
+const postsDetailVisible = ref(false)
+
+async function openPosts(task: FbGroupPullTask) {
+  postsTask.value = task
+  postsPage.value = 1
+  postsKeyword.value = ''
+  postsDrawerVisible.value = true
+  await loadPosts()
+}
+
+async function loadPosts() {
+  if (!postsTask.value) return
+  postsLoading.value = true
+  try {
+    const r = await fbGroupScrapeApi.listTaskPosts(postsTask.value.id, {
+      page: postsPage.value,
+      page_size: postsPageSize.value,
+      keyword: postsKeyword.value.trim() || undefined
+    })
+    posts.value = r.items
+    postsTotal.value = r.total
+  } catch { /* 拦截器 */ } finally {
+    postsLoading.value = false
+  }
+}
+
+function onPostsPageChange(p: number) {
+  postsPage.value = p
+  loadPosts()
+}
+
+function showPostDetail(row: FbGroupPost) {
+  postsDetailRow.value = row
+  postsDetailVisible.value = true
+}
+
+// ─── 通用工具 ────────────────────────────────────────────────────
 function formatTime(iso: string | null | undefined) {
   if (!iso) return '—'
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
+function truncate(s: string | null | undefined, n = 80) {
+  if (!s) return '—'
+  return s.length > n ? s.slice(0, n) + '…' : s
+}
+
 onMounted(refresh)
+onUnmounted(stopPoll)
 </script>
 
 <template>
   <div class="page-card">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 8px">
+    <!-- 标题栏 -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:8px">
       <div>
-        <h3 style="margin: 0 0 6px 0">Facebook 群组维度抓取</h3>
-        <p style="margin: 0; font-size: 12px; color: #666">
-          维护群组连接后，可点「拉取」调用 Apify facebook-groups-scraper 测试（结果暂不入库，仅页面展示）。
+        <h3 style="margin:0 0 6px 0">Facebook 群组维度抓取</h3>
+        <p style="margin:0;font-size:12px;color:#666">
+          维护群组连接后，点「拉取」提交后台任务（立即返回），再点「任务」查看进度与结果。
         </p>
       </div>
       <el-button type="primary" @click="openCreate">新建记录</el-button>
     </div>
 
-    <el-card shadow="never" style="margin-bottom: 12px">
+    <!-- 筛选 -->
+    <el-card shadow="never" style="margin-bottom:12px">
       <el-form :inline="true" @submit.prevent="refresh">
         <el-form-item label="关键词">
-          <el-input v-model="filter.keyword" clearable placeholder="标题/连接/备注" style="width: 220px" />
+          <el-input v-model="filter.keyword" clearable placeholder="标题/连接/备注" style="width:220px" />
         </el-form-item>
         <el-form-item v-if="isAdmin">
           <el-checkbox v-model="filter.include_deleted">含已删除</el-checkbox>
@@ -223,18 +269,13 @@ onMounted(refresh)
       </el-form>
     </el-card>
 
+    <!-- 群组配置表格 -->
     <el-table v-loading="loading" :data="list" border stripe row-key="id">
       <el-table-column prop="id" label="ID" width="72" />
       <el-table-column prop="title" label="标题" min-width="140" show-overflow-tooltip />
       <el-table-column prop="connection" label="连接" min-width="220" show-overflow-tooltip>
         <template #default="{ row }">
-          <a
-            v-if="row.connection.startsWith('http')"
-            :href="row.connection"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="fb-link"
-          >
+          <a v-if="row.connection.startsWith('http')" :href="row.connection" target="_blank" rel="noopener noreferrer" class="fb-link">
             {{ row.connection }}
           </a>
           <span v-else>{{ row.connection }}</span>
@@ -242,21 +283,10 @@ onMounted(refresh)
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
       <el-table-column label="创建人" width="100">
-        <template #default="{ row }">
-          {{ row.created_by_username || row.created_by_id }}
-        </template>
+        <template #default="{ row }">{{ row.created_by_username || row.created_by_id }}</template>
       </el-table-column>
       <el-table-column label="创建时间" width="168">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
-      </el-table-column>
-      <el-table-column label="更新时间" width="168">
-        <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
-      </el-table-column>
-      <el-table-column label="删除时间" width="168">
-        <template #default="{ row }">
-          <span v-if="row.deleted_at" style="color: #f56c6c">{{ formatTime(row.deleted_at) }}</span>
-          <span v-else class="fb-muted">—</span>
-        </template>
       </el-table-column>
       <el-table-column label="状态" width="88" align="center">
         <template #default="{ row }">
@@ -264,10 +294,11 @@ onMounted(refresh)
           <el-tag v-else type="success" size="small">正常</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
           <template v-if="!row.deleted_at">
             <el-button size="small" type="primary" plain @click="openPull(row)">拉取</el-button>
+            <el-button size="small" type="success" plain @click="openTaskPanel(row)">任务</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" plain @click="removeRow(row)">删除</el-button>
           </template>
@@ -275,25 +306,16 @@ onMounted(refresh)
         </template>
       </el-table-column>
     </el-table>
-    <el-empty v-if="!loading && !list.length" description="暂无记录" style="margin-top: 24px" />
+    <el-empty v-if="!loading && !list.length" description="暂无记录" style="margin-top:24px" />
 
-    <el-dialog
-      v-model="dialogVisible"
-      :title="editingId == null ? '新建群组维度' : '编辑群组维度'"
-      width="640px"
-      destroy-on-close
-    >
+    <!-- 新建/编辑对话框 -->
+    <el-dialog v-model="dialogVisible" :title="editingId == null ? '新建群组维度' : '编辑群组维度'" width="640px" destroy-on-close>
       <el-form label-width="88px">
         <el-form-item label="标题" required>
           <el-input v-model="form.title" maxlength="200" show-word-limit placeholder="便于识别的名称" />
         </el-form-item>
         <el-form-item label="连接" required>
-          <el-input
-            v-model="form.connection"
-            type="textarea"
-            :rows="3"
-            placeholder="Facebook 群组 URL 或连接标识"
-          />
+          <el-input v-model="form.connection" type="textarea" :rows="3" placeholder="Facebook 群组 URL 或连接标识" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.remark" type="textarea" :rows="2" maxlength="500" show-word-limit />
@@ -305,28 +327,19 @@ onMounted(refresh)
       </template>
     </el-dialog>
 
-    <el-dialog
-      v-model="pullDialogVisible"
-      title="拉取群组帖子（Apify 测试）"
-      width="560px"
-      destroy-on-close
-    >
-      <p v-if="pullTarget" style="margin: 0 0 12px; font-size: 12px; color: #606266">
+    <!-- 拉取参数对话框 -->
+    <el-dialog v-model="pullDialogVisible" title="提交后台拉取任务" width="560px" destroy-on-close>
+      <p v-if="pullTarget" style="margin:0 0 12px;font-size:12px;color:#606266">
         群组：<code>{{ pullTarget.connection }}</code>
       </p>
-      <el-alert
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 12px"
-        title="首次测试建议 resultsLimit=5，耗时约 1～3 分钟；需配置 APIFY_TOKEN。"
-      />
+      <el-alert type="success" :closable="false" show-icon style="margin-bottom:12px"
+        title="点击「提交」后任务在后台运行，页面立即返回，可通过「任务」按钮查看进度和结果。" />
       <el-form label-width="120px">
         <el-form-item label="帖子条数">
           <el-input-number v-model="pullForm.results_limit" :min="1" :max="500" />
         </el-form-item>
         <el-form-item label="排序 viewOption">
-          <el-select v-model="pullForm.view_option" style="width: 100%">
+          <el-select v-model="pullForm.view_option" style="width:100%">
             <el-option label="CHRONOLOGICAL（时间序）" value="CHRONOLOGICAL" />
             <el-option label="RECENT_ACTIVITY（最新活动）" value="RECENT_ACTIVITY" />
             <el-option label="TOP_POSTS（热门）" value="TOP_POSTS" />
@@ -345,66 +358,140 @@ onMounted(refresh)
       </el-form>
       <template #footer>
         <el-button @click="pullDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="pullLoading" @click="confirmPull">开始拉取</el-button>
+        <el-button type="primary" :loading="pullSubmitting" @click="confirmPull">提交任务</el-button>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="resultVisible" title="拉取结果（暂不入库）" size="85%" destroy-on-close>
-      <template v-if="pullResult">
-        <el-descriptions :column="2" border size="small" style="margin-bottom: 12px">
-          <el-descriptions-item label="条数">{{ pullResult.count }}</el-descriptions-item>
-          <el-descriptions-item label="群组 URL">{{ pullResult.group_url }}</el-descriptions-item>
-          <el-descriptions-item label="Apify run">{{ pullResult.apify_run_id || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="Dataset">{{ pullResult.apify_dataset_id || '—' }}</el-descriptions-item>
-        </el-descriptions>
-        <p style="font-size: 12px; color: #909399; margin: 0 0 8px">
-          字段共 {{ pullResult.field_keys.length }} 个；表格展示前 24 列，完整数据见「原始 JSON」。
-        </p>
-        <el-tabs v-model="resultTab">
-          <el-tab-pane label="表格预览" name="table">
-            <el-table :data="pullResult.items" border stripe max-height="520">
-              <el-table-column type="expand" width="44">
-                <template #default="{ row }">
-                  <pre class="fb-json-pre">{{ JSON.stringify(row, null, 2) }}</pre>
-                </template>
-              </el-table-column>
-              <el-table-column type="index" label="#" width="50" />
-              <el-table-column
-                v-for="col in displayColumns"
-                :key="col"
-                :prop="col"
-                :label="col"
-                min-width="140"
-                show-overflow-tooltip
-              >
-                <template #default="{ row }">{{ cellText(row[col]) }}</template>
-              </el-table-column>
-            </el-table>
-          </el-tab-pane>
-          <el-tab-pane label="原始 JSON" name="json">
-            <div style="margin-bottom: 8px">
-              <el-button size="small" @click="copyResultJson">复制 JSON</el-button>
-            </div>
-            <el-input
-              type="textarea"
-              :rows="22"
-              readonly
-              :model-value="JSON.stringify(pullResult.items, null, 2)"
-              class="fb-json-area"
-            />
-          </el-tab-pane>
-          <el-tab-pane label="请求参数" name="input">
-            <el-input
-              type="textarea"
-              :rows="12"
-              readonly
-              :model-value="JSON.stringify(pullResult.input_used, null, 2)"
-              class="fb-json-area"
-            />
-          </el-tab-pane>
-        </el-tabs>
-      </template>
+    <!-- 任务列表抽屉 -->
+    <el-drawer
+      v-model="taskPanelVisible"
+      :title="`拉取任务列表 — ${taskPanelConfig?.title || ''}`"
+      size="720px"
+      destroy-on-close
+      @close="onTaskPanelClose"
+    >
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-size:13px;color:#606266">自动每 4 秒刷新进行中的任务</span>
+        <div style="display:flex;gap:8px">
+          <el-button size="small" @click="loadTasks">手动刷新</el-button>
+          <el-button size="small" type="primary" plain @click="openPull(taskPanelConfig!)">新建拉取</el-button>
+        </div>
+      </div>
+      <el-table v-loading="tasksLoading" :data="tasks" border stripe row-key="id" size="small">
+        <el-table-column prop="id" label="ID" width="64" />
+        <el-table-column label="状态" width="84" align="center">
+          <template #default="{ row }">
+            <el-tag :type="taskStatusType(row.status)" size="small">{{ taskStatusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="帖数" prop="result_count" width="72" align="center" />
+        <el-table-column label="参数" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span style="font-size:12px">
+              {{ row.params?.results_limit }} 条 / {{ row.params?.view_option }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="提交时间" width="148">
+          <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="完成时间" width="148">
+          <template #default="{ row }">{{ formatTime(row.finished_at) }}</template>
+        </el-table-column>
+        <el-table-column label="错误" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.error" style="color:#f56c6c;font-size:12px">{{ row.error }}</span>
+            <span v-else class="fb-muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'done' && row.result_count > 0"
+              size="small"
+              type="primary"
+              plain
+              @click="openPosts(row)"
+            >查看帖子</el-button>
+            <span v-else-if="row.status === 'running' || row.status === 'pending'" style="font-size:12px;color:#e6a23c">执行中…</span>
+            <span v-else class="fb-muted">—</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!tasksLoading && !tasks.length" description="暂无任务，点「新建拉取」开始" style="margin-top:24px" />
     </el-drawer>
+
+    <!-- 帖子列表抽屉 -->
+    <el-drawer
+      v-model="postsDrawerVisible"
+      :title="`帖子列表 — 任务 #${postsTask?.id} (${postsTask?.result_count} 条)`"
+      size="90%"
+      destroy-on-close
+    >
+      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+        <el-input
+          v-model="postsKeyword"
+          clearable
+          placeholder="文本/用户名关键词"
+          style="width:240px"
+          @keyup.enter="loadPosts"
+          @clear="loadPosts"
+        />
+        <el-button type="primary" @click="loadPosts">搜索</el-button>
+        <span style="font-size:12px;color:#909399;margin-left:8px">共 {{ postsTotal }} 条</span>
+      </div>
+      <el-table v-loading="postsLoading" :data="posts" border stripe row-key="id" size="small">
+        <el-table-column prop="legacy_id" label="FB 帖子 ID" width="160" show-overflow-tooltip />
+        <el-table-column label="发布时间" width="148">
+          <template #default="{ row }">{{ formatTime(row.post_time) }}</template>
+        </el-table-column>
+        <el-table-column label="用户" width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.user_name || row.user_id || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="内容" min-width="260" show-overflow-tooltip>
+          <template #default="{ row }">{{ truncate(row.text, 100) }}</template>
+        </el-table-column>
+        <el-table-column label="👍" prop="likes_count" width="60" align="center" />
+        <el-table-column label="💬" prop="comments_count" width="60" align="center" />
+        <el-table-column label="图/视频" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.has_attachments" size="small" type="info">有</el-tag>
+            <span v-else class="fb-muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="转发" width="72" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.has_shared_post" size="small">转</el-tag>
+            <span v-else class="fb-muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="链接" width="80" align="center">
+          <template #default="{ row }">
+            <a v-if="row.post_url" :href="row.post_url" target="_blank" rel="noopener noreferrer" class="fb-link" style="font-size:12px">原文</a>
+            <span v-else class="fb-muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" plain @click="showPostDetail(row)">详情</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div style="margin-top:12px;display:flex;justify-content:flex-end">
+        <el-pagination
+          v-model:current-page="postsPage"
+          :page-size="postsPageSize"
+          :total="postsTotal"
+          layout="total, prev, pager, next"
+          @current-change="onPostsPageChange"
+        />
+      </div>
+    </el-drawer>
+
+    <!-- 帖子详情弹窗 -->
+    <el-dialog v-model="postsDetailVisible" title="帖子原始 JSON" width="720px" destroy-on-close>
+      <pre class="fb-json-pre" style="max-height:520px">{{ postsDetailRow ? JSON.stringify(postsDetailRow.raw_data, null, 2) : '' }}</pre>
+    </el-dialog>
   </div>
 </template>
 
@@ -426,10 +513,6 @@ onMounted(refresh)
   max-height: 320px;
   overflow: auto;
   background: #f5f7fa;
-}
-
-.fb-json-area :deep(textarea) {
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
+  border-radius: 4px;
 }
 </style>

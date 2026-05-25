@@ -20,6 +20,8 @@ from app.models import bitbrowser as _bitbrowser_model  # noqa: F401
 from app.models import social_account as _social_account_model  # noqa: F401
 from app.models import dm as _dm_model  # noqa: F401
 from app.models import fb_group_scrape as _fb_group_scrape_model  # noqa: F401
+from app.models.fb_group_scrape import FbGroupPullTask as _FbGroupPullTask  # noqa: F401
+from app.models.fb_group_scrape import FbGroupPost as _FbGroupPost  # noqa: F401
 from app.models import apify_key as _apify_key_model  # noqa: F401
 from app.models.user import User, UserRole
 
@@ -30,6 +32,7 @@ def create_all() -> None:
     _ensure_users_bitbrowser_columns()
     _ensure_bitbrowser_window_catalog_columns()
     _ensure_apify_keys_columns()
+    _ensure_fb_group_posts_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -81,6 +84,26 @@ def _ensure_bitbrowser_window_catalog_columns() -> None:
         patches.append(
             "ALTER TABLE bitbrowser_window_catalog ADD COLUMN cached_env_platform VARCHAR(512) NULL"
         )
+    for sql in patches:
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_fb_group_posts_columns() -> None:
+    """修复 fb_group_posts 列宽（user_id/legacy_id 可能超长）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "fb_group_posts" not in insp.get_table_names():
+        return
+    patches: list[str] = [
+        "ALTER TABLE fb_group_posts MODIFY COLUMN user_id VARCHAR(255) NULL",
+        "ALTER TABLE fb_group_posts MODIFY COLUMN legacy_id VARCHAR(128) NOT NULL",
+    ]
     for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)

@@ -14,17 +14,6 @@ export interface FbGroupPullParams {
   only_posts_newer_than?: string
 }
 
-export interface FbGroupPullResult {
-  config_id: number
-  group_url: string
-  apify_run_id?: string | null
-  apify_dataset_id?: string | null
-  input_used: Record<string, unknown>
-  count: number
-  field_keys: string[]
-  items: Record<string, unknown>[]
-}
-
 export interface FbGroupScrape {
   id: number
   created_by_id: number
@@ -35,6 +24,54 @@ export interface FbGroupScrape {
   created_at: string
   updated_at: string
   deleted_at?: string | null
+}
+
+export type FbGroupPullTaskStatus = 'pending' | 'running' | 'done' | 'failed'
+
+export interface FbGroupPullTask {
+  id: number
+  config_id: number
+  config_title?: string | null
+  created_by_id: number
+  created_by_username?: string | null
+  status: FbGroupPullTaskStatus
+  params?: Record<string, unknown> | null
+  apify_run_id?: string | null
+  apify_dataset_id?: string | null
+  result_count: number
+  error?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface FbGroupPost {
+  id: number
+  task_id: number
+  config_id: number
+  legacy_id: string
+  post_url?: string | null
+  facebook_group_id?: string | null
+  group_title?: string | null
+  user_id?: string | null
+  user_name?: string | null
+  text?: string | null
+  post_time?: string | null
+  likes_count: number
+  comments_count: number
+  shares_count: number
+  has_attachments: boolean
+  has_shared_post: boolean
+  raw_data?: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface FbGroupPostPage {
+  total: number
+  page: number
+  page_size: number
+  items: FbGroupPost[]
 }
 
 export const fbGroupScrapeApi = {
@@ -48,9 +85,34 @@ export const fbGroupScrapeApi = {
   remove: (id: number) => http.delete<unknown, { ok: boolean }>(`/scraper/fb-group-scrapes/${id}`),
   restore: (id: number) =>
     http.post<unknown, FbGroupScrape>(`/scraper/fb-group-scrapes/${id}/restore`, {}),
-  /** 调用 Apify 拉取群组帖子（耗时较长，默认 10 分钟超时） */
+
+  /** 提交后台拉取任务（立即返回，不阻塞） */
   pull: (id: number, params?: FbGroupPullParams) =>
-    http.post<unknown, FbGroupPullResult>(`/scraper/fb-group-scrapes/${id}/pull`, params || {}, {
-      timeout: 600000
+    http.post<unknown, FbGroupPullTask>(`/scraper/fb-group-scrapes/${id}/pull`, params || {}),
+
+  /** 查询某配置的所有拉取任务 */
+  listTasks: (configId: number) =>
+    http.get<unknown, FbGroupPullTask[]>(`/scraper/fb-group-scrapes/${configId}/tasks`),
+
+  /** 获取单个任务详情（用于轮询状态） */
+  getTask: (taskId: number) =>
+    http.get<unknown, FbGroupPullTask>(`/scraper/fb-group-scrapes/tasks/${taskId}`),
+
+  /** 查询某任务的帖子（分页） */
+  listTaskPosts: (
+    taskId: number,
+    params?: { page?: number; page_size?: number; keyword?: string }
+  ) =>
+    http.get<unknown, FbGroupPostPage>(`/scraper/fb-group-scrapes/tasks/${taskId}/posts`, {
+      params: params || {}
+    }),
+
+  /** 查询某配置的所有帖子（跨任务，分页） */
+  listConfigPosts: (
+    configId: number,
+    params?: { page?: number; page_size?: number; keyword?: string }
+  ) =>
+    http.get<unknown, FbGroupPostPage>(`/scraper/fb-group-scrapes/${configId}/posts`, {
+      params: params || {}
     })
 }
