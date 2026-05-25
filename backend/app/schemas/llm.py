@@ -47,7 +47,7 @@ class LlmProviderOut(LlmProviderBase):
 
 
 class LlmTestRequest(BaseModel):
-    prompt: str = "你好，用一句话介绍你自己。"
+    prompt: str = "你好，用一句话介绍你自己，并且告诉我当前模型是什么"
 
 
 class LlmTestResponse(BaseModel):
