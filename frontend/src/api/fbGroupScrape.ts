@@ -90,6 +90,10 @@ export const fbGroupScrapeApi = {
   pull: (id: number, params?: FbGroupPullParams) =>
     http.post<unknown, FbGroupPullTask>(`/scraper/fb-group-scrapes/${id}/pull`, params || {}),
 
+  /** 批量提交后台拉取任务（多个群组共享同一组参数） */
+  batchPull: (data: { config_ids: number[] } & FbGroupPullParams) =>
+    http.post<unknown, FbGroupPullTask[]>(`/scraper/fb-group-scrapes/batch-pull`, data),
+
   /** 查询某配置的所有拉取任务 */
   listTasks: (configId: number) =>
     http.get<unknown, FbGroupPullTask[]>(`/scraper/fb-group-scrapes/${configId}/tasks`),

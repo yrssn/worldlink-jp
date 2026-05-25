@@ -82,6 +82,52 @@ async function restoreRow(row: FbGroupScrape) {
   } catch { /* 拦截器 */ }
 }
 
+// ─── 多选 ──────────────────────────────────────────────────────
+const selectedConfigs = ref<FbGroupScrape[]>([])
+function onSelectionChange(rows: FbGroupScrape[]) {
+  selectedConfigs.value = rows
+}
+
+// ─── 批量拉取 ────────────────────────────────────────────────────
+const batchPullVisible = ref(false)
+const batchSubmitting = ref(false)
+const batchPullForm = reactive({
+  results_limit: 20,
+  view_option: 'CHRONOLOGICAL' as FbGroupViewOption,
+  search_group_keyword: '',
+  search_group_year: '',
+  only_posts_newer_than: ''
+})
+
+function openBatchPull() {
+  batchPullForm.results_limit = 20
+  batchPullForm.view_option = 'CHRONOLOGICAL'
+  batchPullForm.search_group_keyword = ''
+  batchPullForm.search_group_year = ''
+  batchPullForm.only_posts_newer_than = ''
+  batchPullVisible.value = true
+}
+
+async function confirmBatchPull() {
+  if (!selectedConfigs.value.length) return
+  batchSubmitting.value = true
+  try {
+    const tasks = await fbGroupScrapeApi.batchPull({
+      config_ids: selectedConfigs.value.map(c => c.id),
+      results_limit: batchPullForm.results_limit,
+      view_option: batchPullForm.view_option,
+      search_group_keyword: batchPullForm.search_group_keyword.trim() || undefined,
+      search_group_year: batchPullForm.search_group_year.trim() || undefined,
+      only_posts_newer_than: batchPullForm.only_posts_newer_than.trim() || undefined
+    })
+    batchPullVisible.value = false
+    ElMessage.success(`已为 ${tasks.length} 个群组创建拉取任务，正在后台执行`)
+    selectedConfigs.value = []
+  } catch { /* 拦截器 */ } finally {
+    batchSubmitting.value = false
+  }
+}
+
 // ─── 后台拉取任务 ────────────────────────────────────────────────
 const pullDialogVisible = ref(false)
 const pullTarget = ref<FbGroupScrape | null>(null)
@@ -254,6 +300,13 @@ onUnmounted(stopPoll)
       <el-button type="primary" @click="openCreate">新建记录</el-button>
     </div>
 
+    <!-- 批量操作栏 -->
+    <div v-if="selectedConfigs.length" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 12px;background:#ecf5ff;border-radius:6px;border:1px solid #b3d8ff">
+      <span style="font-size:13px;color:#409eff;font-weight:500">已选 {{ selectedConfigs.length }} 个群组</span>
+      <el-button size="small" type="primary" @click="openBatchPull">批量拉取</el-button>
+      <el-button size="small" plain @click="selectedConfigs = []">取消选择</el-button>
+    </div>
+
     <!-- 筛选 -->
     <el-card shadow="never" style="margin-bottom:12px">
       <el-form :inline="true" @submit.prevent="refresh">
@@ -270,7 +323,8 @@ onUnmounted(stopPoll)
     </el-card>
 
     <!-- 群组配置表格 -->
-    <el-table v-loading="loading" :data="list" border stripe row-key="id">
+    <el-table v-loading="loading" :data="list" border stripe row-key="id" @selection-change="onSelectionChange">
+      <el-table-column type="selection" width="44" :selectable="(row: FbGroupScrape) => !row.deleted_at" />
       <el-table-column prop="id" label="ID" width="72" />
       <el-table-column prop="title" label="标题" min-width="140" show-overflow-tooltip />
       <el-table-column prop="connection" label="连接" min-width="220" show-overflow-tooltip>
@@ -487,6 +541,43 @@ onUnmounted(stopPoll)
         />
       </div>
     </el-drawer>
+
+    <!-- 批量拉取对话框 -->
+    <el-dialog v-model="batchPullVisible" title="批量拉取任务" width="600px" destroy-on-close>
+      <el-alert type="success" :closable="false" show-icon style="margin-bottom:14px"
+        :title="`将为以下 ${selectedConfigs.length} 个群组各创建一个后台拉取任务`" />
+      <el-descriptions :column="1" border size="small" style="margin-bottom:14px">
+        <el-descriptions-item v-for="c in selectedConfigs" :key="c.id" :label="c.title">
+          <span style="font-size:12px;color:#606266">{{ c.connection }}</span>
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="120px">
+        <el-form-item label="帖子条数">
+          <el-input-number v-model="batchPullForm.results_limit" :min="1" :max="500" />
+        </el-form-item>
+        <el-form-item label="排序 viewOption">
+          <el-select v-model="batchPullForm.view_option" style="width:100%">
+            <el-option label="CHRONOLOGICAL（时间序）" value="CHRONOLOGICAL" />
+            <el-option label="RECENT_ACTIVITY（最新活动）" value="RECENT_ACTIVITY" />
+            <el-option label="TOP_POSTS（热门）" value="TOP_POSTS" />
+            <el-option label="CHRONOLOGICAL_LISTINGS（买卖类）" value="CHRONOLOGICAL_LISTINGS" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="搜索字母">
+          <el-input v-model="batchPullForm.search_group_keyword" placeholder="可选，如 a" />
+        </el-form-item>
+        <el-form-item label="搜索年份">
+          <el-input v-model="batchPullForm.search_group_year" placeholder="需配合搜索字母，如 2024" />
+        </el-form-item>
+        <el-form-item label="不早于">
+          <el-input v-model="batchPullForm.only_posts_newer_than" placeholder="如 2024-01-01 或 7 days" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchPullVisible = false">取消</el-button>
+        <el-button type="primary" :loading="batchSubmitting" @click="confirmBatchPull">提交 {{ selectedConfigs.length }} 个任务</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 帖子详情弹窗 -->
     <el-dialog v-model="postsDetailVisible" title="帖子原始 JSON" width="720px" destroy-on-close>

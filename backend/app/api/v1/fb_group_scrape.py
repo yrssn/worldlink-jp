@@ -20,6 +20,7 @@ from app.models.fb_group_scrape import (
 )
 from app.models.user import User
 from app.schemas.fb_group_scrape import (
+    FbGroupBatchPullBody,
     FbGroupPostOut,
     FbGroupPostPage,
     FbGroupPullTaskCreate,
@@ -404,6 +405,76 @@ def pull_fb_group_posts_async(
     t.start()
     logger.info("[FbGroupPull] task#{} started in background for config#{}", task.id, row.id)
     return _to_task_out(task)
+
+
+@router.post("/batch-pull", response_model=list[FbGroupPullTaskOut])
+def batch_pull_fb_group_posts(
+    body: FbGroupBatchPullBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量提交后台拉取任务（多个群组共享同一组参数）。"""
+    if not body.config_ids:
+        raise HTTPException(status_code=400, detail="config_ids 不能为空")
+
+    configs = (
+        db.query(FbGroupScrapeConfig)
+        .options(joinedload(FbGroupScrapeConfig.creator))
+        .filter(
+            FbGroupScrapeConfig.id.in_(body.config_ids),
+            FbGroupScrapeConfig.deleted_at.is_(None),
+        )
+        .all()
+    )
+    if not is_admin(user):
+        configs = [c for c in configs if c.created_by_id == user.id]
+
+    found_ids = {c.id for c in configs}
+    missing = [i for i in body.config_ids if i not in found_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"以下配置不存在或已删除: {missing}")
+
+    params = {
+        "results_limit": body.results_limit,
+        "view_option": body.view_option,
+        "search_group_keyword": body.search_group_keyword,
+        "search_group_year": body.search_group_year,
+        "only_posts_newer_than": body.only_posts_newer_than,
+    }
+
+    created_tasks: list[FbGroupPullTask] = []
+    for config in configs:
+        task = FbGroupPullTask(
+            config_id=config.id,
+            created_by_id=user.id,
+            status=FbGroupPullTaskStatus.pending,
+            params=params,
+        )
+        db.add(task)
+        db.flush()
+        created_tasks.append(task)
+    db.commit()
+
+    result_tasks = (
+        db.query(FbGroupPullTask)
+        .options(
+            joinedload(FbGroupPullTask.config),
+            joinedload(FbGroupPullTask.creator),
+        )
+        .filter(FbGroupPullTask.id.in_([t.id for t in created_tasks]))
+        .all()
+    )
+
+    for task in result_tasks:
+        t = threading.Thread(target=_run_pull_task_bg, args=(task.id,), daemon=True)
+        t.start()
+    logger.info(
+        "[FbGroupBatchPull] {} tasks started by user#{}", len(result_tasks), user.id
+    )
+
+    id_order = {t.id: i for i, t in enumerate(created_tasks)}
+    result_tasks.sort(key=lambda t: id_order.get(t.id, 999))
+    return [_to_task_out(t) for t in result_tasks]
 
 
 # ─── 任务查询 ───────────────────────────────────────────────────

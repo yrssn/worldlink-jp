@@ -103,6 +103,17 @@ class FbGroupPullTaskCreate(BaseModel):
     only_posts_newer_than: Optional[str] = None
 
 
+class FbGroupBatchPullBody(BaseModel):
+    """批量拉取请求体：多个 config_id + 共享拉取参数。"""
+
+    config_ids: list[int] = Field(..., min_length=1, description="群组配置 ID 列表")
+    results_limit: int = Field(20, ge=1, le=500)
+    view_option: FbGroupViewOption = Field("CHRONOLOGICAL")
+    search_group_keyword: Optional[str] = None
+    search_group_year: Optional[str] = None
+    only_posts_newer_than: Optional[str] = None
+
+
 # ─── 帖子 ──────────────────────────────────────────────────────
 
 class FbGroupPostOut(BaseModel):
