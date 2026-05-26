@@ -166,5 +166,7 @@ export const bitbrowserApi = {
   localHealth: () =>
     http.get<unknown, { ok: boolean; bitbrowser?: unknown; error?: string; hint?: string; auth_hint?: string }>(
       '/bitbrowser/local-health'
-    )
+    ),
+  relayStatus: () =>
+    http.get<unknown, { connected: boolean }>('/bitbrowser/relay/status')
 }

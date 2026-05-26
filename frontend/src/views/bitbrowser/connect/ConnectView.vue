@@ -2,6 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { bitbrowserApi, type BitBrowserSettings } from '@/api/bitbrowser'
+import { relayConnected, useBitBrowserRelay } from '@/composables/useBitBrowserRelay'
+
+const { reconnect: relayReconnect } = useBitBrowserRelay()
 
 const bbSettings = ref<BitBrowserSettings | null>(null)
 const formLocalUrl = ref('')
@@ -114,29 +117,36 @@ onMounted(async () => {
     >
       <template #title>你正在通过公网访问管理端</template>
       <div style="font-size: 12px; line-height: 1.65; margin-top: 4px">
-        当前站点不是 localhost，若仍使用 127.0.0.1，检测一定指向<strong>云服务器自己</strong>，无法连到你电脑上的比特浏览器。可行做法包括：
-        <ul style="margin: 8px 0 0 18px; padding: 0">
-          <li>
-            <strong>内网穿透 / 反向隧道</strong>
-            ：在你电脑上把 54345 暴露成一个公网或固定入口（如 frp、ngrok、Cloudflare Tunnel、
-            <code>ssh -R</code>
-            等），把得到的
-            <code>http(s)://...</code>
-            填到下面「本地服务地址」（需确保云服务器能访问该 URL，且 BitBrowser 侧若限制来源需放行）。
-          </li>
-          <li>
-            <strong>仅本机用</strong>
-            ：前后端都跑在自己电脑，管理端用
-            <code>http://127.0.0.1:...</code>
-            打开，此时 127.0.0.1 才表示「与后端同一台机器」上的 BitBrowser。
-          </li>
-          <li>
-            <strong>极少数情况</strong>
-            ：BitBrowser 与后端 API 装在同一台服务器上，才可在服务器上填 127.0.0.1:54345。
-          </li>
-        </ul>
+        当前站点不是 localhost，若仍使用 127.0.0.1，检测一定指向<strong>云服务器自己</strong>，无法直连你电脑上的比特浏览器。<br />
+        <strong style="color: #67c23a">✓ 推荐方案（内置，无需外部工具）</strong>：保持此管理端页面在浏览器中<strong>保持打开</strong>，
+        系统会自动建立「浏览器中继」——后端的请求通过你的浏览器转发到本机 BitBrowser，下方中继状态显示绿色「已连接」即可正常使用。<br />
+        其他方案：内网穿透（frp/ngrok）或前后端均跑在本机。
       </div>
     </el-alert>
+
+    <!-- 浏览器中继状态卡片 -->
+    <el-card shadow="never" style="margin-bottom: 14px; max-width: 900px">
+      <template #header>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-weight:600">浏览器中继状态</span>
+          <el-tag :type="relayConnected ? 'success' : 'info'" size="small" effect="plain">
+            {{ relayConnected ? '✓ 已连接' : '未连接' }}
+          </el-tag>
+        </div>
+      </template>
+      <div style="font-size:12px;color:#606266;line-height:1.8">
+        <p style="margin:0 0 6px">
+          中继运行时，后端调用 BitBrowser 会自动通过此页面的 WebSocket 连接转发到你本机的
+          <code>{{ bbSettings?.local_url || 'http://127.0.0.1:54345' }}</code>，
+          无需任何外部工具。<strong>保持此浏览器标签页打开即可</strong>。
+        </p>
+        <div v-if="relayConnected" style="color:#67c23a">✓ 中继已连接，本机 BitBrowser 请求将通过浏览器转发。</div>
+        <div v-else style="color:#909399">中继未连接。若已配置本地服务地址，点「重新连接」或刷新页面。</div>
+      </div>
+      <div style="margin-top:12px">
+        <el-button size="small" type="primary" plain :disabled="relayConnected" @click="relayReconnect">重新连接中继</el-button>
+      </div>
+    </el-card>
 
     <el-card shadow="never">
       <template #header>

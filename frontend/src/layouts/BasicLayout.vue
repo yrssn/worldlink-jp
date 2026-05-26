@@ -1,15 +1,21 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
+import { useBitBrowserRelay } from '@/composables/useBitBrowserRelay'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
 const activeMenu = computed(() => route.path)
+const { connect: relayConnect, disconnect: relayDisconnect, relayConnected } = useBitBrowserRelay()
+
+onMounted(() => relayConnect())
+onUnmounted(() => relayDisconnect())
 
 async function handleLogout() {
+  relayDisconnect()
   await auth.logout()
   router.push('/login')
 }
