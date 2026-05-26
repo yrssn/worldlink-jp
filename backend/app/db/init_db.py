@@ -155,7 +155,7 @@ def _dev_auto_alter() -> None:
     # 扩展 task_type ENUM（MySQL）：不论是否检测到，都尝试一次 MODIFY
     statements.append(
         "ALTER TABLE scrape_tasks MODIFY COLUMN task_type "
-        "ENUM('fb_search','fb_pages','fb_posts_by_page','fb_posts_by_hashtag','fb_posts_by_search') "
+        "ENUM('fb_search','fb_pages','fb_posts_by_page','fb_posts_by_hashtag','fb_posts_by_search','fb_posts_scraper','fb_search_cb') "
         "NOT NULL"
     )
 
@@ -165,7 +165,7 @@ def _dev_auto_alter() -> None:
                 if "MODIFY COLUMN task_type" in sql:
                     logger.info(
                         "[dev-auto-alter] MODIFY scrape_tasks.task_type ENUM "
-                        "(fb_search, fb_pages, fb_posts_by_page, fb_posts_by_hashtag, fb_posts_by_search)"
+                        "(fb_search, fb_pages, fb_posts_by_page, fb_posts_by_hashtag, fb_posts_by_search, fb_posts_scraper, fb_search_cb)"
                     )
                 else:
                     logger.info("[dev-auto-alter] {}", sql)

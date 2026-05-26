@@ -6,6 +6,8 @@ export type ScrapeTaskType =
   | 'fb_posts_by_page'
   | 'fb_posts_by_hashtag'
   | 'fb_posts_by_search'
+  | 'fb_posts_scraper'
+  | 'fb_search_cb'
 
 export type ScrapeTaskStatus =
   | 'pending'
@@ -150,6 +152,8 @@ export interface TaskTypeMeta {
     searchPostsOptions?: boolean  // fb_posts_by_search 专属：location_uid / 日期 / 排序
     /** fb_posts_by_page：cleansyntax actor 的模式与可选日期 */
     profilePostsOptions?: boolean
+    /** fb_search_cb：crawlerbros actor 的搜索类型选择 */
+    cbSearchOptions?: boolean
   }
 }
 
@@ -178,5 +182,21 @@ export const TASK_TYPES: TaskTypeMeta[] = [
       '使用 apify/facebook-hashtag-scraper：按 hashtag（不含 #）搜帖子；AI 过滤后聚合作者主页，再用 facebook-pages-scraper 抓详情。',
     pricing: 'posts $10/1000 + pages $6.6/1000 + LLM',
     needs: { hashtags: true }
+  },
+  {
+    value: 'fb_search_cb',
+    label: '关键词搜 Pages/People（crawlerbros，$5/1000）',
+    summary:
+      '使用 crawlerbros/facebook-search-scraper：按关键词搜索 Facebook Pages 或 People，返回结构化的主页/人员资料。支持选择搜索类型（pages / people）。',
+    pricing: '约 $5 / 1000 results',
+    needs: { keywords: true, cbSearchOptions: true }
+  },
+  {
+    value: 'fb_posts_scraper',
+    label: '主页 URL → 抓帖子（官方 facebook-posts-scraper）',
+    summary:
+      '使用 apify/facebook-posts-scraper：给定 Facebook 主页/主页 URL 列表，直接抓公开帖子。支持每个主页单独限制条数（每目标帖子数）和全局上限。抓到帖子后可选 AI 评估作者 → 自动抓主页详情。',
+    pricing: '约 $2 / 1000 posts + pages $6.6/1000 + LLM（可选）',
+    needs: { startUrls: true, postsPerPage: true }
   }
 ]

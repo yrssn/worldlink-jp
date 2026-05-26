@@ -374,3 +374,31 @@ def run_fb_groups(
     if extra:
         run_input.update(extra)
     return _run_actor(settings.apify_fb_groups_actor, run_input, timeout_secs=timeout_secs, db=db)
+
+
+# ---------- 7) Facebook Search Scraper (crawlerbros) ----------
+def run_fb_search_cb(
+    keywords: list[str],
+    search_type: str = "pages",
+    max_results: int = 20,
+    extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
+) -> dict[str, Any]:
+    """关键词 → Pages / People（crawlerbros/facebook-search-scraper）。
+
+    官方 input-schema：
+      - searchQueries  array<string>  搜索关键词列表（必填）
+      - searchType     string         "pages" | "people"（默认 "pages"）
+      - maxResults     integer        每次运行最大结果数（默认 20）
+    """
+    queries = [k for k in (keywords or []) if k and str(k).strip()]
+    if not queries:
+        raise ValueError("crawlerbros/facebook-search-scraper 需要至少一个关键词 (searchQueries)")
+    run_input: dict[str, Any] = {
+        "searchQueries": queries,
+        "searchType": search_type or "pages",
+        "maxResults": int(max_results),
+    }
+    if extra:
+        run_input.update(extra)
+    return _run_actor(settings.apify_fb_search_cb_actor, run_input, db=db)

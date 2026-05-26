@@ -57,6 +57,8 @@ class ScrapeTaskType(str, enum.Enum):
     fb_posts_by_page = "fb_posts_by_page"
     fb_posts_by_hashtag = "fb_posts_by_hashtag"
     fb_posts_by_search = "fb_posts_by_search"
+    fb_posts_scraper = "fb_posts_scraper"
+    fb_search_cb = "fb_search_cb"
 
 
 class ScrapeTaskStatus(str, enum.Enum):

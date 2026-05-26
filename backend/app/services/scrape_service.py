@@ -465,6 +465,10 @@ def run_scrape_task(db_factory, task_id: int) -> None:
             _run_fb_posts_by_hashtag(db, task)
         elif tt == ScrapeTaskType.fb_posts_by_search:
             _run_fb_posts_by_search(db, task)
+        elif tt == ScrapeTaskType.fb_posts_scraper:
+            _run_fb_posts_scraper(db, task)
+        elif tt == ScrapeTaskType.fb_search_cb:
+            _run_fb_search_cb(db, task)
         else:
             raise ValueError(f"Unsupported task_type: {tt}")
 
@@ -730,6 +734,68 @@ def _run_fb_posts_by_page(db: Session, task: ScrapeTask) -> None:
             db=db,
         )
 
+    _run_post_pipeline(
+        db,
+        task,
+        result.get("items") or [],
+        result.get("run_id"),
+        result.get("dataset_id"),
+    )
+
+
+def _run_fb_search_cb(db: Session, task: ScrapeTask) -> None:
+    """crawlerbros/facebook-search-scraper：关键词 → Pages/People。
+
+    extra_input 可选键：
+      - ``cb_search_type``：``pages``（默认）| ``people``
+    """
+    kws = [str(k).strip() for k in (task.keywords or []) if k and str(k).strip()]
+    if not kws:
+        raise ValueError("fb_search_cb 任务需要至少一个关键词")
+
+    extra_in = dict(task.extra_input or {})
+    search_type = str(extra_in.pop("cb_search_type", None) or "pages").strip()
+    extra_in.pop("page_results", None)
+
+    result = apify_service.run_fb_search_cb(
+        keywords=kws,
+        search_type=search_type,
+        max_results=task.max_items,
+        extra=extra_in or None,
+        db=db,
+    )
+    _persist_page_results(
+        db, task,
+        result.get("items") or [],
+        result.get("run_id"),
+        result.get("dataset_id"),
+    )
+
+
+def _run_fb_posts_scraper(db: Session, task: ScrapeTask) -> None:
+    """apify/facebook-posts-scraper：给定主页 URL 列表抓帖子。
+
+    Input mapping:
+      - ``start_urls``        → startUrls[].url
+      - ``posts_per_page``    → per-URL resultsLimit (0 = actor default)
+      - ``max_items``         → global resultsLimit (optional)
+      - ``extra_input``       → 透传给 actor（除保留键外）
+    """
+    urls = [str(u).strip() for u in (task.start_urls or []) if u and str(u).strip()]
+    if not urls:
+        raise ValueError("fb_posts_scraper 任务需要至少一个主页 URL（start_urls）")
+
+    extra_in = dict(task.extra_input or {})
+    extra_in.pop("defer_homepage_scrape", None)
+    extra_in.pop("page_results", None)
+
+    result = apify_service.run_fb_posts(
+        start_urls=urls,
+        posts_per_page=max(1, int(task.posts_per_page or 10)),
+        total_limit=task.max_items or None,
+        extra=extra_in or None,
+        db=db,
+    )
     _run_post_pipeline(
         db,
         task,

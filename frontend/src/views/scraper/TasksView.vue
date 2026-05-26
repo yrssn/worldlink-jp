@@ -43,7 +43,9 @@ const form = reactive({
   end_date: '',
   recent_posts: false,
   /** fb_posts_*：先只抓帖 vs 自动抓主页流水线 */
-  post_pipeline: 'manual_review' as 'manual_review' | 'auto_full'
+  post_pipeline: 'manual_review' as 'manual_review' | 'auto_full',
+  /** fb_search_cb：crawlerbros 搜索类型 */
+  cb_search_type: 'pages' as 'pages' | 'people'
 })
 
 const currentMeta = computed(() =>
@@ -136,6 +138,9 @@ async function submit() {
     if (form.start_date) extra_input.start_date = form.start_date
     if (form.end_date) extra_input.end_date = form.end_date
     if (form.recent_posts) extra_input.recent_posts = true
+  }
+  if (needs.value.cbSearchOptions) {
+    extra_input.cb_search_type = form.cb_search_type
   }
   if (needs.value.profilePostsOptions) {
     extra_input.fb_profile_endpoint = form.profile_endpoint
@@ -370,6 +375,16 @@ onMounted(refresh)
             <div style="font-size: 12px; color: #999; margin-top: 4px">
               仅对「按 URL / 按 ID / 按关键词搜帖」有效；留空表示不按日期过滤
             </div>
+          </el-form-item>
+        </template>
+
+        <template v-if="needs.cbSearchOptions">
+          <el-form-item label="搜索类型">
+            <el-radio-group v-model="form.cb_search_type">
+              <el-radio value="pages">Pages（主页）</el-radio>
+              <el-radio value="people">People（人物）</el-radio>
+            </el-radio-group>
+            <div style="font-size:12px;color:#999;margin-top:4px">pages = 搜公共主页；people = 搜人物/个人简介</div>
           </el-form-item>
         </template>
 
