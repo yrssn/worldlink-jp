@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import and_
 from sqlalchemy.exc import SQLAlchemyError
@@ -9,8 +9,11 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from app.core.deps import get_current_user, get_db
+from app.core.security import decode_token
+from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform, BitBrowserWindow, BitBrowserWindowCatalog
 from app.models.user import User
+from app.services.bitbrowser_relay import relay_manager
 from app.schemas.bitbrowser import (
     BitBrowserCatalogOut,
     BitBrowserCatalogRowOut,
@@ -31,6 +34,42 @@ from app.schemas.bitbrowser import (
 from app.services import bitbrowser_service
 
 router = APIRouter(prefix="/bitbrowser", tags=["bitbrowser"])
+
+
+# ── 浏览器中继 WebSocket 入口 ────────────────────────────────────
+@router.websocket("/relay/ws")
+async def bitbrowser_relay_ws(websocket: WebSocket, token: str = Query(...)):
+    """前端页面连接此 WS，充当「本机 BitBrowser → 后端」的反向代理中继。"""
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "access":
+        await websocket.close(code=4001)
+        return
+    user_id_raw = payload.get("sub")
+    if user_id_raw is None:
+        await websocket.close(code=4001)
+        return
+    try:
+        user_id = int(user_id_raw)
+    except (TypeError, ValueError):
+        await websocket.close(code=4001)
+        return
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or not user.is_active:
+            await websocket.close(code=4001)
+            return
+    finally:
+        db.close()
+    await websocket.accept()
+    logger.info("[BitBrowserRelay] WS accepted for user {}", user_id)
+    await relay_manager.connect(user_id, websocket)
+
+
+@router.get("/relay/status")
+def bitbrowser_relay_status(user: User = Depends(get_current_user)):
+    """查询当前用户的浏览器中继是否已连接。"""
+    return {"connected": relay_manager.has_relay(user.id)}
 
 
 def _user_local_hint(user: User) -> str:

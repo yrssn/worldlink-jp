@@ -52,12 +52,16 @@
 """
 from __future__ import annotations
 
+import threading
 from typing import Any, Optional
 
 from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+
+# 全局排队锁：所有 Apify Actor 调用共用此信号量，同时最多运行 1 个（防止超出免费计划 8192 MB 总内存限额）
+_apify_semaphore = threading.Semaphore(1)
 
 
 # ---------- 内部工具 ----------
@@ -88,53 +92,73 @@ def _run_actor(
     run_input: dict[str, Any],
     *,
     timeout_secs: int = 600,
+    memory_mbytes: int = 1024,
     db: Session | None = None,
 ) -> dict[str, Any]:
-    """统一调用 Actor 并把 dataset 全部拉回来。"""
+    """统一调用 Actor 并把 dataset 全部拉回来（全局排队，一次只跑一个）。"""
     client = _get_client(db)
-    logger.info("[Apify] Start {} timeout={}s input={}", actor_id, timeout_secs, run_input)
-    try:
-        # wait_secs：客户端最长等待时间；timeout_secs：Actor 单次运行上限
-        run = client.actor(actor_id).call(
-            run_input=run_input,
-            wait_secs=timeout_secs,
-            timeout_secs=timeout_secs,
-        )
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Apify 调用超时或失败 ({actor_id}): {e}") from e
-    if not run:
-        raise RuntimeError(f"Apify run {actor_id} returned empty")
-
-    status = str(run.get("status") or "").upper()
-    run_id = run.get("id")
-    if status and status != "SUCCEEDED":
-        msg = (
-            run.get("statusMessage")
-            or (run.get("meta") or {}).get("errorMessage")
-            or status
-        )
-        raise RuntimeError(
-            f"Apify run 未成功 (id={run_id}, status={status}): {msg}"
-        )
-
-    dataset_id = run.get("defaultDatasetId")
-    items: list[dict[str, Any]] = []
-    if dataset_id:
-        items = list(client.dataset(dataset_id).iterate_items())
-
+    queue_timeout = timeout_secs + 60  # 等锁最长比 Actor 超时多 60s
     logger.info(
-        "[Apify] Run {} finished run_id={} status={} items={}",
-        actor_id,
-        run_id,
-        status or "SUCCEEDED",
-        len(items),
+        "[Apify] Queued {} (waiting for semaphore, timeout={}s memory={}MB)",
+        actor_id, timeout_secs, memory_mbytes,
     )
-    return {
-        "run_id": run_id,
-        "dataset_id": dataset_id,
-        "items": items,
-        "status": status or "SUCCEEDED",
-    }
+    acquired = _apify_semaphore.acquire(timeout=queue_timeout)
+    if not acquired:
+        raise RuntimeError(
+            f"Apify 任务排队超时（等待 {queue_timeout}s 仍未获得执行槽），"
+            "请稍后重试或等待前序任务完成"
+        )
+    try:
+        logger.info(
+            "[Apify] Start {} timeout={}s memory={}MB input={}",
+            actor_id, timeout_secs, memory_mbytes, run_input,
+        )
+        try:
+            # wait_secs：客户端最长等待时间；timeout_secs：Actor 单次运行上限
+            # memory_mbytes：限制单次 Actor 内存占用，避免超出免费计划总额（8192 MB）
+            run = client.actor(actor_id).call(
+                run_input=run_input,
+                wait_secs=timeout_secs,
+                timeout_secs=timeout_secs,
+                memory_mbytes=memory_mbytes,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Apify 调用超时或失败 ({actor_id}): {e}") from e
+        if not run:
+            raise RuntimeError(f"Apify run {actor_id} returned empty")
+
+        status = str(run.get("status") or "").upper()
+        run_id = run.get("id")
+        if status and status != "SUCCEEDED":
+            msg = (
+                run.get("statusMessage")
+                or (run.get("meta") or {}).get("errorMessage")
+                or status
+            )
+            raise RuntimeError(
+                f"Apify run 未成功 (id={run_id}, status={status}): {msg}"
+            )
+
+        dataset_id = run.get("defaultDatasetId")
+        items: list[dict[str, Any]] = []
+        if dataset_id:
+            items = list(client.dataset(dataset_id).iterate_items())
+
+        logger.info(
+            "[Apify] Run {} finished run_id={} status={} items={}",
+            actor_id,
+            run_id,
+            status or "SUCCEEDED",
+            len(items),
+        )
+        return {
+            "run_id": run_id,
+            "dataset_id": dataset_id,
+            "items": items,
+            "status": status or "SUCCEEDED",
+        }
+    finally:
+        _apify_semaphore.release()
 
 
 # ---------- 1) Facebook Search Scraper ----------

@@ -25,6 +25,7 @@ class BitBrowserClientContext:
     api_key: str | None
     http_timeout_sec: float
     list_page_size: int
+    user_id: int | None = None  # 用于中继路由
 
 
 def client_context_from_user(user: User) -> BitBrowserClientContext:
@@ -40,6 +41,7 @@ def client_context_from_user(user: User) -> BitBrowserClientContext:
         api_key=tok,
         http_timeout_sec=float(settings.bitbrowser_http_timeout_sec),
         list_page_size=int(settings.bitbrowser_list_page_size),
+        user_id=user.id,
     )
 
 
@@ -56,7 +58,15 @@ def _post_local(
     *,
     timeout_sec: float | None = None,
 ) -> dict[str, Any]:
-    """调用 BitBrowser 本地服务。必须禁用走系统代理，否则可能请求失败。"""
+    """调用 BitBrowser 本地服务。若有浏览器中继则通过 WebSocket 转发，否则直连。"""
+    # ── 优先走浏览器中继（公网部署 + 本地 BitBrowser 场景）──────────
+    if ctx.user_id is not None:
+        from app.services.bitbrowser_relay import relay_manager  # 延迟导入避免循环
+        if relay_manager.has_relay(ctx.user_id):
+            t = float(timeout_sec) if timeout_sec is not None else ctx.http_timeout_sec
+            logger.debug("[BitBrowser] relay path: user={} {}", ctx.user_id, path)
+            return relay_manager.call_sync(ctx.user_id, path, body, timeout=t)
+    # ── 直连 ─────────────────────────────────────────────────────────
     url = f"{ctx.base_url}{path}"
     headers = _local_headers(ctx)
     t = float(timeout_sec) if timeout_sec is not None else ctx.http_timeout_sec

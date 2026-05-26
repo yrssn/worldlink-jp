@@ -137,11 +137,11 @@ def _run_pull_task_bg(task_id: int) -> None:
             if post is None:
                 continue
             try:
-                db.add(post)
-                db.flush()
+                with db.begin_nested():   # SAVEPOINT：只回滚这一条，不影响其他帖子
+                    db.add(post)
                 saved += 1
             except IntegrityError:
-                db.rollback()
+                pass  # 跳过重复帖子，继续下一条
 
         task.result_count = saved
         task.status = FbGroupPullTaskStatus.done

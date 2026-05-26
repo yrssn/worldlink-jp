@@ -11,10 +11,13 @@ from loguru import logger
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.db.init_db import init_db
+from app.services.bitbrowser_relay import relay_manager
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    import asyncio
+    relay_manager.set_loop(asyncio.get_event_loop())
     logger.info("Starting {} in {} mode", settings.app_name, settings.app_env)
     try:
         init_db()
