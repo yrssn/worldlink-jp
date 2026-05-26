@@ -524,6 +524,36 @@ def get_pull_task(
     return _to_task_out(task)
 
 
+@router.post("/tasks/{task_id}/fail", response_model=FbGroupPullTaskOut)
+def fail_pull_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """手动将卡住的 pending/running 任务标记为失败。"""
+    task = (
+        db.query(FbGroupPullTask)
+        .options(
+            joinedload(FbGroupPullTask.config),
+            joinedload(FbGroupPullTask.creator),
+        )
+        .filter(FbGroupPullTask.id == task_id)
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not is_admin(user) and task.created_by_id != user.id:
+        raise HTTPException(status_code=403, detail="无权操作")
+    if task.status not in (FbGroupPullTaskStatus.pending, FbGroupPullTaskStatus.running):
+        raise HTTPException(status_code=400, detail=f"任务当前状态为 {task.status}，无需标记失败")
+    task.status = FbGroupPullTaskStatus.failed
+    task.error = "手动标记为失败"
+    task.finished_at = datetime.utcnow()
+    db.commit()
+    db.refresh(task)
+    return _to_task_out(task)
+
+
 # ─── 帖子查询 ───────────────────────────────────────────────────
 
 @router.get("/tasks/{task_id}/posts", response_model=FbGroupPostPage)

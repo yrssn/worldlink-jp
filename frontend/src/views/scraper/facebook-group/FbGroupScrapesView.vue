@@ -211,6 +211,20 @@ function onTaskPanelClose() {
   taskPanelConfig.value = null
 }
 
+async function markTaskFailed(task: FbGroupPullTask) {
+  try {
+    await ElMessageBox.confirm(
+      `确定将任务 #${task.id} 标记为失败？此操作不可撤销。`,
+      '标记失败',
+      { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' }
+    )
+    const updated = await fbGroupScrapeApi.markFailed(task.id)
+    const idx = tasks.value.findIndex(t => t.id === task.id)
+    if (idx !== -1) tasks.value[idx] = updated
+    ElMessage.success(`任务 #${task.id} 已标记为失败`)
+  } catch { /* 取消 */ }
+}
+
 function taskStatusType(status: string) {
   if (status === 'done') return 'success'
   if (status === 'failed') return 'danger'
@@ -458,17 +472,25 @@ onUnmounted(stopPoll)
             <span v-else class="fb-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
-            <el-button
-              v-if="row.status === 'done' && row.result_count > 0"
-              size="small"
-              type="primary"
-              plain
-              @click="openPosts(row)"
-            >查看帖子</el-button>
-            <span v-else-if="row.status === 'running' || row.status === 'pending'" style="font-size:12px;color:#e6a23c">执行中…</span>
-            <span v-else class="fb-muted">—</span>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              <el-button
+                v-if="row.status === 'done' && row.result_count > 0"
+                size="small"
+                type="primary"
+                plain
+                @click="openPosts(row)"
+              >查看帖子</el-button>
+              <el-button
+                v-if="row.status === 'running' || row.status === 'pending'"
+                size="small"
+                type="danger"
+                plain
+                @click="markTaskFailed(row)"
+              >标记失败</el-button>
+              <span v-if="row.status === 'failed' || (row.status === 'done' && row.result_count === 0)" class="fb-muted" style="font-size:12px">—</span>
+            </div>
           </template>
         </el-table-column>
       </el-table>

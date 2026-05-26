@@ -102,6 +102,10 @@ export const fbGroupScrapeApi = {
   getTask: (taskId: number) =>
     http.get<unknown, FbGroupPullTask>(`/scraper/fb-group-scrapes/tasks/${taskId}`),
 
+  /** 手动将卡住的 pending/running 任务标记为失败 */
+  markFailed: (taskId: number) =>
+    http.post<unknown, FbGroupPullTask>(`/scraper/fb-group-scrapes/tasks/${taskId}/fail`, {}),
+
   /** 查询某任务的帖子（分页） */
   listTaskPosts: (
     taskId: number,
