@@ -148,3 +148,58 @@ class FbGroupPostPage(BaseModel):
     page: int
     page_size: int
     items: list[FbGroupPostOut]
+
+
+# ─── 定时任务 ──────────────────────────────────────────────────────
+
+class FbGroupScheduleTaskOut(BaseModel):
+    """定时拉取任务（返回给前端）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    config_id: int
+    config_title: Optional[str] = None
+    created_by_id: int
+    created_by_username: Optional[str] = None
+    status: str
+    schedule_type: str
+    schedule_config: dict[str, Any]
+    pull_params: Optional[dict[str, Any]] = None
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
+    last_task_id: Optional[int] = None
+    consecutive_failures: int = 0
+    max_consecutive_failures: int = 5
+    remark: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FbGroupScheduleTaskCreate(BaseModel):
+    """创建定时任务请求体。"""
+
+    schedule_type: Literal["cron", "interval"] = Field(
+        ..., description="cron 或 interval"
+    )
+    schedule_config: dict[str, Any] = Field(
+        ...,
+        description='cron: {"cron": "0 10 * * *"} 或 interval: {"hours": 24}',
+    )
+    pull_params: Optional[dict[str, Any]] = Field(
+        None,
+        description="拉取参数（results_limit, view_option 等）",
+    )
+    max_consecutive_failures: int = Field(5, ge=1, le=100)
+    remark: Optional[str] = Field(None, max_length=500)
+
+
+class FbGroupScheduleTaskUpdate(BaseModel):
+    """更新定时任务请求体。"""
+
+    status: Optional[Literal["active", "paused", "disabled"]] = None
+    schedule_type: Optional[Literal["cron", "interval"]] = None
+    schedule_config: Optional[dict[str, Any]] = None
+    pull_params: Optional[dict[str, Any]] = None
+    max_consecutive_failures: Optional[int] = Field(None, ge=1, le=100)
+    remark: Optional[str] = Field(None, max_length=500)

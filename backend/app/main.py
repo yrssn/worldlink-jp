@@ -12,6 +12,7 @@ from app.api.v1.api import api_router
 from app.core.config import settings
 from app.db.init_db import init_db
 from app.services.bitbrowser_relay import relay_manager
+from app.services.fb_group_scheduler import fb_group_scheduler
 
 
 @asynccontextmanager
@@ -23,7 +24,21 @@ async def lifespan(_: FastAPI):
         init_db()
     except Exception as e:  # noqa: BLE001
         logger.exception("init_db failed: {}", e)
+    
+    # 启动定时任务调度器
+    try:
+        fb_group_scheduler.start()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("fb_group_scheduler startup failed: {}", e)
+    
     yield
+    
+    # 关闭调度器
+    try:
+        fb_group_scheduler.stop()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("fb_group_scheduler shutdown failed: {}", e)
+    
     logger.info("Shutting down {}", settings.app_name)
 
 

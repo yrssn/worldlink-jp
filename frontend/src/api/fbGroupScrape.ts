@@ -74,6 +74,43 @@ export interface FbGroupPostPage {
   items: FbGroupPost[]
 }
 
+export interface FbGroupScheduleTask {
+  id: number
+  config_id: number
+  config_title?: string | null
+  created_by_id: number
+  created_by_username?: string | null
+  status: 'active' | 'paused' | 'disabled'
+  schedule_type: 'cron' | 'interval'
+  schedule_config: Record<string, unknown>
+  pull_params?: Record<string, unknown> | null
+  last_run_at?: string | null
+  next_run_at?: string | null
+  last_task_id?: number | null
+  consecutive_failures: number
+  max_consecutive_failures: number
+  remark?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface FbGroupScheduleTaskCreate {
+  schedule_type: 'cron' | 'interval'
+  schedule_config: Record<string, unknown>
+  pull_params?: Record<string, unknown> | null
+  max_consecutive_failures?: number
+  remark?: string | null
+}
+
+export interface FbGroupScheduleTaskUpdate {
+  status?: 'active' | 'paused' | 'disabled'
+  schedule_type?: 'cron' | 'interval'
+  schedule_config?: Record<string, unknown>
+  pull_params?: Record<string, unknown> | null
+  max_consecutive_failures?: number
+  remark?: string | null
+}
+
 export const fbGroupScrapeApi = {
   list: (params?: { keyword?: string; include_deleted?: boolean }) =>
     http.get<unknown, FbGroupScrape[]>('/scraper/fb-group-scrapes', { params: params || {} }),
@@ -122,5 +159,25 @@ export const fbGroupScrapeApi = {
   ) =>
     http.get<unknown, FbGroupPostPage>(`/scraper/fb-group-scrapes/${configId}/posts`, {
       params: params || {}
-    })
+    }),
+
+  // ─── 定时任务 ───────────────────────────────────────────────────
+  /** 为某配置创建定时拉取任务 */
+  createSchedule: (configId: number, body: FbGroupScheduleTaskCreate) =>
+    http.post<unknown, FbGroupScheduleTask>(
+      `/scraper/fb-group-scrapes/${configId}/schedules`,
+      body
+    ),
+
+  /** 列出某配置的所有定时任务 */
+  listSchedules: (configId: number) =>
+    http.get<unknown, FbGroupScheduleTask[]>(`/scraper/fb-group-scrapes/${configId}/schedules`),
+
+  /** 更新定时任务 */
+  updateSchedule: (scheduleId: number, body: FbGroupScheduleTaskUpdate) =>
+    http.put<unknown, FbGroupScheduleTask>(`/scraper/fb-group-scrapes/schedules/${scheduleId}`, body),
+
+  /** 删除定时任务 */
+  deleteSchedule: (scheduleId: number) =>
+    http.delete<unknown, { ok: boolean }>(`/scraper/fb-group-scrapes/schedules/${scheduleId}`)
 }

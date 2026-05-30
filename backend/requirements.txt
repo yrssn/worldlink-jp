@@ -21,3 +21,4 @@ langchain-community==0.3.2
 tenacity==8.5.0
 loguru==0.7.2
 python-dotenv==1.0.1
+APScheduler==3.10.4

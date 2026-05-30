@@ -6,9 +6,11 @@ import {
   type FbGroupPost,
   type FbGroupPullTask,
   type FbGroupScrape,
-  type FbGroupViewOption
+  type FbGroupViewOption,
+  type FbGroupScheduleTask
 } from '@/api/fbGroupScrape'
 import { useAuthStore } from '@/store/auth'
+import FbGroupScheduleView from './FbGroupScheduleView.vue'
 
 const auth = useAuthStore()
 const isAdmin = computed(() => auth.isAdmin)
@@ -251,6 +253,30 @@ const postsLoading = ref(false)
 const postsDetailRow = ref<FbGroupPost | null>(null)
 const postsDetailVisible = ref(false)
 
+// ─── 定时任务 ────────────────────────────────────────────────────
+const scheduleDrawerVisible = ref(false)
+const scheduleConfig = ref<FbGroupScrape | null>(null)
+const schedules = ref<FbGroupScheduleTask[]>([])
+const schedulesLoading = ref(false)
+
+async function openSchedule(row: FbGroupScrape) {
+  scheduleConfig.value = row
+  scheduleDrawerVisible.value = true
+  await loadSchedules()
+}
+
+async function loadSchedules() {
+  if (!scheduleConfig.value) return
+  schedulesLoading.value = true
+  try {
+    schedules.value = await fbGroupScrapeApi.listSchedules(scheduleConfig.value.id)
+  } catch {
+    /* 拦截器 */
+  } finally {
+    schedulesLoading.value = false
+  }
+}
+
 async function openPosts(task: FbGroupPullTask) {
   postsTask.value = task
   postsPage.value = 1
@@ -362,11 +388,12 @@ onUnmounted(stopPoll)
           <el-tag v-else type="success" size="small">正常</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <template v-if="!row.deleted_at">
             <el-button size="small" type="primary" plain @click="openPull(row)">拉取</el-button>
             <el-button size="small" type="success" plain @click="openTaskPanel(row)">任务</el-button>
+            <el-button size="small" type="info" plain @click="openSchedule(row)">定时</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" plain @click="removeRow(row)">删除</el-button>
           </template>
@@ -600,6 +627,11 @@ onUnmounted(stopPoll)
         <el-button type="primary" :loading="batchSubmitting" @click="confirmBatchPull">提交 {{ selectedConfigs.length }} 个任务</el-button>
       </template>
     </el-dialog>
+
+    <!-- 定时任务抽屉 -->
+    <el-drawer v-model="scheduleDrawerVisible" title="定时拉取任务" size="60%" destroy-on-close>
+      <FbGroupScheduleView v-if="scheduleConfig" :key="scheduleConfig.id" />
+    </el-drawer>
 
     <!-- 帖子详情弹窗 -->
     <el-dialog v-model="postsDetailVisible" title="帖子原始 JSON" width="720px" destroy-on-close>

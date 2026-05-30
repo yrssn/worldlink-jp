@@ -17,6 +17,8 @@ from app.models.fb_group_scrape import (
     FbGroupPullTask,
     FbGroupPullTaskStatus,
     FbGroupScrapeConfig,
+    FbGroupScheduleTask,
+    FbGroupScheduleTaskStatus,
 )
 from app.models.user import User
 from app.schemas.fb_group_scrape import (
@@ -28,6 +30,9 @@ from app.schemas.fb_group_scrape import (
     FbGroupScrapeCreate,
     FbGroupScrapeOut,
     FbGroupScrapeUpdate,
+    FbGroupScheduleTaskCreate,
+    FbGroupScheduleTaskOut,
+    FbGroupScheduleTaskUpdate,
 )
 from app.services import apify_service
 
@@ -646,3 +651,151 @@ def restore_fb_group_scrape(
         .one()
     )
     return _to_out(row)
+
+
+# ─── 定时拉取任务 ───────────────────────────────────────────────────
+
+def _to_schedule_out(task: FbGroupScheduleTask) -> FbGroupScheduleTaskOut:
+    return FbGroupScheduleTaskOut(
+        id=task.id,
+        config_id=task.config_id,
+        config_title=task.config.title if task.config else None,
+        created_by_id=task.created_by_id,
+        created_by_username=task.creator.username if task.creator else None,
+        status=task.status.value,
+        schedule_type=task.schedule_type,
+        schedule_config=task.schedule_config,
+        pull_params=task.pull_params,
+        last_run_at=task.last_run_at,
+        next_run_at=task.next_run_at,
+        last_task_id=task.last_task_id,
+        consecutive_failures=task.consecutive_failures,
+        max_consecutive_failures=task.max_consecutive_failures,
+        remark=task.remark,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+    )
+
+
+@router.post("/{record_id}/schedules", response_model=FbGroupScheduleTaskOut)
+def create_schedule_task(
+    record_id: int,
+    body: FbGroupScheduleTaskCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """为某群组配置创建定时拉取任务。"""
+    row = _get_or_404(db, user, record_id)
+    if row.deleted_at is not None:
+        raise HTTPException(status_code=400, detail="已删除的记录不可创建定时任务")
+
+    task = FbGroupScheduleTask(
+        config_id=row.id,
+        created_by_id=user.id,
+        status=FbGroupScheduleTaskStatus.active,
+        schedule_type=body.schedule_type,
+        schedule_config=body.schedule_config,
+        pull_params=body.pull_params,
+        max_consecutive_failures=body.max_consecutive_failures,
+        remark=body.remark,
+    )
+    db.add(task)
+    db.commit()
+    task = (
+        db.query(FbGroupScheduleTask)
+        .options(
+            joinedload(FbGroupScheduleTask.config),
+            joinedload(FbGroupScheduleTask.creator),
+        )
+        .filter(FbGroupScheduleTask.id == task.id)
+        .one()
+    )
+
+    # 注册到调度器
+    from app.services.fb_group_scheduler import fb_group_scheduler
+    fb_group_scheduler.add_schedule(task)
+
+    logger.info("[FbGroupSchedule] Created schedule#{} for config#{}", task.id, record_id)
+    return _to_schedule_out(task)
+
+
+@router.get("/{record_id}/schedules", response_model=list[FbGroupScheduleTaskOut])
+def list_schedule_tasks(
+    record_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """列出某群组配置的所有定时任务。"""
+    row = _get_or_404(db, user, record_id, include_deleted=True)
+    q = (
+        db.query(FbGroupScheduleTask)
+        .options(
+            joinedload(FbGroupScheduleTask.config),
+            joinedload(FbGroupScheduleTask.creator),
+        )
+        .filter(FbGroupScheduleTask.config_id == row.id)
+    )
+    if not is_admin(user):
+        q = q.filter(FbGroupScheduleTask.created_by_id == user.id)
+    tasks = q.order_by(FbGroupScheduleTask.id.desc()).all()
+    return [_to_schedule_out(t) for t in tasks]
+
+
+@router.put("/schedules/{schedule_id}", response_model=FbGroupScheduleTaskOut)
+def update_schedule_task(
+    schedule_id: int,
+    body: FbGroupScheduleTaskUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """更新定时任务。"""
+    task = (
+        db.query(FbGroupScheduleTask)
+        .options(
+            joinedload(FbGroupScheduleTask.config),
+            joinedload(FbGroupScheduleTask.creator),
+        )
+        .filter(FbGroupScheduleTask.id == schedule_id)
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="定时任务不存在")
+    if not is_admin(user) and task.created_by_id != user.id:
+        raise HTTPException(status_code=403, detail="无权修改")
+
+    data = body.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(task, k, v)
+    db.commit()
+    db.refresh(task)
+
+    # 更新调度器
+    from app.services.fb_group_scheduler import fb_group_scheduler
+    fb_group_scheduler.update_schedule(task)
+
+    logger.info("[FbGroupSchedule] Updated schedule#{}", schedule_id)
+    return _to_schedule_out(task)
+
+
+@router.delete("/schedules/{schedule_id}")
+def delete_schedule_task(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """删除定时任务。"""
+    task = db.query(FbGroupScheduleTask).filter(FbGroupScheduleTask.id == schedule_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="定时任务不存在")
+    if not is_admin(user) and task.created_by_id != user.id:
+        raise HTTPException(status_code=403, detail="无权删除")
+
+    db.delete(task)
+    db.commit()
+
+    # 从调度器移除
+    from app.services.fb_group_scheduler import fb_group_scheduler
+    fb_group_scheduler.remove_schedule(schedule_id)
+
+    logger.info("[FbGroupSchedule] Deleted schedule#{}", schedule_id)
+    return {"ok": True}

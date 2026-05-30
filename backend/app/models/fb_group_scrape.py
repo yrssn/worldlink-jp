@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -110,3 +111,68 @@ class FbGroupPost(Base, TimestampMixin):
     has_attachments: Mapped[bool] = mapped_column(default=False, nullable=False)
     has_shared_post: Mapped[bool] = mapped_column(default=False, nullable=False)
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="原始 JSON")
+
+
+class FbGroupScheduleTaskStatus(str, enum.Enum):
+    """定时任务状态"""
+    active = "active"
+    paused = "paused"
+    disabled = "disabled"
+
+
+class FbGroupScheduleTask(Base, TimestampMixin):
+    """Facebook 群组定时拉取任务配置。"""
+
+    __tablename__ = "fb_group_schedule_tasks"
+
+    config_id: Mapped[int] = mapped_column(
+        ForeignKey("fb_group_scrape_configs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[FbGroupScheduleTaskStatus] = mapped_column(
+        Enum(FbGroupScheduleTaskStatus),
+        default=FbGroupScheduleTaskStatus.active,
+        nullable=False,
+        index=True,
+    )
+    # 调度方式：'cron' 或 'interval'
+    schedule_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, comment="cron 或 interval"
+    )
+    # Cron 表达式（如 '0 10 * * *' 表示每天 10 点）或 interval 配置（如 '{"hours": 24}'）
+    schedule_config: Mapped[dict] = mapped_column(
+        JSON, nullable=False, comment="调度配置（cron 表达式或 interval 参数）"
+    )
+    # 拉取参数（results_limit, view_option 等）
+    pull_params: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, comment="拉取参数"
+    )
+    # 最后一次执行时间
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 下次执行时间
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 最后一次执行的任务 ID（用于追踪）
+    last_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fb_group_pull_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # 连续失败次数
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 最大连续失败次数（超过则自动禁用）
+    max_consecutive_failures: Mapped[int] = mapped_column(
+        Integer, default=5, nullable=False
+    )
+    # 备注
+    remark: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    config: Mapped[FbGroupScrapeConfig] = relationship(
+        "FbGroupScrapeConfig", foreign_keys=[config_id]
+    )
+    creator: Mapped[User] = relationship("User", foreign_keys=[created_by_id])
+    last_task: Mapped[FbGroupPullTask | None] = relationship(
+        "FbGroupPullTask", foreign_keys=[last_task_id]
+    )
