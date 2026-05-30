@@ -186,6 +186,8 @@ def _to_task_out(task: FbGroupPullTask) -> FbGroupPullTaskOut:
         apify_run_id=task.apify_run_id,
         apify_dataset_id=task.apify_dataset_id,
         result_count=task.result_count,
+        duplicate_count=getattr(task, 'duplicate_count', 0),
+        total_fetched=getattr(task, 'total_fetched', 0),
         error=task.error,
         started_at=task.started_at,
         finished_at=task.finished_at,
