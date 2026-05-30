@@ -181,5 +181,9 @@ export const fbGroupScrapeApi = {
 
   /** 删除定时任务 */
   deleteSchedule: (scheduleId: number) =>
-    http.delete<unknown, { ok: boolean }>(`/scraper/fb-group-scrapes/schedules/${scheduleId}`)
+    http.delete<unknown, { ok: boolean }>(`/scraper/fb-group-scrapes/schedules/${scheduleId}`),
+
+  /** 立即执行定时任务（创建拉取任务） */
+  executeScheduleNow: (scheduleId: number) =>
+    http.post<unknown, FbGroupPullTask>(`/scraper/fb-group-scrapes/schedules/${scheduleId}/execute`, {})
 }

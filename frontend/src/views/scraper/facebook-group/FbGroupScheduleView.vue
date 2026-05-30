@@ -133,6 +133,16 @@ async function toggleStatus(row: FbGroupScheduleTask) {
   }
 }
 
+async function executeNow(row: FbGroupScheduleTask) {
+  try {
+    const task = await fbGroupScrapeApi.executeScheduleNow(row.id)
+    ElMessage.success(`已创建拉取任务 #${task.id}，正在后台执行`)
+    await loadSchedules()
+  } catch {
+    /* 拦截器 */
+  }
+}
+
 function formatSchedule(row: FbGroupScheduleTask): string {
   if (row.schedule_type === 'cron') {
     return `Cron: ${(row.schedule_config as any)?.cron || '—'}`
@@ -198,8 +208,16 @@ onMounted(() => loadSchedules())
           {{ row.remark || '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
+          <el-button
+            link
+            type="success"
+            size="small"
+            @click="executeNow(row)"
+          >
+            立即执行
+          </el-button>
           <el-button
             link
             type="primary"

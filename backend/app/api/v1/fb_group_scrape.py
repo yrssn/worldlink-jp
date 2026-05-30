@@ -807,3 +807,61 @@ def delete_schedule_task(
 
     logger.info("[FbGroupSchedule] Deleted schedule#{}", schedule_id)
     return {"ok": True}
+
+
+@router.post("/schedules/{schedule_id}/execute", response_model=FbGroupPullTaskOut)
+def execute_schedule_now(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """立即执行定时任务（创建一个拉取任务）。"""
+    schedule = db.query(FbGroupScheduleTask).filter(FbGroupScheduleTask.id == schedule_id).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="定时任务不存在")
+    if not is_admin(user) and schedule.created_by_id != user.id:
+        raise HTTPException(status_code=403, detail="无权执行")
+
+    # 构建拉取参数，支持增量拉取
+    pull_params = dict(schedule.pull_params or {})
+    
+    # 如果上次任务成功完成，自动设置 only_posts_newer_than 为上次完成时间
+    if schedule.last_task_id:
+        last_task = db.query(FbGroupPullTask).filter(
+            FbGroupPullTask.id == schedule.last_task_id
+        ).first()
+        if last_task and last_task.status == FbGroupPullTaskStatus.done and last_task.finished_at:
+            pull_params["only_posts_newer_than"] = last_task.finished_at.isoformat()
+
+    # 创建拉取任务
+    task = FbGroupPullTask(
+        config_id=schedule.config_id,
+        created_by_id=user.id,
+        status=FbGroupPullTaskStatus.pending,
+        params=pull_params,
+    )
+    db.add(task)
+    db.flush()
+    task_id = task.id
+
+    schedule.last_run_at = datetime.utcnow()
+    schedule.last_task_id = task_id
+    db.commit()
+
+    # 后台执行拉取
+    import threading
+    t = threading.Thread(target=_run_pull_task_bg, args=(task_id,), daemon=True)
+    t.start()
+
+    task = (
+        db.query(FbGroupPullTask)
+        .options(
+            joinedload(FbGroupPullTask.config),
+            joinedload(FbGroupPullTask.creator),
+        )
+        .filter(FbGroupPullTask.id == task_id)
+        .one()
+    )
+
+    logger.info("[FbGroupSchedule] Manually executed schedule#{}, created task#{}", schedule_id, task_id)
+    return _to_task_out(task)
