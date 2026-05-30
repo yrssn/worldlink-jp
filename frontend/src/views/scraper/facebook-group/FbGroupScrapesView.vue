@@ -461,7 +461,7 @@ onUnmounted(stopPoll)
     <el-drawer
       v-model="taskPanelVisible"
       :title="`拉取任务列表 — ${taskPanelConfig?.title || ''}`"
-      size="720px"
+      size="900px"
       destroy-on-close
       @close="onTaskPanelClose"
     >
