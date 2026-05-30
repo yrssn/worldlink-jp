@@ -117,12 +117,29 @@ class FbGroupScheduler:
                 logger.info("[FbGroupScheduler] Schedule#{} is not active ({})", schedule_id, schedule.status)
                 return
 
+            # 构建拉取参数，支持增量拉取
+            pull_params = dict(schedule.pull_params or {})
+            
+            # 如果上次任务成功完成，自动设置 only_posts_newer_than 为上次完成时间
+            # 这样可以避免重复拉取旧帖子
+            if schedule.last_task_id:
+                last_task = db.query(FbGroupPullTask).filter(
+                    FbGroupPullTask.id == schedule.last_task_id
+                ).first()
+                if last_task and last_task.status == FbGroupPullTaskStatus.done and last_task.finished_at:
+                    # 使用上次完成时间作为增量拉取的起点
+                    pull_params["only_posts_newer_than"] = last_task.finished_at.isoformat()
+                    logger.info(
+                        "[FbGroupScheduler] Schedule#{} incremental fetch from {}",
+                        schedule_id, last_task.finished_at.isoformat()
+                    )
+
             # 创建拉取任务
             task = FbGroupPullTask(
                 config_id=schedule.config_id,
                 created_by_id=schedule.created_by_id,
                 status=FbGroupPullTaskStatus.pending,
-                params=schedule.pull_params or {},
+                params=pull_params,
             )
             db.add(task)
             db.flush()

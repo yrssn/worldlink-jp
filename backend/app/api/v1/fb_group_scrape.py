@@ -133,8 +133,10 @@ def _run_pull_task_bg(task_id: int) -> None:
         items = result.get("items") or []
         task.apify_run_id = result.get("run_id")
         task.apify_dataset_id = result.get("dataset_id")
+        task.total_fetched = len(items)
 
         saved = 0
+        duplicates = 0
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -146,13 +148,17 @@ def _run_pull_task_bg(task_id: int) -> None:
                     db.add(post)
                 saved += 1
             except IntegrityError:
-                pass  # 跳过重复帖子，继续下一条
+                duplicates += 1  # 记录重复帖子
 
         task.result_count = saved
+        task.duplicate_count = duplicates
         task.status = FbGroupPullTaskStatus.done
         task.finished_at = datetime.utcnow()
         db.commit()
-        logger.info("[FbGroupPullTask#{}] done, saved {} posts", task_id, saved)
+        logger.info(
+            "[FbGroupPullTask#{}] done, saved {} posts, {} duplicates, {} total fetched",
+            task_id, saved, duplicates, task.total_fetched
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("[FbGroupPullTask#{}] unexpected error: {}", task_id, e)
         try:

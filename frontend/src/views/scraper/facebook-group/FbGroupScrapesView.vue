@@ -479,7 +479,15 @@ onUnmounted(stopPoll)
             <el-tag :type="taskStatusType(row.status)" size="small">{{ taskStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="帖数" prop="result_count" width="72" align="center" />
+        <el-table-column label="新增/重复/总数" width="140" align="center">
+          <template #default="{ row }">
+            <div style="font-size:12px;line-height:1.6">
+              <div style="color:#67c23a">✓ {{ row.result_count }}</div>
+              <div v-if="row.duplicate_count > 0" style="color:#e6a23c">⊘ {{ row.duplicate_count }}</div>
+              <div style="color:#909399">/ {{ row.total_fetched }}</div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="参数" min-width="120" show-overflow-tooltip>
           <template #default="{ row }">
             <span style="font-size:12px">
@@ -630,7 +638,7 @@ onUnmounted(stopPoll)
 
     <!-- 定时任务抽屉 -->
     <el-drawer v-model="scheduleDrawerVisible" title="定时拉取任务" size="60%" destroy-on-close>
-      <FbGroupScheduleView v-if="scheduleConfig" :key="scheduleConfig.id" />
+      <FbGroupScheduleView v-if="scheduleConfig" :key="scheduleConfig.id" :config-id="scheduleConfig.id" />
     </el-drawer>
 
     <!-- 帖子详情弹窗 -->

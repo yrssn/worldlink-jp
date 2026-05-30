@@ -39,6 +39,8 @@ export interface FbGroupPullTask {
   apify_run_id?: string | null
   apify_dataset_id?: string | null
   result_count: number
+  duplicate_count: number
+  total_fetched: number
   error?: string | null
   started_at?: string | null
   finished_at?: string | null
