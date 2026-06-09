@@ -97,12 +97,18 @@ def start_apify_signup(
     page_ws = _create_page(http_base, SIGNUP_URL)
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
+        page.call("Network.enable")
         page.call("Runtime.enable")
         _wait_page_ready(page)
         time.sleep(2)
         first_url = _current_url(page)
+        cleared_cookie_count = _clear_apify_session(page)
+        page.call("Page.navigate", {"url": SIGNUP_URL})
+        _wait_page_ready(page)
+        time.sleep(1)
         logged_out = False
-        if _looks_logged_in_url(first_url):
+        post_clear_url = _current_url(page)
+        if _looks_logged_in_url(post_clear_url):
             logged_out = _logout_apify(page)
             page.call("Page.navigate", {"url": SIGNUP_URL})
             _wait_page_ready(page)
@@ -119,6 +125,8 @@ def start_apify_signup(
         "first_url": first_url,
         "final_url": final_url,
         "logged_out": logged_out,
+        "session_cleared": True,
+        "cleared_cookie_count": cleared_cookie_count,
         "ready": password_submitted,
         "email_submitted": email_submitted,
         "password_submitted": password_submitted,
@@ -173,6 +181,46 @@ def _current_url(page: CdpPage) -> str:
 
 def _looks_logged_in_url(url: str) -> bool:
     return "console.apify.com" in url and "/sign-up" not in url and "/log-in" not in url
+
+
+def _clear_apify_session(page: CdpPage) -> int:
+    cleared_cookie_count = _delete_apify_cookies(page)
+    _clear_apify_storage(page)
+    return cleared_cookie_count
+
+
+def _delete_apify_cookies(page: CdpPage) -> int:
+    result = page.call("Network.getAllCookies", timeout=8)
+    raw_cookies = result.get("cookies")
+    if not isinstance(raw_cookies, list):
+        return 0
+    deleted = 0
+    for raw_cookie in raw_cookies:
+        if not isinstance(raw_cookie, dict):
+            continue
+        name = str(raw_cookie.get("name") or "").strip()
+        domain = str(raw_cookie.get("domain") or "").strip()
+        if not name or "apify.com" not in domain:
+            continue
+        host = domain.lstrip(".")
+        try:
+            page.call("Network.deleteCookies", {"name": name, "url": f"https://{host}/"}, timeout=5)
+            deleted += 1
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] delete cookie skipped {} {}: {}", domain, name, e)
+    return deleted
+
+
+def _clear_apify_storage(page: CdpPage) -> None:
+    for origin in ("https://apify.com", "https://console.apify.com"):
+        try:
+            page.call(
+                "Storage.clearDataForOrigin",
+                {"origin": origin, "storageTypes": "all"},
+                timeout=8,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] clear storage skipped {}: {}", origin, e)
 
 
 def _is_signup_page(page: CdpPage) -> bool:

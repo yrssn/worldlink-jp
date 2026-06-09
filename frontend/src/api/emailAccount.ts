@@ -43,6 +43,8 @@ export interface ApifySignupStartResult {
   first_url: string
   final_url: string
   logged_out: boolean
+  session_cleared: boolean
+  cleared_cookie_count: number
   ready: boolean
   email_submitted: boolean
   password_submitted: boolean

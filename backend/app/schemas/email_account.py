@@ -67,6 +67,8 @@ class ApifySignupStartOut(BaseModel):
     first_url: str
     final_url: str
     logged_out: bool = False
+    session_cleared: bool = False
+    cleared_cookie_count: int = 0
     ready: bool = False
     email_submitted: bool = False
     password_submitted: bool = False
