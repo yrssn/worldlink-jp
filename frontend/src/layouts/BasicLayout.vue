@@ -60,6 +60,13 @@ async function handleLogout() {
           <el-menu-item index="/bitbrowser/saved">系统登记</el-menu-item>
           <el-menu-item index="/bitbrowser/platforms">平台管理</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="automation">
+          <template #title>
+            <el-icon><Message /></el-icon>
+            <span>账号自动化</span>
+          </template>
+          <el-menu-item index="/email/accounts">邮箱管理</el-menu-item>
+        </el-sub-menu>
         <el-sub-menu index="scraper">
           <template #title>
             <el-icon><Search /></el-icon>

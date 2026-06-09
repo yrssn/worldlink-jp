@@ -14,6 +14,12 @@ const routes: RouteRecordRaw[] = [
     redirect: '/scraper/tasks',
     children: [
       {
+        path: 'email/accounts',
+        name: 'email-accounts',
+        component: () => import('@/views/email/EmailAccountsView.vue'),
+        meta: { title: '邮箱管理' }
+      },
+      {
         path: 'llm/providers',
         name: 'llm-providers',
         component: () => import('@/views/llm/ProvidersView.vue'),

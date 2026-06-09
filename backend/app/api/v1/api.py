@@ -1,6 +1,17 @@
 from fastapi import APIRouter
 
-from app.api.v1 import apify_key, auth, bitbrowser, dm, fb_group_scrape, influencer, llm, prompt, scrape
+from app.api.v1 import (
+    apify_key,
+    auth,
+    bitbrowser,
+    dm,
+    email_account,
+    fb_group_scrape,
+    influencer,
+    llm,
+    prompt,
+    scrape,
+)
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
@@ -12,3 +23,4 @@ api_router.include_router(scrape.router)
 api_router.include_router(fb_group_scrape.router)
 api_router.include_router(influencer.router)
 api_router.include_router(apify_key.router)
+api_router.include_router(email_account.router)
