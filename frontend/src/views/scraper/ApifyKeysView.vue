@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apifyKeyApi, type ApifyKey, type ApifyKeyCreate } from '@/api/apifyKey'
+import { emailAccountApi, type EmailAccount } from '@/api/emailAccount'
 
 const list = ref<ApifyKey[]>([])
 const loading = ref(false)
@@ -9,12 +10,14 @@ const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const submitting = ref(false)
 const showToken = ref<Record<number, boolean>>({})
+const emailAccounts = ref<EmailAccount[]>([])
 
 const form = reactive({
   label: '',
   token: '',
   is_default: false,
-  remark: ''
+  remark: '',
+  email_account_id: null as number | null
 })
 
 function resetForm() {
@@ -22,7 +25,16 @@ function resetForm() {
   form.token = ''
   form.is_default = false
   form.remark = ''
+  form.email_account_id = null
   editingId.value = null
+}
+
+async function loadEmailAccounts() {
+  try {
+    emailAccounts.value = await emailAccountApi.list({ purpose: 'apify' })
+  } catch {
+    emailAccounts.value = []
+  }
 }
 
 async function load() {
@@ -36,18 +48,21 @@ async function load() {
   }
 }
 
-function openCreate() {
+async function openCreate() {
   resetForm()
+  await loadEmailAccounts()
   dialogVisible.value = true
 }
 
-function openEdit(row: ApifyKey) {
+async function openEdit(row: ApifyKey) {
   resetForm()
+  await loadEmailAccounts()
   editingId.value = row.id
   form.label = row.label
   form.token = row.token
   form.is_default = row.is_default
   form.remark = row.remark || ''
+  form.email_account_id = row.email_account_id || null
   dialogVisible.value = true
 }
 
@@ -60,14 +75,16 @@ async function handleSubmit() {
       await apifyKeyApi.update(editingId.value, {
         label: form.label.trim(),
         token: form.token.trim(),
-        remark: form.remark.trim() || null
+        remark: form.remark.trim() || null,
+        email_account_id: form.email_account_id
       })
     } else {
       const payload: ApifyKeyCreate = {
         label: form.label.trim(),
         token: form.token.trim(),
         is_default: form.is_default,
-        remark: form.remark.trim() || null
+        remark: form.remark.trim() || null,
+        email_account_id: form.email_account_id
       }
       await apifyKeyApi.create(payload)
     }
@@ -136,7 +153,15 @@ function maskToken(token: string) {
   return token.slice(0, 12) + '...' + token.slice(-4)
 }
 
-onMounted(load)
+function emailAccountLabel(row: EmailAccount) {
+  const apifyName = row.apify_username || row.apify_full_name
+  return apifyName ? `${row.email} / ${apifyName}` : row.email
+}
+
+onMounted(() => {
+  load()
+  loadEmailAccounts()
+})
 </script>
 
 <template>
@@ -161,6 +186,18 @@ onMounted(load)
               @click="toggleShowToken(row.id)"
             >{{ showToken[row.id] ? '隐藏' : '显示' }}</el-button>
           </el-space>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="关联注册邮箱" min-width="220">
+        <template #default="{ row }">
+          <div v-if="row.email_account_email">
+            <el-text tag="div">{{ row.email_account_email }}</el-text>
+            <el-text tag="div" type="info" size="small">
+              验证邮箱：{{ row.email_account_verification_email || '—' }}
+            </el-text>
+          </div>
+          <el-text v-else type="info">—</el-text>
         </template>
       </el-table-column>
 
@@ -241,6 +278,31 @@ onMounted(load)
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.remark" placeholder="可选备注" maxlength="500" />
+        </el-form-item>
+        <el-form-item label="关联邮箱">
+          <el-select
+            v-model="form.email_account_id"
+            filterable
+            clearable
+            placeholder="选择邮箱管理中的 Apify 注册邮箱"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in emailAccounts"
+              :key="item.id"
+              :label="emailAccountLabel(item)"
+              :value="item.id"
+            >
+              <div style="display: flex; justify-content: space-between; gap: 12px">
+                <span>{{ emailAccountLabel(item) }}</span>
+                <el-text type="info" size="small">{{ item.status }}</el-text>
+              </div>
+            </el-option>
+          </el-select>
+          <div style="margin-top: 6px">
+            <el-text type="info" size="small">Apify 注册账号应关联到邮箱管理中的注册邮箱记录。</el-text>
+            <el-button link size="small" @click="loadEmailAccounts">刷新邮箱</el-button>
+          </div>
         </el-form-item>
         <el-form-item v-if="editingId === null" label="设为默认">
           <el-switch v-model="form.is_default" />

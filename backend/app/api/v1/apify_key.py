@@ -8,10 +8,35 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db
 from app.models.apify_key import ApifyKey
+from app.models.email_account import EmailAccount
 from app.models.user import User
 from app.schemas.apify_key import ApifyKeyCreate, ApifyKeyOut, ApifyKeyUpdate
 
 router = APIRouter(prefix="/scraper/apify-keys", tags=["scraper-apify-keys"])
+
+
+def _clean_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _validate_email_account(
+    email_account_id: int | None,
+    db: Session,
+    user: User,
+) -> int | None:
+    if email_account_id is None:
+        return None
+    row = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.id == email_account_id, EmailAccount.owner_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="关联邮箱账号不存在")
+    return row.id
 
 
 @router.get("", response_model=list[ApifyKeyOut])
@@ -26,7 +51,7 @@ def list_keys(
 def create_key(
     body: ApifyKeyCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     if body.is_default:
         db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).update({"is_default": False})
@@ -34,7 +59,8 @@ def create_key(
         label=body.label.strip(),
         token=body.token.strip(),
         is_default=body.is_default,
-        remark=(body.remark or "").strip() or None,
+        remark=_clean_text(body.remark),
+        email_account_id=_validate_email_account(body.email_account_id, db, user),
     )
     db.add(row)
     db.commit()
@@ -47,7 +73,7 @@ def update_key(
     key_id: int,
     body: ApifyKeyUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     row = db.get(ApifyKey, key_id)
     if not row:
@@ -58,9 +84,17 @@ def update_key(
     if "token" in data and data["token"] is not None:
         data["token"] = data["token"].strip()
     if "remark" in data:
-        data["remark"] = (data["remark"] or "").strip() or None
-    for k, v in data.items():
-        setattr(row, k, v)
+        data["remark"] = _clean_text(data["remark"])
+    if "email_account_id" in data:
+        data["email_account_id"] = _validate_email_account(data["email_account_id"], db, user)
+    if "label" in data and data["label"] is not None:
+        row.label = data["label"]
+    if "token" in data and data["token"] is not None:
+        row.token = data["token"]
+    if "remark" in data:
+        row.remark = data["remark"]
+    if "email_account_id" in data:
+        row.email_account_id = data["email_account_id"]
     db.commit()
     db.refresh(row)
     return row

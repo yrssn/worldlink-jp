@@ -7,6 +7,9 @@ export interface ApifyKey {
   is_default: boolean
   remark?: string | null
   exhausted_at?: string | null
+  email_account_id?: number | null
+  email_account_email?: string | null
+  email_account_verification_email?: string | null
   created_at: string
   updated_at: string
 }
@@ -16,12 +19,14 @@ export interface ApifyKeyCreate {
   token: string
   is_default?: boolean
   remark?: string | null
+  email_account_id?: number | null
 }
 
 export interface ApifyKeyUpdate {
   label?: string
   token?: string
   remark?: string | null
+  email_account_id?: number | null
 }
 
 export const apifyKeyApi = {

@@ -15,6 +15,9 @@ class ApifyKeyOut(BaseModel):
     is_default: bool
     remark: Optional[str] = None
     exhausted_at: Optional[datetime] = None
+    email_account_id: Optional[int] = None
+    email_account_email: Optional[str] = None
+    email_account_verification_email: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -24,9 +27,11 @@ class ApifyKeyCreate(BaseModel):
     token: str = Field(..., min_length=1, max_length=500)
     is_default: bool = False
     remark: Optional[str] = Field(None, max_length=500)
+    email_account_id: Optional[int] = None
 
 
 class ApifyKeyUpdate(BaseModel):
     label: Optional[str] = Field(None, min_length=1, max_length=200)
     token: Optional[str] = Field(None, min_length=1, max_length=500)
     remark: Optional[str] = Field(None, max_length=500)
+    email_account_id: Optional[int] = None

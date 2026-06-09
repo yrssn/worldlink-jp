@@ -243,12 +243,14 @@ def register_apify_key(
     if apify_key:
         apify_key.label = label
         apify_key.remark = "；".join(remark_parts)
+        apify_key.email_account_id = row.id
     else:
         apify_key = ApifyKey(
             label=label,
             token=token,
             is_default=False,
             remark="；".join(remark_parts),
+            email_account_id=row.id,
         )
         db.add(apify_key)
     row.apify_registered_at = registered_at

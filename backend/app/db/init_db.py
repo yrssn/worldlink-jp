@@ -115,7 +115,7 @@ def _ensure_fb_group_posts_columns() -> None:
 
 
 def _ensure_apify_keys_columns() -> None:
-    """为 apify_keys 表补齐 exhausted_at 列。"""
+    """为 apify_keys 表补齐新增列。"""
     from sqlalchemy import inspect, text
 
     insp = inspect(engine)
@@ -130,6 +130,18 @@ def _ensure_apify_keys_columns() -> None:
                 conn.execute(text(sql))
         except Exception as e:  # noqa: BLE001
             logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+    if "email_account_id" not in cols:
+        statements = [
+            "ALTER TABLE apify_keys ADD COLUMN email_account_id INT NULL",
+            "CREATE INDEX ix_apify_keys_email_account_id ON apify_keys (email_account_id)",
+        ]
+        for sql in statements:
+            try:
+                logger.info("[schema-patch] {}", sql)
+                with engine.begin() as conn:
+                    conn.execute(text(sql))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[schema-patch] failed: {} -> {}", sql, e)
 
 
 def _dev_auto_alter() -> None:
