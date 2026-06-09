@@ -6,6 +6,7 @@ import {
   type EmailAccount,
   type EmailAccountPayload
 } from '@/api/emailAccount'
+import { bitbrowserApi, type BitBrowserCatalogRow } from '@/api/bitbrowser'
 
 const list = ref<EmailAccount[]>([])
 const loading = ref(false)
@@ -14,6 +15,7 @@ const editingId = ref<number | null>(null)
 const submitting = ref(false)
 const syncingId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
+const browserOptions = ref<BitBrowserCatalogRow[]>([])
 
 const filters = reactive({
   q: '',
@@ -145,8 +147,30 @@ async function load() {
   }
 }
 
-function openCreate() {
+async function loadBrowserOptions() {
+  try {
+    const rows = await bitbrowserApi.listCatalog()
+    browserOptions.value = rows.filter((row) => row.in_local_cache)
+  } catch {
+    browserOptions.value = []
+  }
+}
+
+function browserLabel(row: BitBrowserCatalogRow) {
+  const name = row.name || row.cached_window_name || row.browser_id
+  const platform = row.platform_name || row.platform || row.cached_env_platform
+  return platform ? `${name} / ${platform}` : name
+}
+
+function browserName(browserId?: string | null) {
+  if (!browserId) return '—'
+  const row = browserOptions.value.find((item) => item.browser_id === browserId)
+  return row ? browserLabel(row) : browserId
+}
+
+async function openCreate() {
   resetForm()
+  await loadBrowserOptions()
   dialogVisible.value = true
 }
 
@@ -157,10 +181,11 @@ function resetFilters() {
   load()
 }
 
-function openEdit(row: EmailAccount) {
+async function openEdit(row: EmailAccount) {
   resetForm()
   editingId.value = row.id
   fillForm(row)
+  await loadBrowserOptions()
   dialogVisible.value = true
 }
 
@@ -241,7 +266,10 @@ function toDatePickerValue(value?: string | null) {
   )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadBrowserOptions()
+})
 </script>
 
 <template>
@@ -352,7 +380,13 @@ onMounted(load)
         </template>
       </el-table-column>
       <el-table-column label="指纹浏览器" min-width="130">
-        <template #default="{ row }">{{ row.browser_id || '—' }}</template>
+        <template #default="{ row }">
+          <div v-if="row.browser_id">
+            <el-text tag="div">{{ browserName(row.browser_id) }}</el-text>
+            <el-text tag="div" type="info" size="small">{{ row.browser_id }}</el-text>
+          </div>
+          <span v-else>—</span>
+        </template>
       </el-table-column>
       <el-table-column label="Apify 账号" min-width="220">
         <template #default="{ row }">
@@ -462,7 +496,31 @@ onMounted(load)
           </el-select>
         </el-form-item>
         <el-form-item label="指纹浏览器ID">
-          <el-input v-model="form.browser_id" placeholder="关联 BitBrowser browser_id（可选）" maxlength="64" />
+          <el-select
+            v-model="form.browser_id"
+            filterable
+            clearable
+            placeholder="从系统登记里选择可用环境"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in browserOptions"
+              :key="item.browser_id"
+              :label="browserLabel(item)"
+              :value="item.browser_id"
+            >
+              <div style="display: flex; justify-content: space-between; gap: 12px">
+                <span>{{ browserLabel(item) }}</span>
+                <el-text type="info" size="small">{{ item.browser_id }}</el-text>
+              </div>
+            </el-option>
+          </el-select>
+          <div style="margin-top: 6px">
+            <el-text type="info" size="small">
+              数据来自「比特抓取 → 系统登记」，仅显示当前本机列表中仍可用的环境。
+            </el-text>
+            <el-button link size="small" @click="loadBrowserOptions">刷新可选环境</el-button>
+          </div>
         </el-form-item>
         <el-form-item label="Apify 全名">
           <el-input v-model="form.apify_full_name" placeholder="Apify 注册 full name" maxlength="128" />
