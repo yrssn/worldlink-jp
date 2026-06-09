@@ -29,8 +29,8 @@ class EmailAccount(Base, TimestampMixin):
     verification_password: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     verification_login_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
-    purpose: Mapped[str] = mapped_column(String(64), nullable=False, default="apify", index=True)
-    status: Mapped[str] = mapped_column(String(64), nullable=False, default="unused", index=True)
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False, default="registration", index=True)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="available", index=True)
     browser_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     last_verification_code: Mapped[str | None] = mapped_column(String(32), nullable=True)

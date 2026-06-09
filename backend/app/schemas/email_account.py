@@ -36,8 +36,8 @@ class EmailAccountCreate(BaseModel):
     verification_email: Optional[str] = Field(None, max_length=255)
     verification_password: Optional[str] = Field(None, max_length=500)
     verification_login_url: Optional[str] = Field(None, max_length=512)
-    purpose: str = Field("apify", min_length=1, max_length=64)
-    status: str = Field("unused", min_length=1, max_length=64)
+    purpose: str = Field("registration", min_length=1, max_length=64)
+    status: str = Field("available", min_length=1, max_length=64)
     browser_id: Optional[str] = Field(None, max_length=64)
     last_verification_code: Optional[str] = Field(None, max_length=32)
     last_verification_at: Optional[datetime] = None

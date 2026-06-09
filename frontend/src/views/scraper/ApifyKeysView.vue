@@ -39,7 +39,7 @@ function resetForm() {
 
 async function loadEmailAccounts() {
   try {
-    emailAccounts.value = await emailAccountApi.list({ purpose: 'apify' })
+    emailAccounts.value = await emailAccountApi.list()
   } catch {
     emailAccounts.value = []
   }

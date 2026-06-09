@@ -19,9 +19,7 @@ const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
 
 const filters = reactive({
-  q: '',
-  purpose: '',
-  status: ''
+  q: ''
 })
 
 const form = reactive({
@@ -32,34 +30,13 @@ const form = reactive({
   verification_email: '',
   verification_password: '',
   verification_login_url: '',
-  purpose: 'apify',
-  status: 'unused',
+  purpose: 'registration',
+  status: 'available',
   browser_id: '',
   last_verification_code: '',
   last_verification_at: '',
   note: ''
 })
-
-const purposeOptions = [
-  { label: 'Apify 注册', value: 'apify' },
-  { label: '其他流程', value: 'other' }
-]
-
-const statusOptions = [
-  { label: '未使用', value: 'unused', type: 'info' },
-  { label: '邮箱待登录验证', value: 'mail_login_verifying', type: 'warning' },
-  { label: '邮箱已登录', value: 'mail_ready', type: 'success' },
-  { label: 'Apify 邮箱待验证', value: 'apify_email_verifying', type: 'warning' },
-  { label: '异常', value: 'failed', type: 'danger' }
-] as const
-
-function statusLabel(value: string) {
-  return statusOptions.find((item) => item.value === value)?.label || value
-}
-
-function statusType(value: string) {
-  return statusOptions.find((item) => item.value === value)?.type || 'info'
-}
 
 function resetForm() {
   form.email = ''
@@ -69,8 +46,8 @@ function resetForm() {
   form.verification_email = ''
   form.verification_password = ''
   form.verification_login_url = ''
-  form.purpose = 'apify'
-  form.status = 'unused'
+  form.purpose = 'registration'
+  form.status = 'available'
   form.browser_id = ''
   form.last_verification_code = ''
   form.last_verification_at = ''
@@ -116,9 +93,7 @@ async function load() {
   loading.value = true
   try {
     list.value = await emailAccountApi.list({
-      q: filters.q.trim() || undefined,
-      purpose: filters.purpose || undefined,
-      status: filters.status || undefined
+      q: filters.q.trim() || undefined
     })
   } catch {
     ElMessage.error('加载邮箱账号失败')
@@ -168,8 +143,6 @@ async function openCreate() {
 
 function resetFilters() {
   filters.q = ''
-  filters.purpose = ''
-  filters.status = ''
   load()
 }
 
@@ -265,7 +238,7 @@ onMounted(() => {
         type="info"
         :closable="false"
         style="margin-bottom: 12px"
-        title="用于 Apify 等注册流程：保存注册邮箱、邮箱登录验证用的备用 Webmail，并通过 Apify Key 管理判断是否已完成注册。"
+        title="用于自动化注册流程：保存注册邮箱、邮箱登录验证用的备用 Webmail 和对应指纹浏览器；注册结果通过各平台管理表的关联记录判断。"
       />
       <el-form :inline="true" @submit.prevent="load">
         <el-form-item label="关键词">
@@ -276,16 +249,6 @@ onMounted(() => {
             style="width: 280px"
             @keyup.enter="load"
           />
-        </el-form-item>
-        <el-form-item label="用途">
-          <el-select v-model="filters.purpose" clearable placeholder="全部" style="width: 150px">
-            <el-option v-for="item in purposeOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-select v-model="filters.status" clearable placeholder="全部" style="width: 180px">
-            <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="load">查询</el-button>
@@ -351,14 +314,6 @@ onMounted(() => {
           </el-space>
         </template>
       </el-table-column>
-      <el-table-column label="用途/状态" width="170" align="center">
-        <template #default="{ row }">
-          <el-space direction="vertical" :size="4">
-            <el-tag effect="plain">{{ row.purpose === 'apify' ? 'Apify 注册' : row.purpose }}</el-tag>
-            <el-tag :type="statusType(row.status)" effect="dark">{{ statusLabel(row.status) }}</el-tag>
-          </el-space>
-        </template>
-      </el-table-column>
       <el-table-column label="指纹浏览器" min-width="130">
         <template #default="{ row }">
           <div v-if="row.browser_id">
@@ -368,10 +323,10 @@ onMounted(() => {
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column label="Apify 关联" min-width="220">
+      <el-table-column label="注册关联" min-width="220">
         <template #default="{ row }">
           <div v-if="linkedApifyKey(row.id)">
-            <el-tag type="success" effect="dark">已注册</el-tag>
+            <el-tag type="success" effect="dark">Apify 已关联</el-tag>
             <el-text tag="div" style="margin-top: 4px">
               {{ linkedApifyKey(row.id)?.apify_username || linkedApifyKey(row.id)?.label }}
             </el-text>
@@ -410,10 +365,10 @@ onMounted(() => {
       <el-form label-width="130px" @submit.prevent="handleSubmit">
         <el-divider content-position="left">注册邮箱</el-divider>
         <el-form-item label="注册邮箱" required>
-          <el-input v-model="form.email" placeholder="用于注册 Zoho / Apify 的邮箱" maxlength="255" />
+          <el-input v-model="form.email" placeholder="用于自动化注册流程的邮箱" maxlength="255" />
         </el-form-item>
         <el-form-item label="邮箱密码">
-          <el-input v-model="form.email_password" show-password placeholder="通常也作为 Apify 登录密码" maxlength="500" />
+          <el-input v-model="form.email_password" show-password placeholder="邮箱登录密码" maxlength="500" />
         </el-form-item>
         <el-form-item label="邮箱服务商">
           <el-input v-model="form.provider" placeholder="如 zoho" maxlength="64" />
@@ -448,17 +403,7 @@ onMounted(() => {
           </el-col>
         </el-form-item>
 
-        <el-divider content-position="left">流程信息</el-divider>
-        <el-form-item label="用途">
-          <el-select v-model="form.purpose" style="width: 180px">
-            <el-option v-for="item in purposeOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-select v-model="form.status" style="width: 220px">
-            <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
+        <el-divider content-position="left">浏览器环境</el-divider>
         <el-form-item label="指纹浏览器ID">
           <el-select
             v-model="form.browser_id"
