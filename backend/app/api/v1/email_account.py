@@ -138,11 +138,14 @@ def start_email_apify_signup(
         raise HTTPException(status_code=404, detail="邮箱账号不存在")
     if not row.browser_id:
         raise HTTPException(status_code=400, detail="请先为该邮箱选择指纹浏览器")
+    email_password = decrypt_secret(row.email_password)
+    if not email_password:
+        raise HTTPException(status_code=400, detail="请先为该邮箱填写邮箱密码")
     linked = db.query(ApifyKey).filter(ApifyKey.email_account_id == row.id).first()
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
-        return start_apify_signup(row.browser_id, user, db)
+        return start_apify_signup(row.browser_id, row.email, email_password, user, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:

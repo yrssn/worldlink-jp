@@ -44,6 +44,8 @@ export interface ApifySignupStartResult {
   final_url: string
   logged_out: boolean
   ready: boolean
+  email_submitted: boolean
+  password_submitted: boolean
   open_hint?: string | null
 }
 

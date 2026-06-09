@@ -68,4 +68,6 @@ class ApifySignupStartOut(BaseModel):
     final_url: str
     logged_out: bool = False
     ready: bool = False
+    email_submitted: bool = False
+    password_submitted: bool = False
     open_hint: Optional[str] = None

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import time
 from itertools import count
-from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -35,10 +34,10 @@ class CdpPage:
     def call(
         self,
         method: str,
-        params: dict[str, Any] | None = None,
+        params: dict[str, object] | None = None,
         *,
         timeout: float = 15,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         if self._ws is None:
             raise RuntimeError("CDP 未连接")
         msg_id = next(self._ids)
@@ -49,14 +48,18 @@ class CdpPage:
             if remaining <= 0:
                 raise RuntimeError(f"CDP 调用超时: {method}")
             raw = self._ws.recv(timeout=remaining)
-            data = json.loads(raw)
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                continue
+            data: dict[str, object] = parsed
             if data.get("id") != msg_id:
                 continue
             if data.get("error"):
                 raise RuntimeError(f"CDP 调用失败 {method}: {data['error']}")
-            return data.get("result") or {}
+            result = data.get("result") or {}
+            return result if isinstance(result, dict) else {}
 
-    def evaluate(self, expression: str, *, timeout: float = 15) -> Any:
+    def evaluate(self, expression: str, *, timeout: float = 15) -> object:
         result = self.call(
             "Runtime.evaluate",
             {
@@ -67,10 +70,18 @@ class CdpPage:
             timeout=timeout,
         )
         remote = result.get("result") or {}
+        if not isinstance(remote, dict):
+            return None
         return remote.get("value")
 
 
-def start_apify_signup(browser_id: str, user: User, db: Session) -> dict[str, Any]:
+def start_apify_signup(
+    browser_id: str,
+    email: str,
+    password: str,
+    user: User,
+    db: Session,
+) -> dict[str, object]:
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
         user,
@@ -96,8 +107,10 @@ def start_apify_signup(browser_id: str, user: User, db: Session) -> dict[str, An
             page.call("Page.navigate", {"url": SIGNUP_URL})
             _wait_page_ready(page)
             time.sleep(1)
+        email_submitted = _submit_email(page, email)
+        password_submitted = _submit_password(page, password)
+        time.sleep(1)
         final_url = _current_url(page)
-        ready = _is_signup_page(page)
 
     return {
         "ok": True,
@@ -106,12 +119,14 @@ def start_apify_signup(browser_id: str, user: User, db: Session) -> dict[str, An
         "first_url": first_url,
         "final_url": final_url,
         "logged_out": logged_out,
-        "ready": ready,
+        "ready": password_submitted,
+        "email_submitted": email_submitted,
+        "password_submitted": password_submitted,
         "open_hint": open_result.get("hint"),
     }
 
 
-def _extract_devtools_http(open_data: dict[str, Any]) -> str:
+def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raw_http = str(open_data.get("http") or "").strip()
     if raw_http:
         return raw_http if raw_http.startswith(("http://", "https://")) else f"http://{raw_http}"
@@ -169,6 +184,111 @@ def _is_signup_page(page: CdpPage) -> bool:
 })()
 """
     return bool(page.evaluate(script, timeout=5))
+
+
+def _submit_email(page: CdpPage, email: str) -> bool:
+    if not _is_signup_page(page):
+        raise RuntimeError("当前页面不是 Apify 注册页，无法填写邮箱")
+    clicked = bool(page.evaluate(_fill_email_and_next_script(email), timeout=8))
+    if not clicked:
+        raise RuntimeError("未找到可填写的 Apify 邮箱输入框或 Next 按钮")
+    if not _wait_for_password_step(page):
+        raise RuntimeError("已点击 Next，但未进入 Apify 密码填写步骤")
+    return True
+
+
+def _submit_password(page: CdpPage, password: str) -> bool:
+    clicked = bool(page.evaluate(_fill_password_and_signup_script(password), timeout=8))
+    if not clicked:
+        raise RuntimeError("未找到 Apify 密码输入框或 Sign up 按钮")
+    return True
+
+
+def _wait_for_password_step(page: CdpPage, timeout: float = 15) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if page.evaluate("!!document.querySelector('input[type=\"password\"]')", timeout=3):
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] wait password skipped: {}", e)
+        time.sleep(0.5)
+    return False
+
+
+def _fill_email_and_next_script(email: str) -> str:
+    email_json = json.dumps(email)
+    return f"""
+(() => {{
+  const email = {email_json};
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }};
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const setValue = (input, value) => {{
+    const proto = Object.getPrototypeOf(input);
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  const different = Array.from(document.querySelectorAll('button,a,[role="button"]'))
+    .filter(visible)
+    .find((el) => /different email/i.test(textOf(el)));
+  if (different) different.click();
+  const input = Array.from(document.querySelectorAll('input'))
+    .filter(visible)
+    .find((el) => {{
+      const hint = `${{el.type}} ${{el.name}} ${{el.placeholder}} ${{el.autocomplete}}`;
+      return /email/i.test(hint) && !el.disabled && !el.readOnly;
+    }});
+  if (!input) return false;
+  input.focus();
+  setValue(input, email);
+  const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+  const button = buttons.find((el) => /^next$/i.test(textOf(el))) || buttons.find((el) => /next/i.test(textOf(el)));
+  if (!button) return false;
+  setTimeout(() => button.click(), 120);
+  return true;
+}})()
+"""
+
+
+def _fill_password_and_signup_script(password: str) -> str:
+    password_json = json.dumps(password)
+    return f"""
+(() => {{
+  const password = {password_json};
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }};
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const setValue = (input, value) => {{
+    const proto = Object.getPrototypeOf(input);
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  const input = Array.from(document.querySelectorAll('input[type="password"]'))
+    .filter(visible)
+    .find((el) => !el.disabled && !el.readOnly);
+  if (!input) return false;
+  input.focus();
+  setValue(input, password);
+  const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+  const button = buttons.find((el) => /^sign up$/i.test(textOf(el))) || buttons.find((el) => /sign up/i.test(textOf(el)));
+  if (!button) return false;
+  setTimeout(() => button.click(), 250);
+  return true;
+}})()
+"""
 
 
 def _logout_apify(page: CdpPage) -> bool:

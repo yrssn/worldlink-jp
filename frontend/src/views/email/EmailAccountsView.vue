@@ -205,10 +205,12 @@ async function handleStartApifySignup(row: EmailAccount) {
   apifySignupId.value = row.id
   try {
     const result = await emailAccountApi.startApifySignup(row.id)
-    if (result.ready) {
-      ElMessage.success(result.logged_out ? '已退出旧账号并打开 Apify 注册页' : '已打开 Apify 注册页')
+    if (result.password_submitted) {
+      ElMessage.success(result.logged_out ? '已退出旧账号，并已填写邮箱密码提交注册' : '已填写邮箱密码提交注册')
+    } else if (result.email_submitted) {
+      ElMessage.warning('已填写邮箱并进入密码步骤，但未完成提交，请查看指纹浏览器窗口')
     } else {
-      ElMessage.warning('已打开浏览器，但未确认进入注册页，请查看指纹浏览器窗口')
+      ElMessage.warning('已打开浏览器，但未完成 Apify 注册提交，请查看指纹浏览器窗口')
     }
   } catch {
     /* 拦截器已提示 */
