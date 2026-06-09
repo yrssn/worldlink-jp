@@ -70,4 +70,5 @@ class ApifySignupStartOut(BaseModel):
     ready: bool = False
     email_submitted: bool = False
     password_submitted: bool = False
+    captcha_required: bool = False
     open_hint: Optional[str] = None

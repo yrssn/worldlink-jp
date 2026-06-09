@@ -46,6 +46,7 @@ export interface ApifySignupStartResult {
   ready: boolean
   email_submitted: boolean
   password_submitted: boolean
+  captcha_required: boolean
   open_hint?: string | null
 }
 

@@ -109,7 +109,7 @@ def start_apify_signup(
             time.sleep(1)
         email_submitted = _submit_email(page, email)
         password_submitted = _submit_password(page, password)
-        time.sleep(1)
+        captcha_required = _wait_for_captcha(page)
         final_url = _current_url(page)
 
     return {
@@ -122,6 +122,7 @@ def start_apify_signup(
         "ready": password_submitted,
         "email_submitted": email_submitted,
         "password_submitted": password_submitted,
+        "captcha_required": captcha_required,
         "open_hint": open_result.get("hint"),
     }
 
@@ -202,6 +203,33 @@ def _submit_password(page: CdpPage, password: str) -> bool:
     if not clicked:
         raise RuntimeError("未找到 Apify 密码输入框或 Sign up 按钮")
     return True
+
+
+def _wait_for_captcha(page: CdpPage, timeout: float = 8) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if _has_captcha(page):
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] captcha detection skipped: {}", e)
+        time.sleep(0.5)
+    return False
+
+
+def _has_captcha(page: CdpPage) -> bool:
+    script = """
+(() => {
+  const bodyText = document.body ? document.body.innerText : '';
+  const frames = Array.from(document.querySelectorAll('iframe')).map((el) => {
+    return `${el.src || ''} ${el.title || ''} ${el.name || ''}`;
+  }).join(' ');
+  const scripts = Array.from(document.querySelectorAll('script')).map((el) => el.src || '').join(' ');
+  const text = `${bodyText} ${frames} ${scripts}`;
+  return /captcha|hcaptcha|recaptcha|arkose|challenge|Select all squares/i.test(text);
+})()
+"""
+    return bool(page.evaluate(script, timeout=5))
 
 
 def _wait_for_password_step(page: CdpPage, timeout: float = 15) -> bool:
