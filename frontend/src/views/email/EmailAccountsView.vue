@@ -7,15 +7,16 @@ import {
   type EmailAccountPayload
 } from '@/api/emailAccount'
 import { bitbrowserApi, type BitBrowserCatalogRow } from '@/api/bitbrowser'
+import { apifyKeyApi, type ApifyKey } from '@/api/apifyKey'
 
 const list = ref<EmailAccount[]>([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const submitting = ref(false)
-const syncingId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
 const browserOptions = ref<BitBrowserCatalogRow[]>([])
+const apifyKeys = ref<ApifyKey[]>([])
 
 const filters = reactive({
   q: '',
@@ -34,11 +35,6 @@ const form = reactive({
   purpose: 'apify',
   status: 'unused',
   browser_id: '',
-  apify_full_name: '',
-  apify_username: '',
-  apify_user_id: '',
-  apify_token: '',
-  apify_registered_at: '',
   last_verification_code: '',
   last_verification_at: '',
   note: ''
@@ -54,7 +50,6 @@ const statusOptions = [
   { label: '邮箱待登录验证', value: 'mail_login_verifying', type: 'warning' },
   { label: '邮箱已登录', value: 'mail_ready', type: 'success' },
   { label: 'Apify 邮箱待验证', value: 'apify_email_verifying', type: 'warning' },
-  { label: 'Apify 已注册', value: 'apify_registered', type: 'success' },
   { label: '异常', value: 'failed', type: 'danger' }
 ] as const
 
@@ -77,11 +72,6 @@ function resetForm() {
   form.purpose = 'apify'
   form.status = 'unused'
   form.browser_id = ''
-  form.apify_full_name = ''
-  form.apify_username = ''
-  form.apify_user_id = ''
-  form.apify_token = ''
-  form.apify_registered_at = ''
   form.last_verification_code = ''
   form.last_verification_at = ''
   form.note = ''
@@ -100,11 +90,6 @@ function toPayload(): EmailAccountPayload {
     purpose: form.purpose,
     status: form.status,
     browser_id: form.browser_id.trim() || null,
-    apify_full_name: form.apify_full_name.trim() || null,
-    apify_username: form.apify_username.trim() || null,
-    apify_user_id: form.apify_user_id.trim() || null,
-    apify_token: form.apify_token.trim() || null,
-    apify_registered_at: form.apify_registered_at || null,
     last_verification_code: form.last_verification_code.trim() || null,
     last_verification_at: form.last_verification_at || null,
     note: form.note.trim() || null
@@ -122,11 +107,6 @@ function fillForm(row: EmailAccount) {
   form.purpose = row.purpose
   form.status = row.status
   form.browser_id = row.browser_id || ''
-  form.apify_full_name = row.apify_full_name || ''
-  form.apify_username = row.apify_username || ''
-  form.apify_user_id = row.apify_user_id || ''
-  form.apify_token = row.apify_token || ''
-  form.apify_registered_at = toDatePickerValue(row.apify_registered_at)
   form.last_verification_code = row.last_verification_code || ''
   form.last_verification_at = toDatePickerValue(row.last_verification_at)
   form.note = row.note || ''
@@ -156,6 +136,14 @@ async function loadBrowserOptions() {
   }
 }
 
+async function loadApifyKeys() {
+  try {
+    apifyKeys.value = await apifyKeyApi.list()
+  } catch {
+    apifyKeys.value = []
+  }
+}
+
 function browserLabel(row: BitBrowserCatalogRow) {
   const name = row.name || row.cached_window_name || row.browser_id
   const platform = row.platform_name || row.platform || row.cached_env_platform
@@ -166,6 +154,10 @@ function browserName(browserId?: string | null) {
   if (!browserId) return '—'
   const row = browserOptions.value.find((item) => item.browser_id === browserId)
   return row ? browserLabel(row) : browserId
+}
+
+function linkedApifyKey(emailAccountId: number) {
+  return apifyKeys.value.find((item) => item.email_account_id === emailAccountId)
 }
 
 async function openCreate() {
@@ -200,7 +192,7 @@ async function handleSubmit() {
     }
     ElMessage.success(editingId.value !== null ? '已更新邮箱账号' : '已新增邮箱账号')
     dialogVisible.value = false
-    await load()
+    await Promise.all([load(), loadApifyKeys()])
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -217,22 +209,9 @@ async function handleDelete(row: EmailAccount) {
   try {
     await emailAccountApi.remove(row.id)
     ElMessage.success('已删除')
-    await load()
+    await Promise.all([load(), loadApifyKeys()])
   } catch {
     /* 拦截器已提示 */
-  }
-}
-
-async function handleRegisterApifyKey(row: EmailAccount) {
-  syncingId.value = row.id
-  try {
-    await emailAccountApi.registerApifyKey(row.id)
-    ElMessage.success('已登记到 Apify Key 管理')
-    await load()
-  } catch {
-    /* 拦截器已提示 */
-  } finally {
-    syncingId.value = null
   }
 }
 
@@ -269,6 +248,7 @@ function toDatePickerValue(value?: string | null) {
 onMounted(() => {
   load()
   loadBrowserOptions()
+  loadApifyKeys()
 })
 </script>
 
@@ -285,14 +265,14 @@ onMounted(() => {
         type="info"
         :closable="false"
         style="margin-bottom: 12px"
-        title="用于 Apify 等注册流程：保存注册邮箱、邮箱登录验证用的备用 Webmail、Apify 注册信息与创建日期。"
+        title="用于 Apify 等注册流程：保存注册邮箱、邮箱登录验证用的备用 Webmail，并通过 Apify Key 管理判断是否已完成注册。"
       />
       <el-form :inline="true" @submit.prevent="load">
         <el-form-item label="关键词">
           <el-input
             v-model="filters.q"
             clearable
-            placeholder="注册邮箱 / 验证邮箱 / Apify 用户名"
+            placeholder="注册邮箱 / 验证邮箱"
             style="width: 280px"
             @keyup.enter="load"
           />
@@ -388,28 +368,19 @@ onMounted(() => {
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column label="Apify 账号" min-width="220">
+      <el-table-column label="Apify 关联" min-width="220">
         <template #default="{ row }">
-          <div>
-            <el-text tag="div">{{ row.apify_username || row.apify_full_name || '—' }}</el-text>
-            <el-text tag="div" type="info" size="small">{{ row.apify_user_id || '未记录 User ID' }}</el-text>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="Apify Token" min-width="170">
-        <template #default="{ row }">
-          <el-space>
-            <el-text style="font-family: monospace">
-              {{ isSecretVisible(row, 'apify') ? row.apify_token || '—' : maskSecret(row.apify_token) }}
+          <div v-if="linkedApifyKey(row.id)">
+            <el-tag type="success" effect="dark">已注册</el-tag>
+            <el-text tag="div" style="margin-top: 4px">
+              {{ linkedApifyKey(row.id)?.apify_username || linkedApifyKey(row.id)?.label }}
             </el-text>
-            <el-button link size="small" @click="toggleSecret(row, 'apify')">
-              {{ isSecretVisible(row, 'apify') ? '隐藏' : '显示' }}
-            </el-button>
-          </el-space>
+            <el-text tag="div" type="info" size="small">
+              {{ linkedApifyKey(row.id)?.apify_user_id || '未记录 User ID' }}
+            </el-text>
+          </div>
+          <el-tag v-else type="info" effect="plain">未关联</el-tag>
         </template>
-      </el-table-column>
-      <el-table-column label="Apify 创建日期" width="170" align="center">
-        <template #default="{ row }">{{ formatDate(row.apify_registered_at) }}</template>
       </el-table-column>
       <el-table-column label="最近验证码" width="160">
         <template #default="{ row }">
@@ -425,13 +396,6 @@ onMounted(() => {
       <el-table-column label="操作" width="260" fixed="right" align="center">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button
-            size="small"
-            type="success"
-            :loading="syncingId === row.id"
-            :disabled="!row.apify_token"
-            @click="handleRegisterApifyKey(row)"
-          >登记 Apify</el-button>
           <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -484,7 +448,7 @@ onMounted(() => {
           </el-col>
         </el-form-item>
 
-        <el-divider content-position="left">Apify 注册信息</el-divider>
+        <el-divider content-position="left">流程信息</el-divider>
         <el-form-item label="用途">
           <el-select v-model="form.purpose" style="width: 180px">
             <el-option v-for="item in purposeOptions" :key="item.value" :label="item.label" :value="item.value" />
@@ -521,27 +485,6 @@ onMounted(() => {
             </el-text>
             <el-button link size="small" @click="loadBrowserOptions">刷新可选环境</el-button>
           </div>
-        </el-form-item>
-        <el-form-item label="Apify 全名">
-          <el-input v-model="form.apify_full_name" placeholder="Apify 注册 full name" maxlength="128" />
-        </el-form-item>
-        <el-form-item label="Apify 用户名">
-          <el-input v-model="form.apify_username" placeholder="如 indigo_programmer" maxlength="128" />
-        </el-form-item>
-        <el-form-item label="Apify User ID">
-          <el-input v-model="form.apify_user_id" placeholder="Settings 里的 Apify user ID" maxlength="128" />
-        </el-form-item>
-        <el-form-item label="Apify Token">
-          <el-input v-model="form.apify_token" type="textarea" :rows="2" placeholder="Settings 里的 API token" maxlength="500" />
-        </el-form-item>
-        <el-form-item label="Apify 创建日期">
-          <el-date-picker
-            v-model="form.apify_registered_at"
-            type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
-            placeholder="注册完成时间"
-            style="width: 100%"
-          />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.note" type="textarea" :rows="3" placeholder="流程备注 / 异常原因" />

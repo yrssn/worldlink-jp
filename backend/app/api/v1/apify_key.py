@@ -61,6 +61,10 @@ def create_key(
         is_default=body.is_default,
         remark=_clean_text(body.remark),
         email_account_id=_validate_email_account(body.email_account_id, db, user),
+        apify_full_name=_clean_text(body.apify_full_name),
+        apify_username=_clean_text(body.apify_username),
+        apify_user_id=_clean_text(body.apify_user_id),
+        apify_registered_at=body.apify_registered_at,
     )
     db.add(row)
     db.commit()
@@ -95,6 +99,14 @@ def update_key(
         row.remark = data["remark"]
     if "email_account_id" in data:
         row.email_account_id = data["email_account_id"]
+    if "apify_full_name" in data:
+        row.apify_full_name = _clean_text(data["apify_full_name"])
+    if "apify_username" in data:
+        row.apify_username = _clean_text(data["apify_username"])
+    if "apify_user_id" in data:
+        row.apify_user_id = _clean_text(data["apify_user_id"])
+    if "apify_registered_at" in data:
+        row.apify_registered_at = data["apify_registered_at"]
     db.commit()
     db.refresh(row)
     return row

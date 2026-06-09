@@ -1,17 +1,13 @@
-"""邮箱账号管理 CRUD 与 Apify Key 登记。"""
+"""邮箱账号管理 CRUD。"""
 from __future__ import annotations
-
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db
 from app.core.security import decrypt_secret, encrypt_secret
-from app.models.apify_key import ApifyKey
 from app.models.email_account import EmailAccount
 from app.models.user import User
-from app.schemas.apify_key import ApifyKeyOut
 from app.schemas.email_account import EmailAccountCreate, EmailAccountOut, EmailAccountUpdate
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
@@ -47,11 +43,6 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
         purpose=row.purpose,
         status=row.status,
         browser_id=row.browser_id,
-        apify_full_name=row.apify_full_name,
-        apify_username=row.apify_username,
-        apify_user_id=row.apify_user_id,
-        apify_token=decrypt_secret(row.apify_token),
-        apify_registered_at=row.apify_registered_at,
         last_verification_code=row.last_verification_code,
         last_verification_at=row.last_verification_at,
         note=row.note,
@@ -62,7 +53,7 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
 
 @router.get("", response_model=list[EmailAccountOut])
 def list_email_accounts(
-    q: str | None = Query(None, description="按注册邮箱/验证邮箱/Apify 用户名搜索"),
+    q: str | None = Query(None, description="按注册邮箱/验证邮箱搜索"),
     purpose: str | None = Query(None),
     status: str | None = Query(None),
     db: Session = Depends(get_db),
@@ -75,7 +66,6 @@ def list_email_accounts(
         query = query.filter(
             EmailAccount.email.like(like)
             | EmailAccount.verification_email.like(like)
-            | EmailAccount.apify_username.like(like)
         )
     purpose_clean = _clean_text(purpose)
     if purpose_clean:
@@ -115,11 +105,6 @@ def create_email_account(
         purpose=_clean_required(body.purpose),
         status=_clean_required(body.status),
         browser_id=_clean_text(body.browser_id),
-        apify_full_name=_clean_text(body.apify_full_name),
-        apify_username=_clean_text(body.apify_username),
-        apify_user_id=_clean_text(body.apify_user_id),
-        apify_token=encrypt_secret(_clean_text(body.apify_token)),
-        apify_registered_at=body.apify_registered_at,
         last_verification_code=_clean_text(body.last_verification_code),
         last_verification_at=body.last_verification_at,
         note=_clean_text(body.note),
@@ -179,16 +164,6 @@ def update_email_account(
         row.status = _clean_required(body.status)
     if "browser_id" in data:
         row.browser_id = _clean_text(body.browser_id)
-    if "apify_full_name" in data:
-        row.apify_full_name = _clean_text(body.apify_full_name)
-    if "apify_username" in data:
-        row.apify_username = _clean_text(body.apify_username)
-    if "apify_user_id" in data:
-        row.apify_user_id = _clean_text(body.apify_user_id)
-    if "apify_token" in data:
-        row.apify_token = encrypt_secret(_clean_text(body.apify_token))
-    if "apify_registered_at" in data:
-        row.apify_registered_at = body.apify_registered_at
     if "last_verification_code" in data:
         row.last_verification_code = _clean_text(body.last_verification_code)
     if "last_verification_at" in data:
@@ -216,45 +191,3 @@ def delete_email_account(
     db.delete(row)
     db.commit()
     return {"ok": True}
-
-
-@router.post("/{account_id}/register-apify-key", response_model=ApifyKeyOut)
-def register_apify_key(
-    account_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    row = (
-        db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
-        .first()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="邮箱账号不存在")
-    token = _clean_text(decrypt_secret(row.apify_token))
-    if not token:
-        raise HTTPException(status_code=400, detail="请先填写 Apify API Token")
-    registered_at = row.apify_registered_at or datetime.utcnow()
-    label = row.apify_username or row.email
-    remark_parts = [f"邮箱管理: {row.email}", f"注册时间: {registered_at:%Y-%m-%d %H:%M:%S}"]
-    if row.apify_user_id:
-        remark_parts.append(f"Apify User ID: {row.apify_user_id}")
-    apify_key = db.query(ApifyKey).filter(ApifyKey.token == token).first()
-    if apify_key:
-        apify_key.label = label
-        apify_key.remark = "；".join(remark_parts)
-        apify_key.email_account_id = row.id
-    else:
-        apify_key = ApifyKey(
-            label=label,
-            token=token,
-            is_default=False,
-            remark="；".join(remark_parts),
-            email_account_id=row.id,
-        )
-        db.add(apify_key)
-    row.apify_registered_at = registered_at
-    row.status = "apify_registered"
-    db.commit()
-    db.refresh(apify_key)
-    return apify_key

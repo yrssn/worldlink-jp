@@ -18,6 +18,10 @@ class ApifyKeyOut(BaseModel):
     email_account_id: Optional[int] = None
     email_account_email: Optional[str] = None
     email_account_verification_email: Optional[str] = None
+    apify_full_name: Optional[str] = None
+    apify_username: Optional[str] = None
+    apify_user_id: Optional[str] = None
+    apify_registered_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -28,6 +32,10 @@ class ApifyKeyCreate(BaseModel):
     is_default: bool = False
     remark: Optional[str] = Field(None, max_length=500)
     email_account_id: Optional[int] = None
+    apify_full_name: Optional[str] = Field(None, max_length=128)
+    apify_username: Optional[str] = Field(None, max_length=128)
+    apify_user_id: Optional[str] = Field(None, max_length=128)
+    apify_registered_at: Optional[datetime] = None
 
 
 class ApifyKeyUpdate(BaseModel):
@@ -35,3 +43,7 @@ class ApifyKeyUpdate(BaseModel):
     token: Optional[str] = Field(None, min_length=1, max_length=500)
     remark: Optional[str] = Field(None, max_length=500)
     email_account_id: Optional[int] = None
+    apify_full_name: Optional[str] = Field(None, max_length=128)
+    apify_username: Optional[str] = Field(None, max_length=128)
+    apify_user_id: Optional[str] = Field(None, max_length=128)
+    apify_registered_at: Optional[datetime] = None

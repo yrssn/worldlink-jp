@@ -10,6 +10,10 @@ export interface ApifyKey {
   email_account_id?: number | null
   email_account_email?: string | null
   email_account_verification_email?: string | null
+  apify_full_name?: string | null
+  apify_username?: string | null
+  apify_user_id?: string | null
+  apify_registered_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -20,6 +24,10 @@ export interface ApifyKeyCreate {
   is_default?: boolean
   remark?: string | null
   email_account_id?: number | null
+  apify_full_name?: string | null
+  apify_username?: string | null
+  apify_user_id?: string | null
+  apify_registered_at?: string | null
 }
 
 export interface ApifyKeyUpdate {
@@ -27,6 +35,10 @@ export interface ApifyKeyUpdate {
   token?: string
   remark?: string | null
   email_account_id?: number | null
+  apify_full_name?: string | null
+  apify_username?: string | null
+  apify_user_id?: string | null
+  apify_registered_at?: string | null
 }
 
 export const apifyKeyApi = {

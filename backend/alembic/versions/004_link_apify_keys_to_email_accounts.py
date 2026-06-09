@@ -18,6 +18,10 @@ depends_on = None
 
 def upgrade() -> None:
     op.add_column("apify_keys", sa.Column("email_account_id", sa.Integer(), nullable=True))
+    op.add_column("apify_keys", sa.Column("apify_full_name", sa.String(length=128), nullable=True))
+    op.add_column("apify_keys", sa.Column("apify_username", sa.String(length=128), nullable=True))
+    op.add_column("apify_keys", sa.Column("apify_user_id", sa.String(length=128), nullable=True))
+    op.add_column("apify_keys", sa.Column("apify_registered_at", sa.DateTime(), nullable=True))
     op.create_index(
         op.f("ix_apify_keys_email_account_id"),
         "apify_keys",
@@ -41,4 +45,8 @@ def downgrade() -> None:
         type_="foreignkey",
     )
     op.drop_index(op.f("ix_apify_keys_email_account_id"), table_name="apify_keys")
+    op.drop_column("apify_keys", "apify_registered_at")
+    op.drop_column("apify_keys", "apify_user_id")
+    op.drop_column("apify_keys", "apify_username")
+    op.drop_column("apify_keys", "apify_full_name")
     op.drop_column("apify_keys", "email_account_id")

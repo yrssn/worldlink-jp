@@ -17,7 +17,11 @@ const form = reactive({
   token: '',
   is_default: false,
   remark: '',
-  email_account_id: null as number | null
+  email_account_id: null as number | null,
+  apify_full_name: '',
+  apify_username: '',
+  apify_user_id: '',
+  apify_registered_at: ''
 })
 
 function resetForm() {
@@ -26,6 +30,10 @@ function resetForm() {
   form.is_default = false
   form.remark = ''
   form.email_account_id = null
+  form.apify_full_name = ''
+  form.apify_username = ''
+  form.apify_user_id = ''
+  form.apify_registered_at = ''
   editingId.value = null
 }
 
@@ -63,6 +71,10 @@ async function openEdit(row: ApifyKey) {
   form.is_default = row.is_default
   form.remark = row.remark || ''
   form.email_account_id = row.email_account_id || null
+  form.apify_full_name = row.apify_full_name || ''
+  form.apify_username = row.apify_username || ''
+  form.apify_user_id = row.apify_user_id || ''
+  form.apify_registered_at = toDatePickerValue(row.apify_registered_at)
   dialogVisible.value = true
 }
 
@@ -76,7 +88,11 @@ async function handleSubmit() {
         label: form.label.trim(),
         token: form.token.trim(),
         remark: form.remark.trim() || null,
-        email_account_id: form.email_account_id
+        email_account_id: form.email_account_id,
+        apify_full_name: form.apify_full_name.trim() || null,
+        apify_username: form.apify_username.trim() || null,
+        apify_user_id: form.apify_user_id.trim() || null,
+        apify_registered_at: form.apify_registered_at || null
       })
     } else {
       const payload: ApifyKeyCreate = {
@@ -84,7 +100,11 @@ async function handleSubmit() {
         token: form.token.trim(),
         is_default: form.is_default,
         remark: form.remark.trim() || null,
-        email_account_id: form.email_account_id
+        email_account_id: form.email_account_id,
+        apify_full_name: form.apify_full_name.trim() || null,
+        apify_username: form.apify_username.trim() || null,
+        apify_user_id: form.apify_user_id.trim() || null,
+        apify_registered_at: form.apify_registered_at || null
       }
       await apifyKeyApi.create(payload)
     }
@@ -154,8 +174,22 @@ function maskToken(token: string) {
 }
 
 function emailAccountLabel(row: EmailAccount) {
-  const apifyName = row.apify_username || row.apify_full_name
-  return apifyName ? `${row.email} / ${apifyName}` : row.email
+  return row.verification_email ? `${row.email} / 验证：${row.verification_email}` : row.email
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return '—'
+  return new Date(value).toLocaleString('zh-CN')
+}
+
+function toDatePickerValue(value?: string | null) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (num: number) => String(num).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 onMounted(() => {
@@ -201,6 +235,15 @@ onMounted(() => {
         </template>
       </el-table-column>
 
+      <el-table-column label="Apify 注册信息" min-width="220">
+        <template #default="{ row }">
+          <div>
+            <el-text tag="div">{{ row.apify_username || row.apify_full_name || '—' }}</el-text>
+            <el-text tag="div" type="info" size="small">{{ row.apify_user_id || '未记录 User ID' }}</el-text>
+          </div>
+        </template>
+      </el-table-column>
+
       <el-table-column label="备注" prop="remark" min-width="120">
         <template #default="{ row }">
           <el-text type="info">{{ row.remark || '—' }}</el-text>
@@ -226,9 +269,13 @@ onMounted(() => {
         </template>
       </el-table-column>
 
+      <el-table-column label="Apify 创建日期" width="170" align="center">
+        <template #default="{ row }">{{ formatDate(row.apify_registered_at) }}</template>
+      </el-table-column>
+
       <el-table-column label="创建时间" width="160" align="center">
         <template #default="{ row }">
-          {{ new Date(row.created_at).toLocaleString('zh-CN') }}
+          {{ formatDate(row.created_at) }}
         </template>
       </el-table-column>
 
@@ -260,10 +307,10 @@ onMounted(() => {
     <el-dialog
       v-model="dialogVisible"
       :title="editingId !== null ? '编辑 Apify Key' : '新增 Apify Key'"
-      width="520px"
+      width="680px"
       :close-on-click-modal="false"
     >
-      <el-form label-width="80px" @submit.prevent="handleSubmit">
+      <el-form label-width="120px" @submit.prevent="handleSubmit">
         <el-form-item label="名称" required>
           <el-input v-model="form.label" placeholder="如：主账号、备用账号" maxlength="200" />
         </el-form-item>
@@ -303,6 +350,24 @@ onMounted(() => {
             <el-text type="info" size="small">Apify 注册账号应关联到邮箱管理中的注册邮箱记录。</el-text>
             <el-button link size="small" @click="loadEmailAccounts">刷新邮箱</el-button>
           </div>
+        </el-form-item>
+        <el-form-item label="Apify 全名">
+          <el-input v-model="form.apify_full_name" placeholder="Apify 注册 full name" maxlength="128" />
+        </el-form-item>
+        <el-form-item label="Apify 用户名">
+          <el-input v-model="form.apify_username" placeholder="如 indigo_programmer" maxlength="128" />
+        </el-form-item>
+        <el-form-item label="Apify User ID">
+          <el-input v-model="form.apify_user_id" placeholder="Settings 里的 Apify User ID" maxlength="128" />
+        </el-form-item>
+        <el-form-item label="Apify 创建日期">
+          <el-date-picker
+            v-model="form.apify_registered_at"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+            placeholder="注册完成时间"
+            style="width: 100%"
+          />
         </el-form-item>
         <el-form-item v-if="editingId === null" label="设为默认">
           <el-switch v-model="form.is_default" />

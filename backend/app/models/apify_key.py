@@ -30,6 +30,10 @@ class ApifyKey(Base, TimestampMixin):
         index=True,
         comment="关联邮箱管理记录",
     )
+    apify_full_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    apify_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    apify_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    apify_registered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_account: Mapped["EmailAccount | None"] = relationship("EmailAccount")
 
     @property

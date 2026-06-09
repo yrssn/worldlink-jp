@@ -21,11 +21,6 @@ class EmailAccountOut(BaseModel):
     purpose: str
     status: str
     browser_id: Optional[str] = None
-    apify_full_name: Optional[str] = None
-    apify_username: Optional[str] = None
-    apify_user_id: Optional[str] = None
-    apify_token: Optional[str] = None
-    apify_registered_at: Optional[datetime] = None
     last_verification_code: Optional[str] = None
     last_verification_at: Optional[datetime] = None
     note: Optional[str] = None
@@ -44,11 +39,6 @@ class EmailAccountCreate(BaseModel):
     purpose: str = Field("apify", min_length=1, max_length=64)
     status: str = Field("unused", min_length=1, max_length=64)
     browser_id: Optional[str] = Field(None, max_length=64)
-    apify_full_name: Optional[str] = Field(None, max_length=128)
-    apify_username: Optional[str] = Field(None, max_length=128)
-    apify_user_id: Optional[str] = Field(None, max_length=128)
-    apify_token: Optional[str] = Field(None, max_length=500)
-    apify_registered_at: Optional[datetime] = None
     last_verification_code: Optional[str] = Field(None, max_length=32)
     last_verification_at: Optional[datetime] = None
     note: Optional[str] = None
@@ -65,11 +55,6 @@ class EmailAccountUpdate(BaseModel):
     purpose: Optional[str] = Field(None, min_length=1, max_length=64)
     status: Optional[str] = Field(None, min_length=1, max_length=64)
     browser_id: Optional[str] = Field(None, max_length=64)
-    apify_full_name: Optional[str] = Field(None, max_length=128)
-    apify_username: Optional[str] = Field(None, max_length=128)
-    apify_user_id: Optional[str] = Field(None, max_length=128)
-    apify_token: Optional[str] = Field(None, max_length=500)
-    apify_registered_at: Optional[datetime] = None
     last_verification_code: Optional[str] = Field(None, max_length=32)
     last_verification_at: Optional[datetime] = None
     note: Optional[str] = None

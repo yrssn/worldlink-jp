@@ -142,6 +142,21 @@ def _ensure_apify_keys_columns() -> None:
                     conn.execute(text(sql))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+    extra_columns = {
+        "apify_full_name": "ALTER TABLE apify_keys ADD COLUMN apify_full_name VARCHAR(128) NULL",
+        "apify_username": "ALTER TABLE apify_keys ADD COLUMN apify_username VARCHAR(128) NULL",
+        "apify_user_id": "ALTER TABLE apify_keys ADD COLUMN apify_user_id VARCHAR(128) NULL",
+        "apify_registered_at": "ALTER TABLE apify_keys ADD COLUMN apify_registered_at DATETIME NULL",
+    }
+    for column_name, sql in extra_columns.items():
+        if column_name in cols:
+            continue
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
 
 
 def _dev_auto_alter() -> None:
