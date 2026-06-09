@@ -1,14 +1,22 @@
 """邮箱账号管理 CRUD。"""
 from __future__ import annotations
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db
 from app.core.security import decrypt_secret, encrypt_secret
+from app.models.apify_key import ApifyKey
 from app.models.email_account import EmailAccount
 from app.models.user import User
-from app.schemas.email_account import EmailAccountCreate, EmailAccountOut, EmailAccountUpdate
+from app.schemas.email_account import (
+    ApifySignupStartOut,
+    EmailAccountCreate,
+    EmailAccountOut,
+    EmailAccountUpdate,
+)
+from app.services.apify_signup_automation import start_apify_signup
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
 
@@ -113,6 +121,34 @@ def create_email_account(
     db.commit()
     db.refresh(row)
     return _to_out(row)
+
+
+@router.post("/{account_id}/apify-signup/start", response_model=ApifySignupStartOut)
+def start_email_apify_signup(
+    account_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="邮箱账号不存在")
+    if not row.browser_id:
+        raise HTTPException(status_code=400, detail="请先为该邮箱选择指纹浏览器")
+    linked = db.query(ApifyKey).filter(ApifyKey.email_account_id == row.id).first()
+    if linked:
+        raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
+    try:
+        return start_apify_signup(row.browser_id, user, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.put("/{account_id}", response_model=EmailAccountOut)

@@ -58,3 +58,14 @@ class EmailAccountUpdate(BaseModel):
     last_verification_code: Optional[str] = Field(None, max_length=32)
     last_verification_at: Optional[datetime] = None
     note: Optional[str] = None
+
+
+class ApifySignupStartOut(BaseModel):
+    ok: bool = True
+    browser_id: str
+    signup_url: str
+    first_url: str
+    final_url: str
+    logged_out: bool = False
+    ready: bool = False
+    open_hint: Optional[str] = None

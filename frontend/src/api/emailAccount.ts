@@ -36,11 +36,28 @@ export interface EmailAccountPayload {
   note?: string | null
 }
 
+export interface ApifySignupStartResult {
+  ok: boolean
+  browser_id: string
+  signup_url: string
+  first_url: string
+  final_url: string
+  logged_out: boolean
+  ready: boolean
+  open_hint?: string | null
+}
+
 export const emailAccountApi = {
   list: (params?: { q?: string; purpose?: string; status?: string }) =>
     http.get<unknown, EmailAccount[]>('/email/accounts', { params }),
   create: (data: EmailAccountPayload) => http.post<unknown, EmailAccount>('/email/accounts', data),
   update: (id: number, data: EmailAccountPayload) =>
     http.put<unknown, EmailAccount>(`/email/accounts/${id}`, data),
-  remove: (id: number) => http.delete<unknown, { ok: boolean }>(`/email/accounts/${id}`)
+  remove: (id: number) => http.delete<unknown, { ok: boolean }>(`/email/accounts/${id}`),
+  startApifySignup: (id: number) =>
+    http.post<unknown, ApifySignupStartResult>(
+      `/email/accounts/${id}/apify-signup/start`,
+      {},
+      { timeout: 180000 }
+    )
 }
