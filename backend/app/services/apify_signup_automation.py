@@ -183,8 +183,34 @@ def start_apify_signup(
     }
 
 
+def _profile_name_from_email(email: str) -> str:
+    local = (email.split("@", 1)[0] or "").strip()
+    cleaned = " ".join(part for part in local.replace(".", " ").replace("_", " ").split() if part)
+    return cleaned or local or "Apify User"
+
+
+def _complete_welcome_profile(page: CdpPage, email: str) -> bool:
+    display_name = _profile_name_from_email(email)
+    submitted = bool(page.evaluate(_fill_welcome_profile_script(display_name), timeout=8))
+    if submitted:
+        time.sleep(2)
+    return submitted
+
+
+def _wait_after_profile_continue(page: CdpPage, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if not bool(page.evaluate(_welcome_profile_present_script(), timeout=3)):
+                return
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] wait profile continue skipped: {}", e)
+        time.sleep(0.5)
+
+
 def continue_apify_signup(
     browser_id: str,
+    email: str,
     user: User,
     db: Session,
 ) -> dict[str, object]:
@@ -209,9 +235,14 @@ def continue_apify_signup(
         time.sleep(1)
         first_url = _current_url(page)
         captcha_required = _has_captcha(page)
+        profile_submitted = False
+        if not captcha_required:
+            profile_submitted = _complete_welcome_profile(page, email)
+            if profile_submitted:
+                _wait_after_profile_continue(page)
         signed_in = _looks_logged_in_url(first_url)
-        ready = signed_in and not captcha_required
         final_url = _current_url(page)
+        ready = (signed_in or _looks_logged_in_url(final_url) or profile_submitted) and not captcha_required
 
     return {
         "ok": True,
@@ -229,6 +260,7 @@ def continue_apify_signup(
         "ready": ready,
         "email_submitted": False,
         "password_submitted": ready,
+        "profile_submitted": profile_submitted,
         "captcha_required": captcha_required,
         "open_hint": open_result.get("hint"),
     }
@@ -610,6 +642,51 @@ def _account_menu_point_script() -> str:
   const rect = el.getBoundingClientRect();
   return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 })()
+"""
+
+
+def _welcome_profile_present_script() -> str:
+    return """
+(() => /Welcome\\s+to\\s+Apify/i.test(document.body?.innerText || '')
+  && /Your\\s+full\\s+name/i.test(document.body?.innerText || ''))()
+"""
+
+
+def _fill_welcome_profile_script(display_name: str) -> str:
+    display_name_json = json.dumps(display_name)
+    return f"""
+(() => {{
+  const displayName = {display_name_json};
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }};
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const bodyText = textOf(document.body);
+  if (!/Welcome\\s+to\\s+Apify/i.test(bodyText) || !/Your\\s+full\\s+name/i.test(bodyText)) return false;
+  const setValue = (input, value) => {{
+    const proto = Object.getPrototypeOf(input);
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true }}));
+  }};
+  const inputs = Array.from(document.querySelectorAll('input'))
+    .filter(visible)
+    .filter((el) => !el.disabled && !el.readOnly && (el.type || 'text') !== 'hidden');
+  const fullNameInput = inputs[0];
+  if (!fullNameInput) return false;
+  fullNameInput.focus();
+  setValue(fullNameInput, displayName);
+  const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+  const button = buttons.find((el) => /^continue$/i.test(textOf(el))) || buttons.find((el) => /continue/i.test(textOf(el)));
+  if (!button) return false;
+  setTimeout(() => button.click(), 700);
+  return true;
+}})()
 """
 
 

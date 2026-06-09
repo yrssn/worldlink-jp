@@ -173,7 +173,7 @@ def continue_email_apify_signup(
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
-        return continue_apify_signup(row.browser_id, user, db)
+        return continue_apify_signup(row.browser_id, row.email, user, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:

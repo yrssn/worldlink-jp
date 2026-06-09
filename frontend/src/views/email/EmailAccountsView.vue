@@ -214,6 +214,8 @@ async function handleStartApifySignup(row: EmailAccount) {
       ElMessage.warning('已重启并清理 Apify 会话，但仍保持登录；请检查指纹浏览器环境 Cookie 配置')
     } else if (result.captcha_required) {
       ElMessage.warning(`已清理 Apify 会话并提交注册；弹出图形验证码，请在指纹浏览器窗口里人工完成验证`)
+    } else if (result.profile_submitted) {
+      ElMessage.success('已提交 Apify 注册资料页，继续后续信息采集/关联')
     } else if (result.password_submitted) {
       ElMessage.success(result.session_cleared ? '已清理 Apify 会话，并已填写邮箱密码提交注册' : '已填写邮箱密码提交注册')
     } else if (result.email_submitted) {
@@ -242,6 +244,8 @@ async function handleContinueApifySignup(row: EmailAccount) {
     const result = await emailAccountApi.continueApifySignup(row.id)
     if (result.captcha_required) {
       ElMessage.warning('仍检测到图形验证码，请先在指纹浏览器窗口里人工完成验证')
+    } else if (result.profile_submitted) {
+      ElMessage.success('已用邮箱前缀填写 Apify 注册资料并点击 Continue')
     } else if (result.ready) {
       ElMessage.success('Apify 当前已进入登录后的页面，可继续后续信息采集/关联')
     } else {
