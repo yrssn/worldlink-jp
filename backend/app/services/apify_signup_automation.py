@@ -74,6 +74,12 @@ class CdpPage:
             return None
         return remote.get("value")
 
+    def click(self, x: float, y: float) -> None:
+        params = {"x": x, "y": y, "button": "left", "clickCount": 1}
+        self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, timeout=5)
+        self.call("Input.dispatchMouseEvent", {"type": "mousePressed", **params}, timeout=5)
+        self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **params}, timeout=5)
+
 
 def start_apify_signup(
     browser_id: str,
@@ -82,6 +88,10 @@ def start_apify_signup(
     user: User,
     db: Session,
 ) -> dict[str, object]:
+    bitbrowser_service.close_browser_window(browser_id, user)
+    time.sleep(1)
+    profile_clear_result = bitbrowser_service.clear_browser_profile_cookies(browser_id, user)
+    time.sleep(0.5)
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
         user,
@@ -134,6 +144,10 @@ def start_apify_signup(
                 "final_url": final_url,
                 "logged_out": logged_out,
                 "session_cleared": True,
+                "profile_cookies_cleared": bool(profile_clear_result.get("cookies_cleared")),
+                "profile_cookie_config_cleared": bool(
+                    profile_clear_result.get("profile_cookie_cleared")
+                ),
                 "cleared_cookie_count": cleared_cookie_count,
                 "all_cookies_cleared": all_cookies_cleared,
                 "still_logged_in": True,
@@ -156,6 +170,8 @@ def start_apify_signup(
         "final_url": final_url,
         "logged_out": logged_out,
         "session_cleared": True,
+        "profile_cookies_cleared": bool(profile_clear_result.get("cookies_cleared")),
+        "profile_cookie_config_cleared": bool(profile_clear_result.get("profile_cookie_cleared")),
         "cleared_cookie_count": cleared_cookie_count,
         "all_cookies_cleared": all_cookies_cleared,
         "still_logged_in": False,
@@ -445,16 +461,43 @@ def _fill_password_and_signup_script(password: str) -> str:
 
 
 def _logout_apify(page: CdpPage) -> bool:
-    clicked_menu = bool(page.evaluate(_click_account_menu_script(), timeout=8))
-    if clicked_menu:
-        time.sleep(0.8)
-    clicked_sign_out = bool(page.evaluate(_click_sign_out_script(), timeout=8))
-    if clicked_sign_out:
-        time.sleep(3)
-    return clicked_sign_out
+    for _ in range(3):
+        if not _click_point_from_script(page, _account_menu_point_script()):
+            time.sleep(0.5)
+            continue
+        time.sleep(1)
+        for _ in range(8):
+            if _click_point_from_script(page, _sign_out_point_script()):
+                return _wait_until_logged_out(page)
+            time.sleep(0.5)
+    return False
 
 
-def _click_account_menu_script() -> str:
+def _click_point_from_script(page: CdpPage, script: str) -> bool:
+    point = page.evaluate(script, timeout=8)
+    if not isinstance(point, dict):
+        return False
+    raw_x = point.get("x")
+    raw_y = point.get("y")
+    if not isinstance(raw_x, (int, float)) or not isinstance(raw_y, (int, float)):
+        return False
+    page.click(float(raw_x), float(raw_y))
+    return True
+
+
+def _wait_until_logged_out(page: CdpPage, timeout: float = 8) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if not _looks_logged_in_url(_current_url(page)):
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] wait logout skipped: {}", e)
+        time.sleep(0.5)
+    return False
+
+
+def _account_menu_point_script() -> str:
     return """
 (() => {
   const visible = (el) => {
@@ -463,21 +506,42 @@ def _click_account_menu_script() -> str:
     return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
   };
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-  const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],div,span')).filter(visible);
+  const clickable = (el) => {
+    let cur = el;
+    while (cur && cur !== document.body) {
+      const style = getComputedStyle(cur);
+      if (cur.matches('button,a,[role="button"],[aria-haspopup="menu"],[aria-expanded], [tabindex]') || style.cursor === 'pointer') return cur;
+      cur = cur.parentElement;
+    }
+    return el;
+  };
+  const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],[aria-haspopup],div,span'))
+    .filter(visible)
+    .filter((el) => {
+      const rect = el.getBoundingClientRect();
+      const text = textOf(el);
+      return rect.left < 340 && rect.top < 180 && rect.width >= 40 && rect.height >= 18
+        && /(Personal|Organizations|@)/i.test(text);
+    })
+    .sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return (ar.width * ar.height) - (br.width * br.height);
+    });
   const target = nodes.find((el) => {
     const rect = el.getBoundingClientRect();
     const text = textOf(el);
-    return rect.left < 240 && rect.top < 130 && /(Personal|Organizations|Sign out|@)/i.test(text);
+    return rect.top < 170 && /(Personal|Organizations|@)/i.test(text);
   });
-  if (!target) return false;
-  const clickable = target.closest('button,a,[role="button"]') || target;
-  clickable.click();
-  return true;
+  const el = target ? clickable(target) : null;
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 })()
 """
 
 
-def _click_sign_out_script() -> str:
+def _sign_out_point_script() -> str:
     return """
 (() => {
   const visible = (el) => {
@@ -486,11 +550,18 @@ def _click_sign_out_script() -> str:
     return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
   };
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-  const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],div,span')).filter(visible);
-  const target = nodes.find((el) => /Sign\\s*out/i.test(textOf(el)));
-  if (!target) return false;
-  const clickable = target.closest('button,a,[role="button"]') || target;
-  clickable.click();
-  return true;
+  const clickable = (el) => el.closest('button,a,[role="button"],[tabindex]') || el;
+  const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],[tabindex],div,span'))
+    .filter(visible)
+    .filter((el) => /^(Sign\\s*out|Log\\s*out)$/i.test(textOf(el)) || /Sign\\s*out|Log\\s*out/i.test(textOf(el)))
+    .sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return (ar.width * ar.height) - (br.width * br.height);
+    });
+  const target = nodes[0] ? clickable(nodes[0]) : null;
+  if (!target) return null;
+  const rect = target.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 })()
 """

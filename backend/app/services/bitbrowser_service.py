@@ -378,6 +378,52 @@ def close_browser_window(browser_id: str, user: User) -> bool:
         return False
 
 
+def clear_browser_profile_cookies(browser_id: str, user: User) -> dict[str, bool]:
+    """清理指定环境的 Cookie 缓存与配置 Cookie 字段，避免启动时重新注入旧登录态。"""
+    ctx = client_context_from_user(user)
+    bid = (browser_id or "").strip()
+    if not bid:
+        return {"cookies_cleared": False, "profile_cookie_cleared": False}
+
+    cookies_cleared = False
+    try:
+        resp = _post_local(
+            ctx,
+            "/browser/cookies/clear",
+            {"browserId": bid, "saveSynced": False},
+            timeout_sec=60.0,
+        )
+        cookies_cleared = bool(resp.get("success"))
+        if not cookies_cleared:
+            logger.debug("[BitBrowser] cookies/clear {} returned: {}", bid, resp)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[BitBrowser] cookies/clear {} skipped: {}", bid, e)
+
+    profile_cookie_cleared = False
+    try:
+        resp = _post_local(
+            ctx,
+            "/browser/update/partial",
+            {
+                "ids": [bid],
+                "cookie": "",
+                "clearCookiesBeforeLaunch": True,
+                "clearCacheFilesBeforeLaunch": True,
+            },
+            timeout_sec=60.0,
+        )
+        profile_cookie_cleared = bool(resp.get("success"))
+        if not profile_cookie_cleared:
+            logger.debug("[BitBrowser] update/partial cookie {} returned: {}", bid, resp)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[BitBrowser] update/partial cookie {} skipped: {}", bid, e)
+
+    return {
+        "cookies_cleared": cookies_cleared,
+        "profile_cookie_cleared": profile_cookie_cleared,
+    }
+
+
 def _build_open_payload(browser_id: str, *, headless: bool) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": browser_id, "queue": True}
     if headless:

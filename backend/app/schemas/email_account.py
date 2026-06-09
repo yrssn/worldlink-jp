@@ -68,6 +68,8 @@ class ApifySignupStartOut(BaseModel):
     final_url: str
     logged_out: bool = False
     session_cleared: bool = False
+    profile_cookies_cleared: bool = False
+    profile_cookie_config_cleared: bool = False
     cleared_cookie_count: int = 0
     all_cookies_cleared: bool = False
     still_logged_in: bool = False
