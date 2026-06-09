@@ -68,5 +68,11 @@ export const emailAccountApi = {
       `/email/accounts/${id}/apify-signup/start`,
       {},
       { timeout: 180000 }
+    ),
+  continueApifySignup: (id: number) =>
+    http.post<unknown, ApifySignupStartResult>(
+      `/email/accounts/${id}/apify-signup/continue`,
+      {},
+      { timeout: 60000 }
     )
 }

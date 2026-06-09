@@ -183,6 +183,57 @@ def start_apify_signup(
     }
 
 
+def continue_apify_signup(
+    browser_id: str,
+    user: User,
+    db: Session,
+) -> dict[str, object]:
+    open_result = bitbrowser_service.open_browser_window(
+        browser_id,
+        user,
+        db,
+        headless=False,
+        restart=False,
+    )
+    open_data = open_result.get("data") or {}
+    if not isinstance(open_data, dict) or not open_data:
+        raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
+
+    http_base = _extract_devtools_http(open_data)
+    page_ws = _find_apify_page(http_base) or _create_page(http_base, SIGNUP_URL)
+    with CdpPage(page_ws) as page:
+        page.call("Page.enable")
+        page.call("Network.enable")
+        page.call("Runtime.enable")
+        _wait_page_ready(page)
+        time.sleep(1)
+        first_url = _current_url(page)
+        captcha_required = _has_captcha(page)
+        signed_in = _looks_logged_in_url(first_url)
+        ready = signed_in and not captcha_required
+        final_url = _current_url(page)
+
+    return {
+        "ok": True,
+        "browser_id": browser_id,
+        "signup_url": SIGNUP_URL,
+        "first_url": first_url,
+        "final_url": final_url,
+        "logged_out": False,
+        "session_cleared": False,
+        "profile_cookies_cleared": False,
+        "profile_cookie_config_cleared": False,
+        "cleared_cookie_count": 0,
+        "all_cookies_cleared": False,
+        "still_logged_in": False,
+        "ready": ready,
+        "email_submitted": False,
+        "password_submitted": ready,
+        "captcha_required": captcha_required,
+        "open_hint": open_result.get("hint"),
+    }
+
+
 def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raw_http = str(open_data.get("http") or "").strip()
     if raw_http:
@@ -207,6 +258,27 @@ def _create_page(http_base: str, url: str) -> str:
     if not ws_url:
         raise RuntimeError("创建 Apify 注册页失败：DevTools 未返回页面 WebSocket")
     return str(ws_url)
+
+
+def _find_apify_page(http_base: str) -> str | None:
+    with httpx.Client(timeout=10, trust_env=False) as client:
+        try:
+            response = client.get(f"{http_base.rstrip('/')}/json/list")
+            response.raise_for_status()
+            targets = response.json()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] find target skipped: {}", e)
+            return None
+    if not isinstance(targets, list):
+        return None
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        url = str(target.get("url") or "")
+        ws_url = str(target.get("webSocketDebuggerUrl") or "")
+        if "console.apify.com" in url and ws_url:
+            return ws_url
+    return None
 
 
 def _close_apify_pages(http_base: str) -> int:

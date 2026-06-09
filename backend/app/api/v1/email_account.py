@@ -16,7 +16,7 @@ from app.schemas.email_account import (
     EmailAccountOut,
     EmailAccountUpdate,
 )
-from app.services.apify_signup_automation import start_apify_signup
+from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
 
@@ -146,6 +146,34 @@ def start_email_apify_signup(
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
         return start_apify_signup(row.browser_id, row.email, email_password, user, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.post("/{account_id}/apify-signup/continue", response_model=ApifySignupStartOut)
+def continue_email_apify_signup(
+    account_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="邮箱账号不存在")
+    if not row.browser_id:
+        raise HTTPException(status_code=400, detail="请先为该邮箱选择指纹浏览器")
+    linked = db.query(ApifyKey).filter(ApifyKey.email_account_id == row.id).first()
+    if linked:
+        raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
+    try:
+        return continue_apify_signup(row.browser_id, user, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:

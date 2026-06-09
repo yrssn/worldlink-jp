@@ -15,6 +15,7 @@ const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const submitting = ref(false)
 const apifySignupId = ref<number | null>(null)
+const apifyContinueId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
 const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
@@ -140,6 +141,10 @@ function canStartApifySignup(row: EmailAccount) {
   return !linkedApifyKey(row.id) && !!row.browser_id
 }
 
+function canContinueApifySignup(row: EmailAccount) {
+  return !linkedApifyKey(row.id) && !!row.browser_id
+}
+
 async function openCreate() {
   resetForm()
   await loadBrowserOptions()
@@ -220,6 +225,32 @@ async function handleStartApifySignup(row: EmailAccount) {
     /* 拦截器已提示 */
   } finally {
     apifySignupId.value = null
+  }
+}
+
+async function handleContinueApifySignup(row: EmailAccount) {
+  if (linkedApifyKey(row.id)) {
+    ElMessage.info('该邮箱已关联 Apify Key')
+    return
+  }
+  if (!row.browser_id) {
+    ElMessage.warning('请先为该邮箱选择指纹浏览器')
+    return
+  }
+  apifyContinueId.value = row.id
+  try {
+    const result = await emailAccountApi.continueApifySignup(row.id)
+    if (result.captcha_required) {
+      ElMessage.warning('仍检测到图形验证码，请先在指纹浏览器窗口里人工完成验证')
+    } else if (result.ready) {
+      ElMessage.success('Apify 当前已进入登录后的页面，可继续后续信息采集/关联')
+    } else {
+      ElMessage.warning('当前还未进入 Apify 登录后页面，请查看指纹浏览器窗口')
+    }
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    apifyContinueId.value = null
   }
 }
 
@@ -383,7 +414,7 @@ onMounted(() => {
       <el-table-column label="记录创建时间" width="170" align="center">
         <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right" align="center">
+      <el-table-column label="操作" width="380" fixed="right" align="center">
         <template #default="{ row }">
           <el-button
             size="small"
@@ -392,6 +423,14 @@ onMounted(() => {
             :disabled="!canStartApifySignup(row)"
             @click="handleStartApifySignup(row)"
           >Apify 注册</el-button>
+          <el-button
+            size="small"
+            type="warning"
+            plain
+            :loading="apifyContinueId === row.id"
+            :disabled="!canContinueApifySignup(row)"
+            @click="handleContinueApifySignup(row)"
+          >继续注册</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
           <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
         </template>
