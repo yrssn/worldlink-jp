@@ -205,7 +205,9 @@ async function handleStartApifySignup(row: EmailAccount) {
   apifySignupId.value = row.id
   try {
     const result = await emailAccountApi.startApifySignup(row.id)
-    if (result.captcha_required) {
+    if (result.still_logged_in) {
+      ElMessage.warning('已重启并清理 Apify 会话，但仍保持登录；请检查指纹浏览器环境 Cookie 配置')
+    } else if (result.captcha_required) {
       ElMessage.warning(`已清理 Apify 会话并提交注册；弹出图形验证码，请在指纹浏览器窗口里人工完成验证`)
     } else if (result.password_submitted) {
       ElMessage.success(result.session_cleared ? '已清理 Apify 会话，并已填写邮箱密码提交注册' : '已填写邮箱密码提交注册')

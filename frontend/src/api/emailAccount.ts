@@ -45,6 +45,8 @@ export interface ApifySignupStartResult {
   logged_out: boolean
   session_cleared: boolean
   cleared_cookie_count: number
+  all_cookies_cleared: boolean
+  still_logged_in: boolean
   ready: boolean
   email_submitted: boolean
   password_submitted: boolean

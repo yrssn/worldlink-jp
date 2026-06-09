@@ -87,13 +87,14 @@ def start_apify_signup(
         user,
         db,
         headless=False,
-        restart=False,
+        restart=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
+    _close_apify_pages(http_base)
     page_ws = _create_page(http_base, SIGNUP_URL)
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
@@ -107,12 +108,41 @@ def start_apify_signup(
         _wait_page_ready(page)
         time.sleep(1)
         logged_out = False
+        all_cookies_cleared = False
         post_clear_url = _current_url(page)
         if _looks_logged_in_url(post_clear_url):
             logged_out = _logout_apify(page)
             page.call("Page.navigate", {"url": SIGNUP_URL})
             _wait_page_ready(page)
             time.sleep(1)
+            post_clear_url = _current_url(page)
+        if _looks_logged_in_url(post_clear_url):
+            _clear_all_browser_session(page)
+            all_cookies_cleared = True
+            page.call("Page.navigate", {"url": SIGNUP_URL})
+            _wait_page_ready(page)
+            time.sleep(1)
+            post_clear_url = _current_url(page)
+        still_logged_in = _looks_logged_in_url(post_clear_url)
+        if still_logged_in:
+            final_url = _current_url(page)
+            return {
+                "ok": True,
+                "browser_id": browser_id,
+                "signup_url": SIGNUP_URL,
+                "first_url": first_url,
+                "final_url": final_url,
+                "logged_out": logged_out,
+                "session_cleared": True,
+                "cleared_cookie_count": cleared_cookie_count,
+                "all_cookies_cleared": all_cookies_cleared,
+                "still_logged_in": True,
+                "ready": False,
+                "email_submitted": False,
+                "password_submitted": False,
+                "captcha_required": False,
+                "open_hint": open_result.get("hint"),
+            }
         email_submitted = _submit_email(page, email)
         password_submitted = _submit_password(page, password)
         captcha_required = _wait_for_captcha(page)
@@ -127,6 +157,8 @@ def start_apify_signup(
         "logged_out": logged_out,
         "session_cleared": True,
         "cleared_cookie_count": cleared_cookie_count,
+        "all_cookies_cleared": all_cookies_cleared,
+        "still_logged_in": False,
         "ready": password_submitted,
         "email_submitted": email_submitted,
         "password_submitted": password_submitted,
@@ -161,6 +193,33 @@ def _create_page(http_base: str, url: str) -> str:
     return str(ws_url)
 
 
+def _close_apify_pages(http_base: str) -> int:
+    closed = 0
+    with httpx.Client(timeout=10, trust_env=False) as client:
+        try:
+            response = client.get(f"{http_base.rstrip('/')}/json/list")
+            response.raise_for_status()
+            targets = response.json()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] list targets skipped: {}", e)
+            return 0
+        if not isinstance(targets, list):
+            return 0
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            url = str(target.get("url") or "")
+            target_id = str(target.get("id") or "")
+            if "apify.com" not in url or not target_id:
+                continue
+            try:
+                client.get(f"{http_base.rstrip('/')}/json/close/{quote(target_id, safe='')}")
+                closed += 1
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[Apify signup] close target skipped {}: {}", target_id, e)
+    return closed
+
+
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -186,7 +245,23 @@ def _looks_logged_in_url(url: str) -> bool:
 def _clear_apify_session(page: CdpPage) -> int:
     cleared_cookie_count = _delete_apify_cookies(page)
     _clear_apify_storage(page)
+    try:
+        page.call("Network.clearBrowserCache", timeout=8)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] clear cache skipped: {}", e)
     return cleared_cookie_count
+
+
+def _clear_all_browser_session(page: CdpPage) -> None:
+    try:
+        page.call("Network.clearBrowserCookies", timeout=8)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] clear all cookies skipped: {}", e)
+    try:
+        page.call("Network.clearBrowserCache", timeout=8)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] clear all cache skipped: {}", e)
+    _clear_apify_storage(page)
 
 
 def _delete_apify_cookies(page: CdpPage) -> int:
@@ -200,11 +275,13 @@ def _delete_apify_cookies(page: CdpPage) -> int:
             continue
         name = str(raw_cookie.get("name") or "").strip()
         domain = str(raw_cookie.get("domain") or "").strip()
+        path = str(raw_cookie.get("path") or "/").strip() or "/"
         if not name or "apify.com" not in domain:
             continue
         host = domain.lstrip(".")
         try:
-            page.call("Network.deleteCookies", {"name": name, "url": f"https://{host}/"}, timeout=5)
+            page.call("Network.deleteCookies", {"name": name, "domain": domain, "path": path}, timeout=5)
+            page.call("Network.deleteCookies", {"name": name, "url": f"https://{host}{path}"}, timeout=5)
             deleted += 1
         except Exception as e:  # noqa: BLE001
             logger.debug("[Apify signup] delete cookie skipped {} {}: {}", domain, name, e)
