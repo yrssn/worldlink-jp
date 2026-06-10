@@ -793,7 +793,9 @@ def _fill_email_and_next_script(email: str) -> str:
   if (!input) return false;
   input.focus();
   setValue(input, email);
-  const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+  const buttons = Array.from(document.querySelectorAll('button,[role="button"]'))
+    .filter(visible)
+    .filter((el) => !/google|github/i.test(textOf(el)));
   const button = buttons.find((el) => /^next$/i.test(textOf(el))) || buttons.find((el) => /next/i.test(textOf(el)));
   if (!button) return false;
   setTimeout(() => button.click(), 120);
@@ -827,7 +829,9 @@ def _fill_password_and_signup_script(password: str) -> str:
   if (!input) return false;
   input.focus();
   setValue(input, password);
-  const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
+  const buttons = Array.from(document.querySelectorAll('button,[role="button"]'))
+    .filter(visible)
+    .filter((el) => !/google|github/i.test(textOf(el)));
   const button = buttons.find((el) => /^sign up$/i.test(textOf(el))) || buttons.find((el) => /sign up/i.test(textOf(el)));
   if (!button) return false;
   setTimeout(() => button.click(), 250);
