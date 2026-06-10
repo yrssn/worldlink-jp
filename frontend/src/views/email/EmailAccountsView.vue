@@ -19,6 +19,7 @@ const apifyContinueId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
 const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
+const defaultZohoLoginUrl = 'https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice&signupurl=https://www.zoho.com/jp/mail/zohomail-pricing.html&serviceurl=https://mail.zoho.com'
 
 const filters = reactive({
   q: ''
@@ -28,7 +29,7 @@ const form = reactive({
   email: '',
   email_password: '',
   provider: 'zoho',
-  mail_login_url: 'https://www.zoho.com/jp/mail/',
+  mail_login_url: defaultZohoLoginUrl,
   verification_email: '',
   verification_password: '',
   verification_login_url: '',
@@ -44,7 +45,7 @@ function resetForm() {
   form.email = ''
   form.email_password = ''
   form.provider = 'zoho'
-  form.mail_login_url = 'https://www.zoho.com/jp/mail/'
+  form.mail_login_url = defaultZohoLoginUrl
   form.verification_email = ''
   form.verification_password = ''
   form.verification_login_url = ''
@@ -459,7 +460,7 @@ onMounted(() => {
           <el-input v-model="form.provider" placeholder="如 zoho" maxlength="64" />
         </el-form-item>
         <el-form-item label="邮箱登录地址">
-          <el-input v-model="form.mail_login_url" placeholder="https://www.zoho.com/jp/mail/" maxlength="512" />
+          <el-input v-model="form.mail_login_url" :placeholder="defaultZohoLoginUrl" maxlength="512" />
         </el-form-item>
 
         <el-divider content-position="left">登录验证码邮箱</el-divider>

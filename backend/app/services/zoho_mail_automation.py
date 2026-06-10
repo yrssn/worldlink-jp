@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.services import bitbrowser_service
 
-DEFAULT_ZOHO_LOGIN_URL = "https://www.zoho.com/jp/mail/"
+DEFAULT_ZOHO_LOGIN_URL = (
+    "https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice"
+    "&signupurl=https://www.zoho.com/jp/mail/zohomail-pricing.html"
+    "&serviceurl=https://mail.zoho.com"
+)
 
 
 def open_zoho_mail_login(
@@ -41,6 +45,8 @@ def open_zoho_mail_login(
 
 def _normalize_login_url(login_url: str | None) -> str:
     raw = (login_url or "").strip() or DEFAULT_ZOHO_LOGIN_URL
+    if "zoho.com/jp/mail" in raw and "accounts.zoho.com/signin" not in raw:
+        return DEFAULT_ZOHO_LOGIN_URL
     if raw.startswith(("http://", "https://")):
         return raw
     return f"https://{raw}"
