@@ -56,6 +56,9 @@ export interface ApifySignupStartResult {
   captcha_required: boolean
   email_verification_required: boolean
   email_verified: boolean
+  email_already_taken: boolean
+  apify_login_attempted: boolean
+  apify_logged_in: boolean
   apify_mail_inbox_ready: boolean
   apify_mail_opened: boolean
   apify_verification_link_clicked: boolean
@@ -122,7 +125,7 @@ export const emailAccountApi = {
     http.post<unknown, ApifySignupStartResult>(
       `/email/accounts/${id}/apify-signup/start`,
       {},
-      { timeout: 180000 }
+      { timeout: 420000 }
     ),
   continueApifySignup: (id: number) =>
     http.post<unknown, ApifySignupStartResult>(

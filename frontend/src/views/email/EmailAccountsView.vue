@@ -221,7 +221,21 @@ async function handleStartApifySignup(row: EmailAccount) {
   apifySignupId.value = row.id
   try {
     const result = await emailAccountApi.startApifySignup(row.id)
-    if (result.still_logged_in) {
+    if (result.apify_key_created) {
+      ElMessage.success(`已登录已有 Apify 账号并写入 Apify Key 管理${result.apify_key_is_default ? '（已设为默认）' : ''}`)
+      await loadApifyKeys()
+    } else if (result.apify_token_collected) {
+      ElMessage.success('已登录已有 Apify 账号并获取默认 API Token，请刷新 Apify Key 管理确认')
+      await loadApifyKeys()
+    } else if (result.apify_verification_link_clicked) {
+      ElMessage.warning('已登录已有 Apify 账号并点击邮箱验证链接，但未能读取默认 API Token，请查看指纹浏览器窗口')
+    } else if (result.apify_login_attempted && result.email_verification_required) {
+      ElMessage.warning('该邮箱已注册 Apify，已改为登录；当前需要邮箱验证，请查看 Zoho/Apify 页面')
+    } else if (result.apify_login_attempted && result.apify_logged_in) {
+      ElMessage.success('该邮箱已注册 Apify，已改为登录并进入账号页面')
+    } else if (result.email_already_taken) {
+      ElMessage.warning('该邮箱已注册 Apify，但自动登录未完成，请查看指纹浏览器窗口')
+    } else if (result.still_logged_in) {
       ElMessage.warning('已重启并清理 Apify 会话，但仍保持登录；请检查指纹浏览器环境 Cookie 配置')
     } else if (result.captcha_required) {
       ElMessage.warning('已清理 Apify 会话并提交注册；弹出图形验证码，请不要关闭指纹浏览器，人工完成后点「继续注册」')
@@ -269,6 +283,10 @@ async function handleContinueApifySignup(row: EmailAccount) {
       ElMessage.warning('Zoho 邮箱已打开，但 2 分钟内没有找到最新 hello@apify.com 验证邮件')
     } else if (result.email_verification_required) {
       ElMessage.warning('Apify 已到邮箱验证页，但 Zoho 邮箱未自动打开或未登录，请查看指纹浏览器窗口')
+    } else if (result.apify_login_attempted && result.apify_logged_in) {
+      ElMessage.success('该邮箱已注册 Apify，已改为登录并进入账号页面')
+    } else if (result.email_already_taken) {
+      ElMessage.warning('该邮箱已注册 Apify，但自动登录未完成，请查看指纹浏览器窗口')
     } else if (result.profile_submitted) {
       ElMessage.success('已用邮箱前缀填写 Apify 注册资料并点击 Continue，继续处理中')
     } else if (result.ready) {

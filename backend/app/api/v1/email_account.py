@@ -47,6 +47,35 @@ def _clean_email(value: str | None) -> str | None:
     return text.lower() if text else None
 
 
+def _create_apify_key_from_result(
+    row: EmailAccount,
+    result: dict[str, object],
+    db: Session,
+) -> dict[str, object]:
+    token = result.get("apify_token")
+    if not isinstance(token, str) or not token.strip():
+        return result
+    has_default = db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).first() is not None
+    key = ApifyKey(
+        label=f"{row.email} Apify",
+        token=token.strip(),
+        is_default=not has_default,
+        remark="邮箱管理自动注册采集",
+        email_account_id=row.id,
+        apify_full_name=_clean_text(str(result.get("apify_full_name") or "")),
+        apify_username=_clean_text(str(result.get("apify_username") or "")),
+        apify_user_id=_clean_text(str(result.get("apify_user_id") or "")),
+        apify_registered_at=result.get("apify_registered_at"),
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    result["apify_key_created"] = True
+    result["apify_key_id"] = key.id
+    result["apify_key_is_default"] = key.is_default
+    return result
+
+
 def _to_out(row: EmailAccount) -> EmailAccountOut:
     return EmailAccountOut(
         id=row.id,
@@ -192,7 +221,15 @@ def start_email_apify_signup(
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
-        result = start_apify_signup(row.browser_id, row.email, email_password, user, db)
+        result = start_apify_signup(
+            row.browser_id,
+            row.email,
+            email_password,
+            user,
+            db,
+            row.mail_login_url,
+        )
+        result = _create_apify_key_from_result(row, result, db)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -232,26 +269,7 @@ def continue_email_apify_signup(
             email_password,
             row.mail_login_url,
         )
-        token = result.get("apify_token")
-        if isinstance(token, str) and token.strip():
-            has_default = db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).first() is not None
-            key = ApifyKey(
-                label=f"{row.email} Apify",
-                token=token.strip(),
-                is_default=not has_default,
-                remark="邮箱管理自动注册采集",
-                email_account_id=row.id,
-                apify_full_name=_clean_text(str(result.get("apify_full_name") or "")),
-                apify_username=_clean_text(str(result.get("apify_username") or "")),
-                apify_user_id=_clean_text(str(result.get("apify_user_id") or "")),
-                apify_registered_at=result.get("apify_registered_at"),
-            )
-            db.add(key)
-            db.commit()
-            db.refresh(key)
-            result["apify_key_created"] = True
-            result["apify_key_id"] = key.id
-            result["apify_key_is_default"] = key.is_default
+        result = _create_apify_key_from_result(row, result, db)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

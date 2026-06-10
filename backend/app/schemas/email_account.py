@@ -80,6 +80,9 @@ class ApifySignupStartOut(BaseModel):
     captcha_required: bool = False
     email_verification_required: bool = False
     email_verified: bool = False
+    email_already_taken: bool = False
+    apify_login_attempted: bool = False
+    apify_logged_in: bool = False
     apify_mail_inbox_ready: bool = False
     apify_mail_opened: bool = False
     apify_verification_link_clicked: bool = False
