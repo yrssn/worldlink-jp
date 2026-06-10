@@ -17,7 +17,7 @@ from app.schemas.email_account import (
     EmailAccountUpdate,
 )
 from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
-from app.services.zoho_mail_automation import open_zoho_mail_login
+from app.services.zoho_mail_automation import normalize_zoho_login_url, open_zoho_mail_login
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
 
@@ -45,7 +45,7 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
         email=row.email,
         email_password=decrypt_secret(row.email_password),
         provider=row.provider,
-        mail_login_url=row.mail_login_url,
+        mail_login_url=normalize_zoho_login_url(row.mail_login_url),
         verification_email=row.verification_email,
         verification_password=decrypt_secret(row.verification_password),
         verification_login_url=row.verification_login_url,
@@ -127,7 +127,7 @@ def create_email_account(
         email=email,
         email_password=encrypt_secret(_clean_text(body.email_password)),
         provider=_clean_text(body.provider),
-        mail_login_url=_clean_text(body.mail_login_url),
+        mail_login_url=normalize_zoho_login_url(body.mail_login_url),
         verification_email=_clean_email(body.verification_email),
         verification_password=encrypt_secret(_clean_text(body.verification_password)),
         verification_login_url=_clean_text(body.verification_login_url),
@@ -244,7 +244,7 @@ def update_email_account(
     if "provider" in data:
         row.provider = _clean_text(body.provider)
     if "mail_login_url" in data:
-        row.mail_login_url = _clean_text(body.mail_login_url)
+        row.mail_login_url = normalize_zoho_login_url(body.mail_login_url)
     if "verification_email" in data:
         row.verification_email = _clean_email(body.verification_email)
     if "verification_password" in data:

@@ -29,7 +29,7 @@ def open_zoho_mail_login(
     user: User,
     db: Session,
 ) -> dict[str, object]:
-    target_url = _normalize_login_url(login_url)
+    target_url = normalize_zoho_login_url(login_url)
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
         user,
@@ -42,11 +42,15 @@ def open_zoho_mail_login(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
-    closed_count = _close_zoho_pages(http_base)
-    page_ws = _create_page(http_base, target_url)
+    time.sleep(1)
+    closed_count = _close_zoho_pages_until_clear(http_base)
+    page_ws, page_id = _create_page(http_base, target_url)
+    time.sleep(0.5)
+    closed_count += _close_zoho_pages_until_clear(http_base, keep_target_id=page_id)
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
+        page.call("Page.navigate", {"url": target_url})
         _wait_page_ready(page)
         time.sleep(1)
         email_submitted = _submit_zoho_email(page, email)
@@ -123,7 +127,7 @@ class CdpPage:
         return remote.get("value")
 
 
-def _normalize_login_url(login_url: str | None) -> str:
+def normalize_zoho_login_url(login_url: str | None) -> str:
     raw = (login_url or "").strip() or DEFAULT_ZOHO_LOGIN_URL
     if "zoho.com/jp/mail" in raw and "accounts.zoho.com/signin" not in raw:
         return DEFAULT_ZOHO_LOGIN_URL
@@ -144,8 +148,8 @@ def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str) -> str:
-    target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe=':/?&=%')}"
+def _create_page(http_base: str, url: str) -> tuple[str, str]:
+    target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe='')}"
     with httpx.Client(timeout=15, trust_env=False) as client:
         response = client.request("PUT", target_url)
         if response.status_code in (404, 405):
@@ -155,10 +159,26 @@ def _create_page(http_base: str, url: str) -> str:
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建 Zoho 邮箱登录页失败：DevTools 未返回页面 WebSocket")
-    return str(ws_url)
+    target_id = str(data.get("id") or "")
+    return str(ws_url), target_id
 
 
-def _close_zoho_pages(http_base: str) -> int:
+def _close_zoho_pages_until_clear(
+    http_base: str,
+    keep_target_id: str | None = None,
+    attempts: int = 3,
+) -> int:
+    closed = 0
+    for _ in range(attempts):
+        closed_now = _close_zoho_pages(http_base, keep_target_id=keep_target_id)
+        closed += closed_now
+        if closed_now == 0:
+            return closed
+        time.sleep(0.5)
+    return closed
+
+
+def _close_zoho_pages(http_base: str, keep_target_id: str | None = None) -> int:
     closed = 0
     with httpx.Client(timeout=10, trust_env=False) as client:
         try:
@@ -175,7 +195,7 @@ def _close_zoho_pages(http_base: str) -> int:
                 continue
             target_id = str(target.get("id") or "")
             target_url = str(target.get("url") or "")
-            if not target_id or "zoho.com" not in target_url:
+            if not target_id or target_id == keep_target_id or "zoho.com" not in target_url:
                 continue
             try:
                 client.get(f"{http_base.rstrip('/')}/json/close/{target_id}")
