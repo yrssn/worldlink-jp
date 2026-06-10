@@ -68,6 +68,8 @@ def open_zoho_mail_login(
             page.call("Page.bringToFront")
             _wait_page_ready(page)
             password_submitted = _submit_zoho_password(page, password)
+            if password_submitted:
+                _skip_zoho_mfa_prompt_if_present(page)
             verification_required = _is_zoho_email_verification_step(page)
             final_url = _current_url(page)
     return {
@@ -421,7 +423,7 @@ def _current_url(page: CdpPage) -> str:
 
 
 def _skip_zoho_mfa_prompt_if_present(page: CdpPage) -> bool:
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 60
     clicked = False
     while time.monotonic() < deadline:
         try:
@@ -586,22 +588,33 @@ def _skip_zoho_mfa_prompt_script() -> str:
     return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
   };
   const textOf = (el) => (el.innerText || el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
-  const clickable = (el) => el.closest('button,a,[role="button"],[tabindex],li,div') || el;
-  const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],[tabindex],li,div,span'))
-    .filter(visible);
-  const neverShow = nodes.find((el) => /今後表示しない|Don.?t show again/i.test(textOf(el)));
+  const click = (el) => {
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.click();
+  };
+  const clickable = (el) =>
+    el.closest('button,a,[role="button"],.remind-later-wrap,.remind-later-div,.remind-me-div,[tabindex],li') || el;
+  const allNodes = Array.from(document.querySelectorAll('button,a,[role="button"],[tabindex],li,div,span'));
+  const visibleNodes = allNodes.filter(visible);
+  const bodyText = textOf(document.body || document.documentElement);
+  if (!/多要素認証|OneAuth|Multi-factor|認証アプリ|スキップする|Skip/i.test(bodyText)) return false;
+  window.scrollTo(0, document.body.scrollHeight);
+  const directSkip = allNodes.find((el) => /^(スキップする|Skip)$/i.test(textOf(el)))
+    || document.querySelector('.remind-later-wrap,.remind-later-div,.remind-later');
+  if (directSkip) {
+    click(clickable(directSkip));
+    return true;
+  }
+  const neverShow = visibleNodes.find((el) => /今後表示しない|Don.?t show again/i.test(textOf(el)));
   if (neverShow) {
-    clickable(neverShow).click();
+    click(clickable(neverShow));
     return true;
   }
-  const later = nodes.find((el) => /2週間後に通知する|Remind me later/i.test(textOf(el)));
+  const later = visibleNodes.find((el) => /2週間後に通知する|Remind me later/i.test(textOf(el)));
   if (later) {
-    clickable(later).click();
-    return true;
-  }
-  const skip = nodes.find((el) => /スキップする|Skip/i.test(textOf(el)));
-  if (skip) {
-    clickable(skip).click();
+    click(clickable(later));
     return true;
   }
   return false;
