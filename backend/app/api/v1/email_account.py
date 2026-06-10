@@ -1,6 +1,7 @@
 """邮箱账号管理 CRUD。"""
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 import httpx
@@ -29,6 +30,7 @@ from app.services.zoho_mail_automation import (
 )
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
+ZOHO_VERIFICATION_MAIL_DELAY_SECONDS = 60
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -82,6 +84,7 @@ def _open_verification_mail_if_needed(
     verification_password = decrypt_secret(row.verification_password)
     if not verification_password:
         return result
+    time.sleep(ZOHO_VERIFICATION_MAIL_DELAY_SECONDS)
     verification_result = open_onamae_mail_login(
         row.browser_id or "",
         row.verification_login_url,

@@ -117,7 +117,7 @@ export const emailAccountApi = {
     http.post<unknown, ZohoMailLoginResult>(
       `/email/accounts/${id}/mail-login/zoho`,
       {},
-      { timeout: 60000 }
+      { timeout: 180000 }
     ),
   startVerificationMailLogin: (id: number) =>
     http.post<unknown, VerificationMailLoginResult>(
