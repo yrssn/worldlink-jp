@@ -154,12 +154,18 @@ def start_apify_signup(
                 "ready": False,
                 "email_submitted": False,
                 "password_submitted": False,
+                "profile_submitted": False,
                 "captcha_required": False,
                 "open_hint": open_result.get("hint"),
             }
         email_submitted = _submit_email(page, email)
         password_submitted = _submit_password(page, password)
         captcha_required = _wait_for_captcha(page)
+        profile_submitted = False
+        if password_submitted and not captcha_required:
+            profile_submitted = _complete_welcome_profile(page, email)
+            if profile_submitted:
+                _wait_after_profile_continue(page)
         final_url = _current_url(page)
 
     return {
@@ -178,6 +184,7 @@ def start_apify_signup(
         "ready": password_submitted,
         "email_submitted": email_submitted,
         "password_submitted": password_submitted,
+        "profile_submitted": profile_submitted,
         "captcha_required": captcha_required,
         "open_hint": open_result.get("hint"),
     }

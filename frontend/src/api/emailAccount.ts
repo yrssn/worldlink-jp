@@ -54,7 +54,10 @@ export interface ApifySignupStartResult {
   password_submitted: boolean
   profile_submitted: boolean
   captcha_required: boolean
+  mail_opened: boolean
+  mail_login_url?: string | null
   open_hint?: string | null
+  mail_open_hint?: string | null
 }
 
 export const emailAccountApi = {

@@ -17,6 +17,7 @@ from app.schemas.email_account import (
     EmailAccountUpdate,
 )
 from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
+from app.services.zoho_mail_automation import open_zoho_mail_login
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
 
@@ -57,6 +58,18 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _open_mail_after_apify_if_ready(
+    result: dict[str, object],
+    row: EmailAccount,
+    user: User,
+    db: Session,
+) -> dict[str, object]:
+    if not (bool(result.get("profile_submitted")) or bool(result.get("ready"))):
+        return result
+    mail_result = open_zoho_mail_login(row.browser_id or "", row.mail_login_url, user, db)
+    return {**result, **mail_result}
 
 
 @router.get("", response_model=list[EmailAccountOut])
@@ -145,7 +158,8 @@ def start_email_apify_signup(
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
-        return start_apify_signup(row.browser_id, row.email, email_password, user, db)
+        result = start_apify_signup(row.browser_id, row.email, email_password, user, db)
+        return _open_mail_after_apify_if_ready(result, row, user, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:
@@ -173,7 +187,8 @@ def continue_email_apify_signup(
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
-        return continue_apify_signup(row.browser_id, row.email, user, db)
+        result = continue_apify_signup(row.browser_id, row.email, user, db)
+        return _open_mail_after_apify_if_ready(result, row, user, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:
