@@ -78,26 +78,7 @@ class ApifySignupStartOut(BaseModel):
     password_submitted: bool = False
     profile_submitted: bool = False
     captcha_required: bool = False
-    mail_opened: bool = False
-    mail_login_url: Optional[str] = None
-    mail_final_url: Optional[str] = None
-    mail_closed_tab_count: int = 0
-    mail_email_submitted: bool = False
-    mail_password_submitted: bool = False
-    mail_verification_required: bool = False
-    verification_mail_opened: bool = False
-    verification_mail_login_url: Optional[str] = None
-    verification_mail_final_url: Optional[str] = None
-    verification_mail_login_submitted: bool = False
-    verification_mail_inbox_ready: bool = False
-    verification_mail_code_extracted: bool = False
-    verification_code: Optional[str] = None
-    mail_verification_code_submitted: bool = False
-    mail_verification_final_url: Optional[str] = None
-    mail_verification_submit_hint: Optional[str] = None
     open_hint: Optional[str] = None
-    mail_open_hint: Optional[str] = None
-    verification_mail_open_hint: Optional[str] = None
 
 
 class ZohoMailLoginOut(BaseModel):

@@ -69,26 +69,6 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
     )
 
 
-def _open_mail_after_apify_if_ready(
-    result: dict[str, object],
-    row: EmailAccount,
-    email_password: str | None,
-    user: User,
-    db: Session,
-) -> dict[str, object]:
-    if not (bool(result.get("profile_submitted")) or bool(result.get("ready"))):
-        return result
-    mail_result = open_zoho_mail_login(
-        row.browser_id or "",
-        row.mail_login_url,
-        row.email,
-        email_password,
-        user,
-        db,
-    )
-    return _open_verification_mail_if_needed({**result, **mail_result}, row, user, db)
-
-
 def _open_verification_mail_if_needed(
     result: dict[str, object],
     row: EmailAccount,
@@ -213,7 +193,7 @@ def start_email_apify_signup(
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
         result = start_apify_signup(row.browser_id, row.email, email_password, user, db)
-        return _open_mail_after_apify_if_ready(result, row, email_password, user, db)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:
@@ -245,7 +225,7 @@ def continue_email_apify_signup(
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
         result = continue_apify_signup(row.browser_id, row.email, user, db)
-        return _open_mail_after_apify_if_ready(result, row, email_password, user, db)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:

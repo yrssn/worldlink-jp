@@ -54,26 +54,7 @@ export interface ApifySignupStartResult {
   password_submitted: boolean
   profile_submitted: boolean
   captcha_required: boolean
-  mail_opened: boolean
-  mail_login_url?: string | null
-  mail_final_url?: string | null
-  mail_closed_tab_count: number
-  mail_email_submitted: boolean
-  mail_password_submitted: boolean
-  mail_verification_required: boolean
-  verification_mail_opened: boolean
-  verification_mail_login_url?: string | null
-  verification_mail_final_url?: string | null
-  verification_mail_login_submitted: boolean
-  verification_mail_inbox_ready: boolean
-  verification_mail_code_extracted: boolean
-  verification_code?: string | null
-  mail_verification_code_submitted: boolean
-  mail_verification_final_url?: string | null
-  mail_verification_submit_hint?: string | null
   open_hint?: string | null
-  mail_open_hint?: string | null
-  verification_mail_open_hint?: string | null
 }
 
 export interface ZohoMailLoginResult {
