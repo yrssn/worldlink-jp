@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from datetime import datetime
 from itertools import count
 from urllib.parse import quote, urlparse
@@ -20,6 +21,12 @@ SIGNUP_URL = "https://console.apify.com/sign-up"
 LOGIN_URL = "https://console.apify.com/log-in"
 SETTINGS_INTEGRATIONS_URL = "https://console.apify.com/settings/integrations"
 HUMAN_VERIFICATION_TIMEOUT = 600
+ProgressCallback = Callable[[str, str], None]
+
+
+def _emit_progress(progress_callback: ProgressCallback | None, node: str, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(node, message)
 
 
 class CdpPage:
@@ -93,8 +100,10 @@ def start_apify_signup(
     user: User,
     db: Session,
     mail_login_url: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
     logger.info("[Apify signup] start flow browser_id={} email={}", browser_id, email)
+    _emit_progress(progress_callback, "open_browser", "启动并清理 BitBrowser/Apify 会话")
     bitbrowser_service.close_browser_window(browser_id, user)
     time.sleep(1)
     profile_clear_result = bitbrowser_service.clear_browser_profile_cookies(browser_id, user)
@@ -166,8 +175,10 @@ def start_apify_signup(
                 "open_hint": open_result.get("hint"),
             }
         logger.info("[Apify signup] submitting signup email browser_id={} email={}", browser_id, email)
+        _emit_progress(progress_callback, "submit_email", "填写 Apify 注册邮箱")
         email_submitted = _submit_email(page, email)
         logger.info("[Apify signup] submitting signup password browser_id={} email={}", browser_id, email)
+        _emit_progress(progress_callback, "submit_password", "填写 Apify 注册密码并提交")
         password_submitted = _submit_password(page, password)
         _wait_for_apify_post_submit_state(page)
         email_already_taken = _has_email_already_taken_error(page)
@@ -187,7 +198,13 @@ def start_apify_signup(
                 browser_id,
                 email,
             )
-            post_human_state = _wait_for_human_verification_result(page, browser_id, email)
+            _emit_progress(progress_callback, "human_verification", "等待人工完成人机验证")
+            post_human_state = _wait_for_human_verification_result(
+                page,
+                browser_id,
+                email,
+                progress_callback=progress_callback,
+            )
             email_already_taken = bool(post_human_state.get("email_already_taken"))
             email_verification_required = bool(post_human_state.get("email_verification_required"))
             captcha_required = bool(post_human_state.get("captcha_required"))
@@ -201,6 +218,7 @@ def start_apify_signup(
             )
         if email_already_taken and not captcha_required:
             logger.info("[Apify signup] email already taken; switching to login browser_id={} email={}", browser_id, email)
+            _emit_progress(progress_callback, "login_existing_account", "邮箱已注册，切换到 Apify 登录")
             apify_login_attempted = True
             login_result = _login_existing_apify_account(page, email, password)
             apify_logged_in = bool(login_result.get("logged_in"))
@@ -216,6 +234,7 @@ def start_apify_signup(
             )
         elif password_submitted and not email_already_taken and not captcha_required:
             logger.info("[Apify signup] completing welcome profile browser_id={} email={}", browser_id, email)
+            _emit_progress(progress_callback, "welcome_profile", "填写 Apify 欢迎页资料")
             profile_details = _complete_welcome_profile_details(page, email)
             profile_submitted = bool(profile_details.get("submitted"))
             if profile_submitted:
@@ -229,6 +248,7 @@ def start_apify_signup(
     ready = (password_submitted or apify_logged_in or email_verification_required) and not captcha_required
     if email_verification_required and password:
         logger.info("[Apify signup] opening Zoho verification mail browser_id={} email={}", browser_id, email)
+        _emit_progress(progress_callback, "email_verification", "打开 Zoho 邮箱并点击 Apify 验证链接")
         mail_result = open_latest_apify_verification_link(
             browser_id,
             mail_login_url,
@@ -249,6 +269,7 @@ def start_apify_signup(
 
     if not captcha_required and (ready or email_verified or apify_logged_in):
         logger.info("[Apify signup] collecting Apify token browser_id={} email={}", browser_id, email)
+        _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
         refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
         with CdpPage(refreshed_ws) as page:
             page.call("Page.enable")
@@ -348,8 +369,10 @@ def continue_apify_signup(
     db: Session,
     email_password: str | None = None,
     mail_login_url: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
     logger.info("[Apify signup] continue flow browser_id={} email={}", browser_id, email)
+    _emit_progress(progress_callback, "resume_browser", "打开现有 BitBrowser 窗口并恢复 Apify 流程")
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
         user,
@@ -388,12 +411,19 @@ def continue_apify_signup(
                 browser_id,
                 email,
             )
-            post_human_state = _wait_for_human_verification_result(page, browser_id, email)
+            _emit_progress(progress_callback, "human_verification", "继续等待人工完成人机验证")
+            post_human_state = _wait_for_human_verification_result(
+                page,
+                browser_id,
+                email,
+                progress_callback=progress_callback,
+            )
             email_already_taken = bool(post_human_state.get("email_already_taken"))
             email_verification_required = bool(post_human_state.get("email_verification_required"))
             captcha_required = bool(post_human_state.get("captcha_required"))
         if email_already_taken and email_password and not captcha_required:
             logger.info("[Apify signup] continue email already taken; switching to login browser_id={} email={}", browser_id, email)
+            _emit_progress(progress_callback, "login_existing_account", "邮箱已注册，切换到 Apify 登录")
             apify_login_attempted = True
             login_result = _login_existing_apify_account(page, email, str(email_password))
             apify_logged_in = bool(login_result.get("logged_in"))
@@ -409,6 +439,7 @@ def continue_apify_signup(
             )
         elif not email_already_taken and not captcha_required:
             logger.info("[Apify signup] continue checking welcome profile/email verification browser_id={} email={}", browser_id, email)
+            _emit_progress(progress_callback, "resume_apify_state", "识别当前 Apify 页面状态")
             profile_details = _complete_welcome_profile_details(page, email)
             profile_submitted = bool(profile_details.get("submitted"))
             if profile_submitted:
@@ -430,6 +461,7 @@ def continue_apify_signup(
     should_open_mail = email_verification_required and bool(email_password)
     if should_open_mail:
         logger.info("[Apify signup] continue opening Zoho verification mail browser_id={} email={}", browser_id, email)
+        _emit_progress(progress_callback, "email_verification", "打开 Zoho 邮箱并点击 Apify 验证链接")
         mail_result = open_latest_apify_verification_link(
             browser_id,
             mail_login_url,
@@ -450,6 +482,7 @@ def continue_apify_signup(
 
     if not captcha_required and (ready or email_verified):
         logger.info("[Apify signup] continue collecting Apify token browser_id={} email={}", browser_id, email)
+        _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
         refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
         with CdpPage(refreshed_ws) as page:
             page.call("Page.enable")
@@ -647,6 +680,7 @@ def _wait_for_human_verification_result(
     browser_id: str,
     email: str,
     timeout: float = HUMAN_VERIFICATION_TIMEOUT,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, bool]:
     deadline = time.monotonic() + timeout
     next_log_at = 0.0
@@ -682,6 +716,11 @@ def _wait_for_human_verification_result(
                     email,
                     captcha_required,
                     _current_url(page),
+                )
+                _emit_progress(
+                    progress_callback,
+                    "human_verification",
+                    "仍在等待人工验证完成，浏览器窗口不要关闭",
                 )
                 next_log_at = now + 15
         except Exception as e:  # noqa: BLE001

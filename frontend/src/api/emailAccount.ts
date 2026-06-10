@@ -77,6 +77,23 @@ export interface ApifySignupStartResult {
   open_hint?: string | null
 }
 
+export interface ApifySignupTask {
+  id: number
+  owner_id: number
+  email_account_id: number
+  action: string
+  status: 'pending' | 'running' | 'paused' | 'done' | 'failed' | string
+  current_node?: string | null
+  node_started_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  error?: string | null
+  logs?: string | null
+  result?: ApifySignupStartResult | null
+  created_at: string
+  updated_at: string
+}
+
 export interface ZohoMailLoginResult {
   ok: boolean
   browser_id: string
@@ -124,17 +141,21 @@ export const emailAccountApi = {
     http.put<unknown, EmailAccount>(`/email/accounts/${id}`, data),
   remove: (id: number) => http.delete<unknown, { ok: boolean }>(`/email/accounts/${id}`),
   startApifySignup: (id: number) =>
-    http.post<unknown, ApifySignupStartResult>(
+    http.post<unknown, ApifySignupTask>(
       `/email/accounts/${id}/apify-signup/start`,
       {},
-      { timeout: 900000 }
+      { timeout: 60000 }
     ),
   continueApifySignup: (id: number) =>
-    http.post<unknown, ApifySignupStartResult>(
+    http.post<unknown, ApifySignupTask>(
       `/email/accounts/${id}/apify-signup/continue`,
       {},
-      { timeout: 900000 }
+      { timeout: 60000 }
     ),
+  getApifySignupTask: (taskId: number) =>
+    http.get<unknown, ApifySignupTask>(`/email/accounts/apify-signup/tasks/${taskId}`),
+  getLatestApifySignupTask: (id: number) =>
+    http.get<unknown, ApifySignupTask | null>(`/email/accounts/${id}/apify-signup/tasks/latest`),
   startZohoMailLogin: (id: number) =>
     http.post<unknown, ZohoMailLoginResult>(
       `/email/accounts/${id}/mail-login/zoho`,

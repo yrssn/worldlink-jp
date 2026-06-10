@@ -101,6 +101,24 @@ class ApifySignupStartOut(BaseModel):
     open_hint: Optional[str] = None
 
 
+class ApifySignupTaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: int
+    email_account_id: int
+    action: str
+    status: str
+    current_node: Optional[str] = None
+    node_started_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error: Optional[str] = None
+    logs: Optional[str] = None
+    result: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
 class ZohoMailLoginOut(BaseModel):
     ok: bool = True
     browser_id: str
