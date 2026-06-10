@@ -6,6 +6,7 @@ from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db
@@ -56,8 +57,15 @@ def _create_apify_key_from_result(
 ) -> dict[str, object]:
     token = result.get("apify_token")
     if not isinstance(token, str) or not token.strip():
+        logger.info("[Apify signup] skip ApifyKey create: token missing email_account_id={}", row.id)
         return result
     has_default = db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).first() is not None
+    logger.info(
+        "[Apify signup] creating ApifyKey email_account_id={} email={} is_default={}",
+        row.id,
+        row.email,
+        not has_default,
+    )
     key = ApifyKey(
         label=f"{row.email} Apify",
         token=token.strip(),
@@ -75,6 +83,7 @@ def _create_apify_key_from_result(
     result["apify_key_created"] = True
     result["apify_key_id"] = key.id
     result["apify_key_is_default"] = key.is_default
+    logger.info("[Apify signup] ApifyKey created email_account_id={} apify_key_id={}", row.id, key.id)
     return result
 
 

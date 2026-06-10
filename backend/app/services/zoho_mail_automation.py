@@ -126,6 +126,7 @@ def open_latest_apify_verification_link(
     user: User,
     db: Session,
 ) -> dict[str, object]:
+    logger.info("[Apify signup] opening Zoho mailbox for Apify verification browser_id={} email={}", browser_id, email)
     login_result = open_zoho_mail_login(browser_id, login_url, email, password, user, db)
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
@@ -140,6 +141,7 @@ def open_latest_apify_verification_link(
     http_base = _extract_devtools_http(open_data)
     page_ws = _find_zoho_page_ws(http_base)
     if not page_ws:
+        logger.info("[Apify signup] Zoho page not found for Apify verification browser_id={} email={}", browser_id, email)
         return {
             **login_result,
             "apify_mail_inbox_ready": False,
@@ -159,10 +161,28 @@ def open_latest_apify_verification_link(
         _wait_page_ready(page)
         _skip_zoho_mfa_prompt_if_present(page)
         inbox_ready = _wait_for_zoho_inbox(page, timeout=120)
+        logger.info(
+            "[Apify signup] Zoho inbox wait finished browser_id={} email={} inbox_ready={}",
+            browser_id,
+            email,
+            inbox_ready,
+        )
         if inbox_ready:
             mail_opened = _open_latest_apify_verify_message(page, timeout=120)
+            logger.info(
+                "[Apify signup] Zoho Apify mail open result browser_id={} email={} mail_opened={}",
+                browser_id,
+                email,
+                mail_opened,
+            )
             if mail_opened:
                 link_clicked = _click_apify_verify_email_link(page, timeout=20)
+                logger.info(
+                    "[Apify signup] Zoho Apify verify link click result browser_id={} email={} link_clicked={}",
+                    browser_id,
+                    email,
+                    link_clicked,
+                )
         final_url = _current_url(page)
     return {
         **login_result,
