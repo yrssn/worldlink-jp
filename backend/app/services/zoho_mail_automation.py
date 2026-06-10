@@ -47,6 +47,9 @@ def open_zoho_mail_login(
     page_ws, page_id = _create_page(http_base, target_url)
     time.sleep(0.5)
     closed_count += _close_zoho_pages_until_clear(http_base, keep_target_id=page_id)
+    final_url = target_url
+    email_submitted = False
+    password_submitted = False
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
@@ -55,10 +58,16 @@ def open_zoho_mail_login(
         _wait_page_ready(page)
         time.sleep(1)
         email_submitted = _submit_zoho_email(page, email)
-        password_submitted = False
-        if email_submitted and password:
-            password_submitted = _submit_zoho_password(page, password)
         final_url = _current_url(page)
+    if email_submitted and password:
+        refreshed_ws = _find_zoho_page_ws(http_base, preferred_target_id=page_id) or page_ws
+        with CdpPage(refreshed_ws) as page:
+            page.call("Page.enable")
+            page.call("Runtime.enable")
+            page.call("Page.bringToFront")
+            _wait_page_ready(page)
+            password_submitted = _submit_zoho_password(page, password)
+            final_url = _current_url(page)
     return {
         "mail_opened": True,
         "mail_login_url": target_url,
@@ -206,6 +215,34 @@ def _close_zoho_pages(http_base: str, keep_target_id: str | None = None) -> int:
     return closed
 
 
+def _find_zoho_page_ws(http_base: str, preferred_target_id: str | None = None) -> str | None:
+    with httpx.Client(timeout=10, trust_env=False) as client:
+        try:
+            response = client.get(f"{http_base.rstrip('/')}/json/list")
+            response.raise_for_status()
+            targets = response.json()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] find target skipped: {}", e)
+            return None
+    if not isinstance(targets, list):
+        return None
+    fallback_ws = None
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        target_id = str(target.get("id") or "")
+        target_url = str(target.get("url") or "")
+        target_type = str(target.get("type") or "")
+        ws_url = str(target.get("webSocketDebuggerUrl") or "")
+        if target_type != "page" or "zoho." not in target_url or not ws_url:
+            continue
+        if preferred_target_id and target_id == preferred_target_id:
+            return ws_url
+        if "accounts.zoho." in target_url:
+            fallback_ws = ws_url
+    return fallback_ws
+
+
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -246,12 +283,23 @@ def _submit_zoho_password(page: CdpPage, password: str) -> bool:
             focused = bool(page.evaluate(_focus_zoho_password_script(), timeout=5))
             submitted = False
             if focused:
-                _type_text(page, password)
+                filled = bool(page.evaluate(_clear_zoho_password_script(), timeout=5))
+                if filled:
+                    _type_text(page, password)
+                    filled = bool(page.evaluate(_verify_zoho_password_script(password), timeout=5))
+                if not filled:
+                    filled = bool(page.evaluate(_fill_zoho_password_only_script(password), timeout=8))
+                if not filled:
+                    filled = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=False), timeout=8))
+                if not filled:
+                    time.sleep(0.5)
+                    continue
+                time.sleep(1)
                 submitted = bool(page.evaluate(_click_zoho_password_submit_script(), timeout=5))
                 if submitted:
                     _press_enter(page)
             if not submitted:
-                submitted = bool(page.evaluate(_force_submit_zoho_password_script(password), timeout=8))
+                submitted = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=True), timeout=8))
             if not submitted:
                 submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
             if submitted:
@@ -271,7 +319,10 @@ def _type_text(page: CdpPage, text: str) -> None:
     if bool(filled):
         return
     for char in text:
+        key = char.upper() if len(char) == 1 and char.isalpha() else char
+        page.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": key, "text": char, "unmodifiedText": char}, timeout=5)
         page.call("Input.dispatchKeyEvent", {"type": "char", "text": char, "unmodifiedText": char}, timeout=5)
+        page.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": key}, timeout=5)
 
 
 def _press_enter(page: CdpPage) -> None:
@@ -454,11 +505,75 @@ def _fill_zoho_password_script(password: str) -> str:
 """
 
 
-def _force_submit_zoho_password_script(password: str) -> str:
+def _clear_zoho_password_script() -> str:
+    return """
+(() => {
+  const input = document.querySelector('#password')
+    || document.querySelector('input[name="PASSWORD"]')
+    || document.querySelector('input[name="password"]')
+    || document.querySelector('input[type="password"]');
+  if (!input) return false;
+  input.focus();
+  input.value = '';
+  input.setAttribute('value', '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return document.activeElement === input;
+})()
+"""
+
+
+def _verify_zoho_password_script(password: str) -> str:
     password_json = json.dumps(password)
     return f"""
 (() => {{
   const password = {password_json};
+  const input = document.querySelector('#password')
+    || document.querySelector('input[name="PASSWORD"]')
+    || document.querySelector('input[name="password"]')
+    || document.querySelector('input[type="password"]');
+  return Boolean(input && input.value === password);
+}})()
+"""
+
+
+def _fill_zoho_password_only_script(password: str) -> str:
+    password_json = json.dumps(password)
+    return f"""
+(() => {{
+  const password = {password_json};
+  const input = document.querySelector('#password')
+    || document.querySelector('input[name="PASSWORD"]')
+    || document.querySelector('input[name="password"]')
+    || document.querySelector('input[type="password"]');
+  if (!input) return false;
+  input.focus();
+  input.value = '';
+  for (const ch of password) {{
+    const before = input.value;
+    const next = before + ch;
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    if (desc && desc.set) desc.set.call(input, next);
+    else input.value = next;
+    input.setAttribute('value', next);
+    input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: ch }}));
+    input.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, inputType: 'insertText', data: ch }}));
+    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: ch }}));
+    input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: ch }}));
+  }}
+  input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  return input.value === password;
+}})()
+"""
+
+
+def _force_submit_zoho_password_script(password: str, *, submit: bool) -> str:
+    password_json = json.dumps(password)
+    submit_json = json.dumps(submit)
+    return f"""
+(() => {{
+  const password = {password_json};
+  const shouldSubmit = {submit_json};
   const visible = (el) => {{
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
@@ -482,6 +597,7 @@ def _force_submit_zoho_password_script(password: str) -> str:
   input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: password.slice(-1) || 'a' }}));
   input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: password.slice(-1) || 'a' }}));
   if (input.value !== password) return false;
+  if (!shouldSubmit) return true;
   const buttons = Array.from(document.querySelectorAll('#nextbtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
   const button = document.querySelector('#nextbtn')
     || buttons.find((el) => /^(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)$/i.test(textOf(el) || el.value || ''))
