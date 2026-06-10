@@ -599,7 +599,12 @@ def _looks_logged_in_url(url: str) -> bool:
 
 
 def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> dict[str, object]:
-    page.call("Page.navigate", {"url": LOGIN_URL}, timeout=8)
+    login_link_clicked = _click_login_link_if_present(page)
+    if login_link_clicked:
+        _wait_page_ready(page)
+        time.sleep(1)
+    if not _is_login_page(page):
+        page.call("Page.navigate", {"url": LOGIN_URL}, timeout=8)
     _wait_page_ready(page)
     time.sleep(1)
     email_submitted = bool(page.evaluate(_fill_login_email_script(email), timeout=8))
@@ -615,7 +620,27 @@ def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> d
         "logged_in": _looks_logged_in_url(final_url),
         "captcha_required": _has_captcha(page),
         "final_url": final_url,
+        "login_link_clicked": login_link_clicked,
     }
+
+
+def _click_login_link_if_present(page: CdpPage) -> bool:
+    return _click_point_from_script(page, _login_link_point_script())
+
+
+def _is_login_page(page: CdpPage) -> bool:
+    return bool(
+        page.evaluate(
+            """
+(() => {
+  const href = location.href;
+  const text = document.body ? document.body.innerText : '';
+  return href.includes('/log-in') || /Log\\s+in\\s+to\\s+Apify|Welcome\\s+back/i.test(text);
+})()
+""",
+            timeout=5,
+        )
+    )
 
 
 def _wait_for_login_result(page: CdpPage, timeout: float = 20) -> None:
@@ -910,6 +935,28 @@ def _fill_login_password_script(password: str) -> str:
   setTimeout(() => button.click(), 250);
   return true;
 }})()
+"""
+
+
+def _login_link_point_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const clickable = (el) => el.closest('a,button,[role="button"],[tabindex]') || el;
+  const nodes = Array.from(document.querySelectorAll('a,button,[role="button"],[tabindex],div,span'))
+    .filter(visible)
+    .filter((el) => /^log\\s*in$/i.test(textOf(el)) || /already\\s+have\\s+an\\s+account.*log\\s*in/i.test(textOf(el)));
+  const target = nodes.find((el) => !/google|github/i.test(textOf(el)));
+  const el = target ? clickable(target) : null;
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+})()
 """
 
 
