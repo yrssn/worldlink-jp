@@ -291,6 +291,8 @@ async function handleStartMailLogin(row: EmailAccount) {
       ElMessage.success('Zoho 已进入邮箱验证码验证，并已打开验证码邮箱登录')
     } else if (result.mail_verification_required) {
       ElMessage.warning('Zoho 已进入邮箱验证码验证，但验证码邮箱未自动登录，请检查验证码邮箱配置')
+    } else if (result.mail_refreshed) {
+      ElMessage.success('Zoho 未要求邮箱验证码，已刷新页面继续加载邮箱')
     } else if (result.mail_password_submitted) {
       ElMessage.success('已打开 Zoho 登录页，并已填写邮箱账号和密码登录')
     } else if (result.mail_email_submitted) {

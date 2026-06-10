@@ -91,6 +91,7 @@ class ZohoMailLoginOut(BaseModel):
     mail_email_submitted: bool = False
     mail_password_submitted: bool = False
     mail_verification_required: bool = False
+    mail_refreshed: bool = False
     verification_mail_opened: bool = False
     verification_mail_login_url: Optional[str] = None
     verification_mail_final_url: Optional[str] = None

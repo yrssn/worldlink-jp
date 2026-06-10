@@ -51,6 +51,7 @@ def open_zoho_mail_login(
     email_submitted = False
     password_submitted = False
     verification_required = False
+    mail_refreshed = False
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
@@ -68,7 +69,10 @@ def open_zoho_mail_login(
             page.call("Page.bringToFront")
             _wait_page_ready(page)
             password_submitted = _submit_zoho_password(page, password)
-            verification_required = _is_zoho_email_verification_step(page)
+            if password_submitted:
+                verification_required = _wait_for_zoho_email_verification_step(page)
+                if not verification_required:
+                    mail_refreshed = _refresh_zoho_current_page(page)
             final_url = _current_url(page)
     return {
         "mail_opened": True,
@@ -78,6 +82,7 @@ def open_zoho_mail_login(
         "mail_email_submitted": email_submitted,
         "mail_password_submitted": password_submitted,
         "mail_verification_required": verification_required,
+        "mail_refreshed": mail_refreshed,
         "mail_open_hint": open_result.get("hint"),
     }
 
@@ -296,6 +301,13 @@ def _current_url(page: CdpPage) -> str:
     return str(value or "")
 
 
+def _refresh_zoho_current_page(page: CdpPage) -> bool:
+    page.call("Page.reload", {"ignoreCache": True}, timeout=5)
+    _wait_page_ready(page)
+    time.sleep(1)
+    return True
+
+
 def _submit_zoho_verification_code(page: CdpPage, code: str) -> bool:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
@@ -303,6 +315,17 @@ def _submit_zoho_verification_code(page: CdpPage, code: str) -> bool:
         if bool(submitted):
             time.sleep(2)
             return True
+        time.sleep(0.5)
+    return False
+
+
+def _wait_for_zoho_email_verification_step(page: CdpPage, timeout: float = 20) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _is_zoho_email_verification_step(page):
+            return True
+        if _is_zoho_mail_page(page):
+            return False
         time.sleep(0.5)
     return False
 
@@ -411,6 +434,22 @@ def _is_zoho_email_verification_step(page: CdpPage) -> bool:
   return Boolean(codeInput)
     && (!emailContainer || visible(emailContainer))
     && /メールアドレスで認証|ワンタイムパスワード|認証コード|verify/i.test(text);
+})()
+""",
+            timeout=5,
+        )
+    )
+
+
+def _is_zoho_mail_page(page: CdpPage) -> bool:
+    return bool(
+        page.evaluate(
+            """
+(() => {
+  const url = window.location.href || '';
+  const text = document.body ? document.body.innerText : '';
+  return /mail\\.zoho\\./i.test(url)
+    || /Zoho Mail|メール|受信トレイ|Inbox/i.test(text);
 })()
 """,
             timeout=5,

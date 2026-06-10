@@ -67,6 +67,7 @@ export interface ZohoMailLoginResult {
   mail_email_submitted: boolean
   mail_password_submitted: boolean
   mail_verification_required: boolean
+  mail_refreshed: boolean
   verification_mail_opened: boolean
   verification_mail_login_url?: string | null
   verification_mail_final_url?: string | null
