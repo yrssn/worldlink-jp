@@ -78,6 +78,26 @@ class ApifySignupStartOut(BaseModel):
     password_submitted: bool = False
     profile_submitted: bool = False
     captcha_required: bool = False
+    email_verification_required: bool = False
+    email_verified: bool = False
+    email_already_taken: bool = False
+    apify_login_attempted: bool = False
+    apify_logged_in: bool = False
+    apify_mail_inbox_ready: bool = False
+    apify_mail_opened: bool = False
+    apify_verification_link_clicked: bool = False
+    apify_token_collected: bool = False
+    apify_key_created: bool = False
+    apify_key_id: Optional[int] = None
+    apify_key_is_default: bool = False
+    apify_full_name: Optional[str] = None
+    apify_username: Optional[str] = None
+    apify_user_id: Optional[str] = None
+    apify_token: Optional[str] = None
+    apify_registered_at: Optional[datetime] = None
+    apify_mail_final_url: Optional[str] = None
+    apify_mail_hint: Optional[str] = None
+    apify_settings_final_url: Optional[str] = None
     open_hint: Optional[str] = None
 
 
