@@ -24,6 +24,7 @@ from app.models.fb_group_scrape import FbGroupPullTask as _FbGroupPullTask  # no
 from app.models.fb_group_scrape import FbGroupPost as _FbGroupPost  # noqa: F401
 from app.models import apify_key as _apify_key_model  # noqa: F401
 from app.models import email_account as _email_account_model  # noqa: F401
+from app.models import apify_signup_task as _apify_signup_task_model  # noqa: F401
 from app.models.user import User, UserRole
 
 

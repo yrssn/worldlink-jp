@@ -54,7 +54,56 @@ export interface ApifySignupStartResult {
   password_submitted: boolean
   profile_submitted: boolean
   captcha_required: boolean
+  email_verification_required: boolean
+  email_verified: boolean
+  email_already_taken: boolean
+  apify_login_attempted: boolean
+  apify_logged_in: boolean
+  apify_login_email_submitted: boolean
+  apify_login_password_submitted: boolean
+  apify_login_page_not_found: boolean
+  apify_login_url?: string | null
+  apify_mail_inbox_ready: boolean
+  apify_mail_opened: boolean
+  apify_verification_link_clicked: boolean
+  apify_token_collected: boolean
+  apify_token_collection_attempted: boolean
+  apify_key_created: boolean
+  apify_key_id?: number | null
+  apify_key_is_default: boolean
+  apify_full_name?: string | null
+  apify_username?: string | null
+  apify_user_id?: string | null
+  apify_token?: string | null
+  apify_registered_at?: string | null
+  apify_mail_final_url?: string | null
+  apify_mail_hint?: string | null
+  apify_settings_final_url?: string | null
   open_hint?: string | null
+}
+
+export interface ApifySignupTask {
+  id: number
+  owner_id: number
+  email_account_id: number
+  action: string
+  status: 'pending' | 'running' | 'paused' | 'done' | 'failed' | string
+  current_node?: string | null
+  node_started_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  error?: string | null
+  logs?: string | null
+  result?: ApifySignupStartResult | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ApifySignupTaskPage {
+  total: number
+  page: number
+  page_size: number
+  items: ApifySignupTask[]
 }
 
 export interface ZohoMailLoginResult {
@@ -104,17 +153,23 @@ export const emailAccountApi = {
     http.put<unknown, EmailAccount>(`/email/accounts/${id}`, data),
   remove: (id: number) => http.delete<unknown, { ok: boolean }>(`/email/accounts/${id}`),
   startApifySignup: (id: number) =>
-    http.post<unknown, ApifySignupStartResult>(
+    http.post<unknown, ApifySignupTask>(
       `/email/accounts/${id}/apify-signup/start`,
       {},
-      { timeout: 180000 }
+      { timeout: 60000 }
     ),
   continueApifySignup: (id: number) =>
-    http.post<unknown, ApifySignupStartResult>(
+    http.post<unknown, ApifySignupTask>(
       `/email/accounts/${id}/apify-signup/continue`,
       {},
       { timeout: 60000 }
     ),
+  getApifySignupTask: (taskId: number) =>
+    http.get<unknown, ApifySignupTask>(`/email/accounts/apify-signup/tasks/${taskId}`),
+  listApifySignupTasks: (params?: { account_id?: number; status?: string; page?: number; page_size?: number }) =>
+    http.get<unknown, ApifySignupTaskPage>('/email/accounts/apify-signup/tasks', { params }),
+  getLatestApifySignupTask: (id: number) =>
+    http.get<unknown, ApifySignupTask | null>(`/email/accounts/${id}/apify-signup/tasks/latest`),
   startZohoMailLogin: (id: number) =>
     http.post<unknown, ZohoMailLoginResult>(
       `/email/accounts/${id}/mail-login/zoho`,

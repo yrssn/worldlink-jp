@@ -3,6 +3,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   emailAccountApi,
+  type ApifySignupStartResult,
+  type ApifySignupTask,
   type EmailAccount,
   type EmailAccountPayload
 } from '@/api/emailAccount'
@@ -21,6 +23,11 @@ const verificationMailLoginId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
 const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
+const apifyTasks = ref<ApifySignupTask[]>([])
+const apifyTaskLoading = ref(false)
+const apifyTaskTotal = ref(0)
+const apifyTaskPage = ref(1)
+const apifyTaskPageSize = ref(5)
 const defaultZohoLoginUrl = 'https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice&signupurl=https://www.zoho.com/jp/mail/zohomail-pricing.html&serviceurl=https://mail.zoho.com'
 
 const filters = reactive({
@@ -124,6 +131,39 @@ async function loadApifyKeys() {
   }
 }
 
+async function loadApifyTasks() {
+  apifyTaskLoading.value = true
+  try {
+    const page = await emailAccountApi.listApifySignupTasks({
+      page: apifyTaskPage.value,
+      page_size: apifyTaskPageSize.value
+    })
+    apifyTasks.value = page.items
+    apifyTaskTotal.value = page.total
+  } catch {
+    apifyTasks.value = []
+    apifyTaskTotal.value = 0
+  } finally {
+    apifyTaskLoading.value = false
+  }
+}
+
+function handleApifyTaskPageChange(page: number) {
+  apifyTaskPage.value = page
+  loadApifyTasks()
+}
+
+function handleApifyTaskSizeChange(pageSize: number) {
+  apifyTaskPageSize.value = pageSize
+  apifyTaskPage.value = 1
+  loadApifyTasks()
+}
+
+async function refreshApifyTasks() {
+  apifyTaskPage.value = 1
+  await loadApifyTasks()
+}
+
 function browserLabel(row: BitBrowserCatalogRow) {
   const name = row.name || row.cached_window_name || row.browser_id
   const platform = row.platform_name || row.platform || row.cached_env_platform
@@ -140,6 +180,28 @@ function linkedApifyKey(emailAccountId: number) {
   return apifyKeys.value.find((item) => item.email_account_id === emailAccountId)
 }
 
+function emailByAccountId(emailAccountId: number) {
+  return list.value.find((item) => item.id === emailAccountId)?.email || `邮箱账号 #${emailAccountId}`
+}
+
+function apifyTaskStatusType(status: string) {
+  if (status === 'done') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'paused') return 'warning'
+  if (status === 'running') return 'primary'
+  return 'info'
+}
+
+function apifyTaskLogLines(task: ApifySignupTask) {
+  if (!task.logs) return []
+  try {
+    const rows = JSON.parse(task.logs)
+    return Array.isArray(rows) ? rows.slice(-8) : []
+  } catch {
+    return []
+  }
+}
+
 function canStartApifySignup(row: EmailAccount) {
   return !linkedApifyKey(row.id) && !!row.browser_id
 }
@@ -154,6 +216,74 @@ function canStartMailLogin(row: EmailAccount) {
 
 function canStartVerificationMailLogin(row: EmailAccount) {
   return !!row.browser_id && !!row.verification_email && !!row.verification_password && !!row.verification_login_url
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function waitApifySignupTask(taskId: number) {
+  let task = await emailAccountApi.getApifySignupTask(taskId)
+  for (let i = 0; i < 450 && ['pending', 'running'].includes(task.status); i += 1) {
+    await sleep(2000)
+    task = await emailAccountApi.getApifySignupTask(taskId)
+  }
+  return task
+}
+
+async function showApifySignupResult(result: ApifySignupStartResult, isContinue = false) {
+  if (result.apify_key_created) {
+    ElMessage.success(`${isContinue ? '已完成邮箱验证并' : '已登录已有 Apify 账号并'}写入 Apify Key 管理${result.apify_key_is_default ? '（已设为默认）' : ''}`)
+    await loadApifyKeys()
+  } else if (result.apify_token_collected) {
+    ElMessage.success(`${isContinue ? '已获取' : '已登录已有 Apify 账号并获取'}默认 API Token，请刷新 Apify Key 管理确认`)
+    await loadApifyKeys()
+  } else if (result.apify_token_collection_attempted) {
+    ElMessage.warning('已尝试采集 Apify Token，但未读取到 Token；任务已暂停，请查看 integrations 页面和任务日志')
+  } else if (result.apify_verification_link_clicked) {
+    ElMessage.warning('已点击 Apify 邮箱验证链接，但未能读取默认 API Token，请查看指纹浏览器窗口')
+  } else if (result.apify_login_attempted && result.email_verification_required) {
+    ElMessage.warning('该邮箱已注册 Apify，已改为登录；当前需要邮箱验证，请查看 Zoho/Apify 页面')
+  } else if (result.apify_login_attempted && result.apify_logged_in) {
+    ElMessage.success('该邮箱已注册 Apify，已改为登录并进入账号页面')
+  } else if (result.apify_login_page_not_found) {
+    ElMessage.warning('Apify 登录入口跳到了 page-not-found，任务已暂停，请查看任务日志')
+  } else if (result.email_already_taken) {
+    ElMessage.warning('该邮箱已注册 Apify，但自动登录未完成，请查看指纹浏览器窗口')
+  } else if (result.still_logged_in) {
+    ElMessage.warning('已重启并清理 Apify 会话，但仍保持登录；请检查指纹浏览器环境 Cookie 配置')
+  } else if (result.captcha_required) {
+    ElMessage.warning('Apify 人机验证未完成，任务已暂停；人工完成后点「继续注册」')
+  } else if (result.profile_submitted) {
+    ElMessage.success(isContinue ? '已用邮箱前缀填写 Apify 注册资料并点击 Continue，继续处理中' : '已提交 Apify 注册资料页')
+  } else if (result.password_submitted) {
+    ElMessage.success(result.session_cleared ? '已清理 Apify 会话，并已填写邮箱密码提交注册' : '已填写邮箱密码提交注册')
+  } else if (result.email_submitted) {
+    ElMessage.warning('已填写邮箱并进入密码步骤，但未完成提交，请查看指纹浏览器窗口')
+  } else if (result.ready) {
+    ElMessage.success('Apify 当前已进入登录后的页面，可继续后续信息采集/关联')
+  } else {
+    ElMessage.warning('Apify 注册任务结束但未完成关键状态，请查看指纹浏览器窗口和后台任务日志')
+  }
+}
+
+async function handleApifySignupTask(taskId: number, isContinue = false) {
+  ElMessage.info(`Apify 注册任务 #${taskId} 已挂后台执行，可在后端日志查看节点进度`)
+  await refreshApifyTasks()
+  const task = await waitApifySignupTask(taskId)
+  if (task.status === 'done' && task.result) {
+    await showApifySignupResult(task.result, isContinue)
+  } else if (task.status === 'paused') {
+    ElMessage.warning(`Apify 注册任务 #${task.id} 已暂停在节点：${task.current_node || '未知'}。${task.error || '请人工处理后点继续注册'}`)
+    if (task.result) {
+      await showApifySignupResult(task.result, isContinue)
+    }
+  } else if (task.status === 'failed') {
+    ElMessage.error(`Apify 注册任务 #${task.id} 失败：${task.error || '请查看后端日志'}`)
+  } else {
+    ElMessage.warning(`Apify 注册任务 #${task.id} 未结束，当前节点：${task.current_node || task.status}`)
+  }
+  await refreshApifyTasks()
 }
 
 async function openCreate() {
@@ -220,20 +350,8 @@ async function handleStartApifySignup(row: EmailAccount) {
   }
   apifySignupId.value = row.id
   try {
-    const result = await emailAccountApi.startApifySignup(row.id)
-    if (result.still_logged_in) {
-      ElMessage.warning('已重启并清理 Apify 会话，但仍保持登录；请检查指纹浏览器环境 Cookie 配置')
-    } else if (result.captcha_required) {
-      ElMessage.warning(`已清理 Apify 会话并提交注册；弹出图形验证码，请在指纹浏览器窗口里人工完成验证`)
-    } else if (result.profile_submitted) {
-      ElMessage.success('已提交 Apify 注册资料页')
-    } else if (result.password_submitted) {
-      ElMessage.success(result.session_cleared ? '已清理 Apify 会话，并已填写邮箱密码提交注册' : '已填写邮箱密码提交注册')
-    } else if (result.email_submitted) {
-      ElMessage.warning('已填写邮箱并进入密码步骤，但未完成提交，请查看指纹浏览器窗口')
-    } else {
-      ElMessage.warning('已打开浏览器，但未完成 Apify 注册提交，请查看指纹浏览器窗口')
-    }
+    const task = await emailAccountApi.startApifySignup(row.id)
+    await handleApifySignupTask(task.id)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -252,16 +370,8 @@ async function handleContinueApifySignup(row: EmailAccount) {
   }
   apifyContinueId.value = row.id
   try {
-    const result = await emailAccountApi.continueApifySignup(row.id)
-    if (result.captcha_required) {
-      ElMessage.warning('仍检测到图形验证码，请先在指纹浏览器窗口里人工完成验证')
-    } else if (result.profile_submitted) {
-      ElMessage.success('已用邮箱前缀填写 Apify 注册资料并点击 Continue')
-    } else if (result.ready) {
-      ElMessage.success('Apify 当前已进入登录后的页面，可继续后续信息采集/关联')
-    } else {
-      ElMessage.warning('当前还未进入 Apify 登录后页面，请查看指纹浏览器窗口')
-    }
+    const task = await emailAccountApi.continueApifySignup(row.id)
+    await handleApifySignupTask(task.id, true)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -376,6 +486,7 @@ onMounted(() => {
   load()
   loadBrowserOptions()
   loadApifyKeys()
+  loadApifyTasks()
 })
 </script>
 
@@ -409,6 +520,71 @@ onMounted(() => {
           <el-button @click="resetFilters">重置</el-button>
         </el-form-item>
       </el-form>
+    </el-card>
+
+    <el-card shadow="never" style="margin-bottom: 16px">
+      <template #header>
+        <div style="display: flex; justify-content: space-between; align-items: center">
+          <span>Apify 注册任务</span>
+          <el-button size="small" @click="refreshApifyTasks">刷新任务</el-button>
+        </div>
+      </template>
+      <el-table :data="apifyTasks" v-loading="apifyTaskLoading" border stripe size="small">
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div style="padding: 8px 16px">
+              <div v-if="row.error" style="margin-bottom: 8px; color: var(--el-color-danger)">
+                错误：{{ row.error }}
+              </div>
+              <div v-if="row.result" style="margin-bottom: 8px">
+                结果：
+                <el-tag v-if="row.result.apify_key_created" type="success">已写入 Apify Key</el-tag>
+                <el-tag v-else-if="row.result.apify_token_collected" type="success">已采集 Token</el-tag>
+                <el-tag v-else-if="row.result.apify_token_collection_attempted" type="warning">Token 采集失败</el-tag>
+                <el-tag v-else-if="row.result.apify_login_page_not_found" type="danger">登录入口 404</el-tag>
+                <el-tag v-else-if="row.result.captcha_required" type="warning">需要/等待人机验证</el-tag>
+                <el-tag v-else type="info">已返回结果</el-tag>
+              </div>
+              <div v-if="apifyTaskLogLines(row).length">
+                <div
+                  v-for="(log, index) in apifyTaskLogLines(row)"
+                  :key="index"
+                  style="font-family: monospace; font-size: 12px; line-height: 1.8"
+                >
+                  {{ formatDate(log.time) }} [{{ log.node }}] {{ log.message }}
+                </div>
+              </div>
+              <el-empty v-else description="暂无节点日志" :image-size="48" />
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="任务ID" prop="id" width="90" />
+        <el-table-column label="邮箱" min-width="220">
+          <template #default="{ row }">{{ emailByAccountId(row.email_account_id) }}</template>
+        </el-table-column>
+        <el-table-column label="动作" prop="action" width="100" />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="apifyTaskStatusType(row.status)">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="当前节点" prop="current_node" min-width="180" />
+        <el-table-column label="更新时间" width="170">
+          <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
+        </el-table-column>
+      </el-table>
+      <div style="display: flex; justify-content: flex-end; margin-top: 12px">
+        <el-pagination
+          v-model:current-page="apifyTaskPage"
+          v-model:page-size="apifyTaskPageSize"
+          :total="apifyTaskTotal"
+          :page-sizes="[5, 10, 20]"
+          layout="total, sizes, prev, pager, next"
+          small
+          @current-change="handleApifyTaskPageChange"
+          @size-change="handleApifyTaskSizeChange"
+        />
+      </div>
     </el-card>
 
     <el-table :data="list" v-loading="loading" border stripe>

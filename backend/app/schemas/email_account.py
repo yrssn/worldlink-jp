@@ -78,7 +78,58 @@ class ApifySignupStartOut(BaseModel):
     password_submitted: bool = False
     profile_submitted: bool = False
     captcha_required: bool = False
+    email_verification_required: bool = False
+    email_verified: bool = False
+    email_already_taken: bool = False
+    apify_login_attempted: bool = False
+    apify_logged_in: bool = False
+    apify_login_email_submitted: bool = False
+    apify_login_password_submitted: bool = False
+    apify_login_page_not_found: bool = False
+    apify_login_url: Optional[str] = None
+    apify_mail_inbox_ready: bool = False
+    apify_mail_opened: bool = False
+    apify_verification_link_clicked: bool = False
+    apify_token_collected: bool = False
+    apify_token_collection_attempted: bool = False
+    apify_key_created: bool = False
+    apify_key_id: Optional[int] = None
+    apify_key_is_default: bool = False
+    apify_full_name: Optional[str] = None
+    apify_username: Optional[str] = None
+    apify_user_id: Optional[str] = None
+    apify_token: Optional[str] = None
+    apify_registered_at: Optional[datetime] = None
+    apify_mail_final_url: Optional[str] = None
+    apify_mail_hint: Optional[str] = None
+    apify_settings_final_url: Optional[str] = None
     open_hint: Optional[str] = None
+
+
+class ApifySignupTaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: int
+    email_account_id: int
+    action: str
+    status: str
+    current_node: Optional[str] = None
+    node_started_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error: Optional[str] = None
+    logs: Optional[str] = None
+    result: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApifySignupTaskPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ApifySignupTaskOut]
 
 
 class ZohoMailLoginOut(BaseModel):

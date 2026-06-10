@@ -51,7 +51,6 @@ def open_zoho_mail_login(
     email_submitted = False
     password_submitted = False
     verification_required = False
-    mail_refreshed = False
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
@@ -70,9 +69,8 @@ def open_zoho_mail_login(
             _wait_page_ready(page)
             password_submitted = _submit_zoho_password(page, password)
             if password_submitted:
-                verification_required = _wait_for_zoho_email_verification_step(page)
-                if not verification_required:
-                    mail_refreshed = _refresh_zoho_current_page(page)
+                _skip_zoho_mfa_prompt_if_present(page)
+            verification_required = _is_zoho_email_verification_step(page)
             final_url = _current_url(page)
     return {
         "mail_opened": True,
@@ -82,7 +80,6 @@ def open_zoho_mail_login(
         "mail_email_submitted": email_submitted,
         "mail_password_submitted": password_submitted,
         "mail_verification_required": verification_required,
-        "mail_refreshed": mail_refreshed,
         "mail_open_hint": open_result.get("hint"),
     }
 
@@ -115,15 +112,133 @@ def submit_zoho_verification_code(
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
         submitted = _submit_zoho_verification_code(page, code)
-        refreshed = False
-        if submitted:
-            refreshed = _refresh_zoho_current_page(page)
         final_url = _current_url(page)
     return {
         "mail_verification_code_submitted": submitted,
-        "mail_verification_refreshed": refreshed,
         "mail_verification_final_url": final_url,
         "mail_verification_submit_hint": open_result.get("hint"),
+    }
+
+
+def open_latest_apify_verification_link(
+    browser_id: str,
+    login_url: str | None,
+    email: str,
+    password: str,
+    user: User,
+    db: Session,
+    *,
+    ensure_login: bool = True,
+) -> dict[str, object]:
+    logger.info("[Apify signup] opening Zoho mailbox for Apify verification browser_id={} email={}", browser_id, email)
+    if ensure_login:
+        login_result = open_zoho_mail_login(browser_id, login_url, email, password, user, db)
+    else:
+        login_result = wait_current_zoho_inbox_ready(browser_id, user, db, timeout=30)
+    open_result = bitbrowser_service.open_browser_window(
+        browser_id,
+        user,
+        db,
+        headless=False,
+        restart=False,
+    )
+    open_data = open_result.get("data") or {}
+    if not isinstance(open_data, dict) or not open_data:
+        raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
+    http_base = _extract_devtools_http(open_data)
+    page_ws = _find_zoho_page_ws(http_base)
+    if not page_ws:
+        logger.info("[Apify signup] Zoho page not found for Apify verification browser_id={} email={}", browser_id, email)
+        return {
+            **login_result,
+            "apify_mail_inbox_ready": False,
+            "apify_mail_opened": False,
+            "apify_verification_link_clicked": False,
+            "apify_mail_hint": "未找到 Zoho Mail 页面",
+        }
+
+    inbox_ready = False
+    mail_opened = False
+    link_clicked = False
+    final_url = ""
+    with CdpPage(page_ws) as page:
+        page.call("Page.enable")
+        page.call("Runtime.enable")
+        page.call("Page.bringToFront")
+        _wait_page_ready(page)
+        _skip_zoho_mfa_prompt_if_present(page)
+        inbox_ready = _wait_for_zoho_inbox(page, timeout=120)
+        logger.info(
+            "[Apify signup] Zoho inbox wait finished browser_id={} email={} inbox_ready={}",
+            browser_id,
+            email,
+            inbox_ready,
+        )
+        if inbox_ready:
+            mail_opened = _open_latest_apify_verify_message(page, timeout=120)
+            logger.info(
+                "[Apify signup] Zoho Apify mail open result browser_id={} email={} mail_opened={}",
+                browser_id,
+                email,
+                mail_opened,
+            )
+            if mail_opened:
+                link_clicked = _click_apify_verify_email_link(page, timeout=20)
+                logger.info(
+                    "[Apify signup] Zoho Apify verify link click result browser_id={} email={} link_clicked={}",
+                    browser_id,
+                    email,
+                    link_clicked,
+                )
+        final_url = _current_url(page)
+    return {
+        **login_result,
+        "apify_mail_inbox_ready": inbox_ready,
+        "apify_mail_opened": mail_opened,
+        "apify_verification_link_clicked": link_clicked,
+        "apify_mail_final_url": final_url,
+        "apify_mail_hint": open_result.get("hint"),
+    }
+
+
+def wait_current_zoho_inbox_ready(
+    browser_id: str,
+    user: User,
+    db: Session,
+    *,
+    timeout: float = 120,
+) -> dict[str, object]:
+    open_result = bitbrowser_service.open_browser_window(
+        browser_id,
+        user,
+        db,
+        headless=False,
+        restart=False,
+    )
+    open_data = open_result.get("data") or {}
+    if not isinstance(open_data, dict) or not open_data:
+        raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
+    http_base = _extract_devtools_http(open_data)
+    page_ws = _find_zoho_page_ws(http_base)
+    if not page_ws:
+        return {
+            "mail_inbox_ready": False,
+            "mail_open_hint": "未找到 Zoho Mail 页面",
+        }
+    inbox_ready = False
+    final_url = ""
+    with CdpPage(page_ws) as page:
+        page.call("Page.enable")
+        page.call("Runtime.enable")
+        page.call("Page.bringToFront")
+        _wait_page_ready(page)
+        _skip_zoho_mfa_prompt_if_present(page)
+        inbox_ready = _wait_for_zoho_inbox(page, timeout=timeout)
+        final_url = _current_url(page)
+    return {
+        "mail_inbox_ready": inbox_ready,
+        "mail_final_url": final_url,
+        "mail_open_hint": open_result.get("hint"),
     }
 
 
@@ -286,7 +401,9 @@ def _find_zoho_page_ws(http_base: str, preferred_target_id: str | None = None) -
             continue
         if preferred_target_id and target_id == preferred_target_id:
             return ws_url
-        if "accounts.zoho." in target_url:
+        if "mail.zoho." in target_url:
+            return ws_url
+        if fallback_ws is None or "accounts.zoho." in target_url:
             fallback_ws = ws_url
     return fallback_ws
 
@@ -305,11 +422,104 @@ def _current_url(page: CdpPage) -> str:
     return str(value or "")
 
 
-def _refresh_zoho_current_page(page: CdpPage) -> bool:
-    page.call("Page.reload", {"ignoreCache": True}, timeout=5)
-    _wait_page_ready(page)
-    time.sleep(1)
-    return True
+def _skip_zoho_mfa_prompt_if_present(page: CdpPage) -> bool:
+    deadline = time.monotonic() + 60
+    clicked = False
+    while time.monotonic() < deadline:
+        try:
+            result = bool(page.evaluate(_skip_zoho_mfa_prompt_script(), timeout=5))
+            clicked = clicked or result
+            if _is_zoho_mail_ready(page):
+                return clicked
+            if not _is_zoho_mfa_prompt(page):
+                return clicked
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] skip mfa prompt skipped: {}", e)
+        time.sleep(1)
+    return clicked
+
+
+def _wait_for_zoho_inbox(page: CdpPage, timeout: float = 120) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            _skip_zoho_mfa_prompt_if_present(page)
+            if _is_zoho_mail_ready(page):
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] wait inbox skipped: {}", e)
+        time.sleep(2)
+    return False
+
+
+def _is_zoho_mail_ready(page: CdpPage) -> bool:
+    return bool(
+        page.evaluate(
+            """
+(() => {
+  const href = location.href;
+  const text = document.body ? document.body.innerText : '';
+  return /mail\\.zoho\\./i.test(href)
+    && (/受信トレイ|Inbox|メール/i.test(text)
+      || !!document.querySelector('[data-testid="lst-sndr"], .zmList, [role="listbox"]'));
+})()
+""",
+            timeout=5,
+        )
+    )
+
+
+def _is_zoho_mfa_prompt(page: CdpPage) -> bool:
+    return bool(
+        page.evaluate(
+            """
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return /多要素認証|OneAuth|Multi-factor|認証アプリ|スキップする/i.test(text)
+    && !/mail\\.zoho\\./i.test(location.href);
+})()
+""",
+            timeout=5,
+        )
+    )
+
+
+def _open_latest_apify_verify_message(page: CdpPage, timeout: float = 120) -> bool:
+    deadline = time.monotonic() + timeout
+    last_reload_at = 0.0
+    while time.monotonic() < deadline:
+        try:
+            clicked = bool(page.evaluate(_click_latest_apify_verify_message_script(), timeout=8))
+            if clicked:
+                time.sleep(2)
+                return True
+            now = time.monotonic()
+            if now - last_reload_at > 20:
+                page.evaluate(
+                    "(() => { const b = Array.from(document.querySelectorAll('button,[role=\"button\"],i'))"
+                    ".find((el) => /refresh|更新|再読み込み/i.test(el.getAttribute('aria-label') || el.title || el.innerText || ''));"
+                    " if (b) b.click(); else location.reload(); return true; })()",
+                    timeout=5,
+                )
+                last_reload_at = now
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] open apify mail skipped: {}", e)
+        time.sleep(3)
+    return False
+
+
+def _click_apify_verify_email_link(page: CdpPage, timeout: float = 20) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            clicked = bool(page.evaluate(_click_apify_verify_email_link_script(), timeout=8))
+            if clicked:
+                time.sleep(2)
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] click apify verify link skipped: {}", e)
+        time.sleep(1)
+    return False
 
 
 def _submit_zoho_verification_code(page: CdpPage, code: str) -> bool:
@@ -319,17 +529,6 @@ def _submit_zoho_verification_code(page: CdpPage, code: str) -> bool:
         if bool(submitted):
             time.sleep(2)
             return True
-        time.sleep(0.5)
-    return False
-
-
-def _wait_for_zoho_email_verification_step(page: CdpPage, timeout: float = 20) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _is_zoho_email_verification_step(page):
-            return True
-        if _is_zoho_mail_page(page):
-            return False
         time.sleep(0.5)
     return False
 
@@ -357,51 +556,16 @@ def _fill_zoho_verification_code_script(code: str) -> str:
     input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: value.slice(-1) || '0' }}));
     input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: value.slice(-1) || '0' }}));
   }};
-  const setDigit = (input, digit, index) => {{
-    input.focus();
-    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-    if (desc && desc.set) desc.set.call(input, digit);
-    else input.value = digit;
-    input.setAttribute('value', digit);
-    input.classList.remove('empty_field');
-    input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: digit, code: `Digit${{digit}}`, keyCode: 48 + Number(digit), which: 48 + Number(digit) }}));
-    input.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, inputType: 'insertText', data: digit }}));
-    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: digit }}));
-    input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: digit, code: `Digit${{digit}}`, keyCode: 48 + Number(digit), which: 48 + Number(digit) }}));
-    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    const next = input.parentElement?.querySelectorAll('input.mfa_email_otp')[index + 1];
-    if (next) next.focus();
-  }};
-  const emailContainer = document.querySelector('#mfa_email_container');
-  const emailOtpBox = document.querySelector('#mfa_email');
-  const splitInputs = Array.from(document.querySelectorAll('#mfa_email input.mfa_email_otp, #mfa_email input.splitedText'));
-  if (emailContainer && visible(emailContainer) && splitInputs.length) {{
-    const digits = code.split('');
-    const fullValue = document.querySelector('#mfa_email_full_value') || document.querySelector('.mfa_email_full_value');
-    if (fullValue) setValue(fullValue, code);
-    if (emailOtpBox) {{
-      emailOtpBox.classList.remove('errorborder');
-      emailOtpBox.setAttribute('value', code);
-      emailOtpBox.dispatchEvent(new Event('click', {{ bubbles: true }}));
-    }}
-    splitInputs.forEach((input, index) => setDigit(input, digits[index] || '', index));
-    document.dispatchEvent(new Event('input', {{ bubbles: true }}));
-    const filled = splitInputs.map((input) => input.value || '').join('').slice(0, code.length);
-    if ((fullValue?.value || filled) !== code && filled !== code) return false;
-  }} else {{
   const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
   const input = document.querySelector('input[name="otp"]')
     || document.querySelector('input[name="OTP"]')
     || document.querySelector('input[id*="otp" i]')
     || document.querySelector('input[id*="verify" i]')
-    || document.querySelector('#mfa_email_full_value')
-    || document.querySelector('#mfa_email input.mfa_email_otp')
     || inputs.find((el) => /認証コード|ワンタイム|code|otp|verification/i.test(`${{el.id}} ${{el.name}} ${{el.placeholder}}`))
     || inputs.find((el) => (el.type || '').toLowerCase() === 'text');
   if (!input) return false;
   setValue(input, code);
   if (input.value !== code) return false;
-  }}
   const buttons = Array.from(document.querySelectorAll('#nextbtn,#verifybtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
   const button = buttons.find((el) => /^(認証する|確認|送信|Verify|Submit|Next|次へ)$/i.test(textOf(el) || el.value || ''))
     || buttons.find((el) => /(認証する|確認|送信|Verify|Submit|Next|次へ)/i.test(textOf(el) || el.value || ''))
@@ -415,6 +579,133 @@ def _fill_zoho_verification_code_script(code: str) -> str:
 """
 
 
+def _skip_zoho_mfa_prompt_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
+  const click = (el) => {
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.click();
+  };
+  const clickable = (el) =>
+    el.closest('button,a,[role="button"],.remind-later-wrap,.remind-later-div,.remind-me-div,[tabindex],li') || el;
+  const allNodes = Array.from(document.querySelectorAll('button,a,[role="button"],[tabindex],li,div,span'));
+  const visibleNodes = allNodes.filter(visible);
+  const bodyText = textOf(document.body || document.documentElement);
+  if (!/多要素認証|OneAuth|Multi-factor|認証アプリ|スキップする|Skip/i.test(bodyText)) return false;
+  window.scrollTo(0, document.body.scrollHeight);
+  const directSkip = allNodes.find((el) => /^(スキップする|Skip)$/i.test(textOf(el)))
+    || document.querySelector('.remind-later-wrap,.remind-later-div,.remind-later');
+  if (directSkip) {
+    click(clickable(directSkip));
+    return true;
+  }
+  const neverShow = visibleNodes.find((el) => /今後表示しない|Don.?t show again/i.test(textOf(el)));
+  if (neverShow) {
+    click(clickable(neverShow));
+    return true;
+  }
+  const later = visibleNodes.find((el) => /2週間後に通知する|Remind me later/i.test(textOf(el)));
+  if (later) {
+    click(clickable(later));
+    return true;
+  }
+  return false;
+})()
+"""
+
+
+def _click_latest_apify_verify_message_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const bodyText = textOf(document.body || document.documentElement);
+  if (/hello@apify\\.com/i.test(bodyText)
+      && /Verify your email address for Apify/i.test(bodyText)
+      && /Verify email address/i.test(bodyText)) {
+    return true;
+  }
+  const rows = Array.from(document.querySelectorAll('[role="option"], .zmList, [data-ty="lt"]'))
+    .filter(visible)
+    .filter((el) => {
+      const text = textOf(el);
+      const aria = el.getAttribute('aria-label') || '';
+      return /hello@apify\\.com/i.test(`${text} ${aria}`)
+        && /Verify your email address for Apify/i.test(`${text} ${aria}`);
+    });
+  const target = rows[0];
+  if (!target) return false;
+  target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  target.click();
+  return true;
+})()
+"""
+
+
+def _click_apify_verify_email_link_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
+  const click = (el) => {
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.click();
+  };
+  const decode = (value) => {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = value;
+    return textarea.value;
+  };
+  const maybeShowImages = Array.from(document.querySelectorAll('button,[role="button"],.zmbtn__text__xm5hob'))
+    .filter(visible)
+    .find((el) => /^(表示する|Show images|Display images|Always display from this sender)$/i.test(textOf(el)));
+  if (maybeShowImages) click(maybeShowImages.closest('button,[role="button"]') || maybeShowImages);
+  const links = Array.from(document.querySelectorAll('a[href]'));
+  const verifyByHref = (el) => /apify/i.test(el.href) && /(verify|verification|email)/i.test(el.href);
+  const verifyByText = (el) => /Verify\\s+email\\s+address/i.test(textOf(el));
+  let target = links.find((el) => visible(el) && verifyByHref(el) && verifyByText(el))
+    || links.find((el) => verifyByHref(el) && verifyByText(el))
+    || links.find((el) => /console\\.apify\\.com/i.test(el.href) && /verify/i.test(el.href))
+    || links.find((el) => verifyByHref(el));
+  if (!target) {
+    const textTarget = Array.from(document.querySelectorAll('button,[role="button"],td,div,span,p'))
+      .filter(visible)
+      .find(verifyByText);
+    if (textTarget) target = textTarget.closest('a[href]') || textTarget.querySelector('a[href]');
+  }
+  if (target) {
+    target.removeAttribute('target');
+    click(target);
+    return true;
+  }
+  const html = document.documentElement ? document.documentElement.innerHTML : '';
+  const matches = html.match(/https?:\\/\\/[^"'<>\\s]+/gi) || [];
+  const raw = matches.find((url) => /apify/i.test(url) && /(verify|verification|email)/i.test(url));
+  if (!raw) return false;
+  location.href = decode(raw).replace(/&amp;/g, '&');
+  return true;
+})()
+"""
+
+
 def _is_zoho_email_verification_step(page: CdpPage) -> bool:
     return bool(
         page.evaluate(
@@ -423,37 +714,10 @@ def _is_zoho_email_verification_step(page: CdpPage) -> bool:
   const text = document.body ? document.body.innerText : '';
   const codeInput = document.querySelector('input[name="otp"]')
     || document.querySelector('input[name="OTP"]')
-    || document.querySelector('#mfa_email_container input.mfa_email_otp')
-    || document.querySelector('#mfa_email_full_value')
-    || document.querySelector('#mfa_email')
     || document.querySelector('input[placeholder*="認証コード"]')
     || document.querySelector('input[placeholder*="ワンタイム"]')
     || document.querySelector('input[placeholder*="code" i]');
-  const emailContainer = document.querySelector('#mfa_email_container');
-  const visible = (el) => {
-    const rect = el.getBoundingClientRect();
-    const style = getComputedStyle(el);
-    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-  };
-  return Boolean(codeInput)
-    && (!emailContainer || visible(emailContainer))
-    && /メールアドレスで認証|ワンタイムパスワード|認証コード|verify/i.test(text);
-})()
-""",
-            timeout=5,
-        )
-    )
-
-
-def _is_zoho_mail_page(page: CdpPage) -> bool:
-    return bool(
-        page.evaluate(
-            """
-(() => {
-  const url = window.location.href || '';
-  const text = document.body ? document.body.innerText : '';
-  return /mail\\.zoho\\./i.test(url)
-    || /Zoho Mail|メール|受信トレイ|Inbox/i.test(text);
+  return Boolean(codeInput) && /メールアドレスで認証|ワンタイムパスワード|認証コード|verify/i.test(text);
 })()
 """,
             timeout=5,

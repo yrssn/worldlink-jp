@@ -1,20 +1,25 @@
 """邮箱账号管理 CRUD。"""
 from __future__ import annotations
 
-import time
+import json
+import threading
 from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db
 from app.core.security import decrypt_secret, encrypt_secret
+from app.db.session import SessionLocal
 from app.models.apify_key import ApifyKey
+from app.models.apify_signup_task import ApifySignupTask
 from app.models.email_account import EmailAccount
 from app.models.user import User
 from app.schemas.email_account import (
-    ApifySignupStartOut,
+    ApifySignupTaskPage,
+    ApifySignupTaskOut,
     EmailAccountCreate,
     EmailAccountOut,
     EmailAccountUpdate,
@@ -27,10 +32,10 @@ from app.services.zoho_mail_automation import (
     normalize_zoho_login_url,
     open_zoho_mail_login,
     submit_zoho_verification_code,
+    wait_current_zoho_inbox_ready,
 )
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
-ZOHO_VERIFICATION_MAIL_DELAY_SECONDS = 60
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -47,6 +52,260 @@ def _clean_required(value: str) -> str:
 def _clean_email(value: str | None) -> str | None:
     text = _clean_text(value)
     return text.lower() if text else None
+
+
+def _create_apify_key_from_result(
+    row: EmailAccount,
+    result: dict[str, object],
+    db: Session,
+) -> dict[str, object]:
+    token = result.get("apify_token")
+    if not isinstance(token, str) or not token.strip():
+        logger.info("[Apify signup] skip ApifyKey create: token missing email_account_id={}", row.id)
+        return result
+    has_default = db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).first() is not None
+    logger.info(
+        "[Apify signup] creating ApifyKey email_account_id={} email={} is_default={}",
+        row.id,
+        row.email,
+        not has_default,
+    )
+    key = ApifyKey(
+        label=f"{row.email} Apify",
+        token=token.strip(),
+        is_default=not has_default,
+        remark="邮箱管理自动注册采集",
+        email_account_id=row.id,
+        apify_full_name=_clean_text(str(result.get("apify_full_name") or "")),
+        apify_username=_clean_text(str(result.get("apify_username") or "")),
+        apify_user_id=_clean_text(str(result.get("apify_user_id") or "")),
+        apify_registered_at=result.get("apify_registered_at"),
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    result["apify_key_created"] = True
+    result["apify_key_id"] = key.id
+    result["apify_key_is_default"] = key.is_default
+    logger.info("[Apify signup] ApifyKey created email_account_id={} apify_key_id={}", row.id, key.id)
+    return result
+
+
+def _json_safe(value: object) -> object:
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _append_apify_task_log(
+    task: ApifySignupTask,
+    db: Session,
+    node: str,
+    message: str,
+) -> None:
+    task.current_node = node
+    task.node_started_at = datetime.utcnow()
+    entries: list[dict[str, object]] = []
+    if task.logs:
+        try:
+            loaded = json.loads(task.logs)
+            if isinstance(loaded, list):
+                entries = [item for item in loaded if isinstance(item, dict)]
+        except json.JSONDecodeError:
+            entries = []
+    entries.append(
+        {
+            "time": datetime.utcnow().isoformat(),
+            "node": node,
+            "message": message,
+        }
+    )
+    task.logs = json.dumps(entries[-200:], ensure_ascii=False)
+    db.add(task)
+    db.commit()
+    logger.info("[ApifySignupTask#{}] {} - {}", task.id, node, message)
+
+
+def _run_apify_signup_task_bg(task_id: int) -> None:
+    db = SessionLocal()
+    try:
+        task = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+        if not task:
+            return
+        task.status = "running"
+        task.started_at = datetime.utcnow()
+        task.error = None
+        db.add(task)
+        db.commit()
+        _append_apify_task_log(task, db, "task_started", f"开始执行 Apify {task.action} 任务")
+
+        row = db.query(EmailAccount).filter(EmailAccount.id == task.email_account_id).first()
+        user = db.query(User).filter(User.id == task.owner_id).first()
+        if not row or not user:
+            task.status = "failed"
+            task.error = "邮箱账号或用户不存在"
+            task.finished_at = datetime.utcnow()
+            db.commit()
+            return
+        if not row.browser_id:
+            task.status = "failed"
+            task.error = "请先为该邮箱选择指纹浏览器"
+            task.finished_at = datetime.utcnow()
+            db.commit()
+            return
+        email_password = decrypt_secret(row.email_password)
+        if not email_password:
+            task.status = "failed"
+            task.error = "请先为该邮箱填写邮箱密码"
+            task.finished_at = datetime.utcnow()
+            db.commit()
+            return
+        linked = db.query(ApifyKey).filter(ApifyKey.email_account_id == row.id).first()
+        if linked:
+            task.status = "done"
+            task.current_node = "already_linked"
+            task.result = {"ok": True, "apify_key_created": True, "apify_key_id": linked.id}
+            task.finished_at = datetime.utcnow()
+            db.commit()
+            return
+        task.current_node = "mail_login"
+        db.add(task)
+        db.commit()
+        _append_apify_task_log(task, db, "mail_login", "先登录注册邮箱，确保可以读取 Apify 验证邮件")
+        mail_login_result = open_zoho_mail_login(
+            row.browser_id,
+            row.mail_login_url,
+            row.email,
+            email_password,
+            user,
+            db,
+        )
+        mail_login_result = _open_verification_mail_if_needed(mail_login_result, row, user, db)
+        inbox_result = wait_current_zoho_inbox_ready(row.browser_id, user, db)
+        mail_login_result = {**mail_login_result, **inbox_result}
+        mail_ready = bool(mail_login_result.get("mail_inbox_ready"))
+        zoho_verification_blocked = bool(mail_login_result.get("mail_verification_required")) and not bool(
+            mail_login_result.get("mail_verification_code_submitted")
+        )
+        if not mail_ready or zoho_verification_blocked:
+            task.status = "paused"
+            task.current_node = "mail_login"
+            task.error = "注册邮箱未登录成功，请先处理邮箱登录/邮箱自身验证后继续注册"
+            task.result = {"ok": False, "mail_login": _json_safe(mail_login_result)}
+            task.finished_at = datetime.utcnow()
+            db.add(task)
+            db.commit()
+            _append_apify_task_log(task, db, "mail_login", task.error)
+            return
+        _append_apify_task_log(task, db, "mail_login", "注册邮箱已登录，继续执行 Apify 注册任务")
+
+        def progress(node: str, message: str) -> None:
+            fresh_task = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+            if fresh_task:
+                _append_apify_task_log(fresh_task, db, node, message)
+
+        try:
+            if task.action == "continue":
+                result = continue_apify_signup(
+                    row.browser_id,
+                    row.email,
+                    user,
+                    db,
+                    email_password,
+                    row.mail_login_url,
+                    progress,
+                    mail_already_logged_in=True,
+                )
+            else:
+                result = start_apify_signup(
+                    row.browser_id,
+                    row.email,
+                    email_password,
+                    user,
+                    db,
+                    row.mail_login_url,
+                    progress,
+                    mail_already_logged_in=True,
+                )
+            result = _create_apify_key_from_result(row, result, db)
+        except Exception as e:  # noqa: BLE001
+            fresh_task = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+            if fresh_task:
+                fresh_task.status = "failed"
+                fresh_task.error = str(e)[:4000]
+                fresh_task.finished_at = datetime.utcnow()
+                db.add(fresh_task)
+                db.commit()
+                _append_apify_task_log(fresh_task, db, "failed", str(e)[:1000])
+            logger.exception("[ApifySignupTask#{}] failed", task_id)
+            return
+
+        fresh_task = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+        if not fresh_task:
+            return
+        fresh_task.result = _json_safe(result)
+        fresh_task.finished_at = datetime.utcnow()
+        if bool(result.get("captcha_required")):
+            fresh_task.status = "paused"
+            fresh_task.current_node = "human_verification"
+            fresh_task.error = "人机验证超过 10 分钟未完成，任务已暂停；人工处理后点击继续注册"
+            _append_apify_task_log(
+                fresh_task,
+                db,
+                "human_verification",
+                "人机验证等待超过 10 分钟，任务暂停",
+            )
+        elif bool(result.get("apify_key_created")):
+            fresh_task.status = "done"
+            _append_apify_task_log(fresh_task, db, "done", "已采集 token 并写入 Apify Key")
+        elif bool(result.get("apify_token_collected")):
+            fresh_task.status = "done"
+            _append_apify_task_log(fresh_task, db, "done", "已采集 Apify token")
+        elif bool(result.get("apify_token_collection_attempted")):
+            fresh_task.status = "paused"
+            fresh_task.current_node = "collect_token"
+            fresh_task.error = "Apify token 采集失败，未写入 Apify Key；请查看 integrations 页面和任务日志"
+            _append_apify_task_log(fresh_task, db, "collect_token", fresh_task.error)
+        elif (
+            bool(result.get("apify_login_attempted"))
+            and not bool(result.get("apify_logged_in"))
+            and not bool(result.get("email_verification_required"))
+        ):
+            fresh_task.status = "paused"
+            if bool(result.get("apify_login_page_not_found")):
+                fresh_task.error = "Apify 登录入口跳到了 page-not-found，任务已暂停"
+            else:
+                fresh_task.error = "Apify 登录未完成，请查看登录页是否已填写邮箱和密码"
+            _append_apify_task_log(fresh_task, db, "login_existing_account", fresh_task.error)
+        elif bool(result.get("email_verification_required")) and not bool(result.get("email_verified")):
+            fresh_task.status = "paused"
+            fresh_task.error = "Apify 需要邮箱验证，但验证流程未完成"
+            _append_apify_task_log(fresh_task, db, "email_verification", fresh_task.error)
+        elif bool(result.get("ready")) or bool(result.get("email_verified")):
+            fresh_task.status = "paused"
+            fresh_task.error = "Apify 已进入可继续状态，但未采集到 token，不能判定完成"
+            _append_apify_task_log(fresh_task, db, fresh_task.current_node or "paused", fresh_task.error)
+        else:
+            fresh_task.status = "paused"
+            fresh_task.error = "流程未完成，请查看浏览器窗口和任务日志"
+            _append_apify_task_log(fresh_task, db, fresh_task.current_node or "paused", fresh_task.error)
+        db.add(fresh_task)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _create_apify_signup_task(row: EmailAccount, user: User, action: str, db: Session) -> ApifySignupTask:
+    task = ApifySignupTask(
+        owner_id=user.id,
+        email_account_id=row.id,
+        action=action,
+        status="pending",
+        current_node="pending",
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    threading.Thread(target=_run_apify_signup_task_bg, args=(task.id,), daemon=True).start()
+    return task
 
 
 def _to_out(row: EmailAccount) -> EmailAccountOut:
@@ -84,7 +343,6 @@ def _open_verification_mail_if_needed(
     verification_password = decrypt_secret(row.verification_password)
     if not verification_password:
         return result
-    time.sleep(ZOHO_VERIFICATION_MAIL_DELAY_SECONDS)
     verification_result = open_onamae_mail_login(
         row.browser_id or "",
         row.verification_login_url,
@@ -173,7 +431,7 @@ def create_email_account(
     return _to_out(row)
 
 
-@router.post("/{account_id}/apify-signup/start", response_model=ApifySignupStartOut)
+@router.post("/{account_id}/apify-signup/start", response_model=ApifySignupTaskOut)
 def start_email_apify_signup(
     account_id: int,
     db: Session = Depends(get_db),
@@ -194,18 +452,11 @@ def start_email_apify_signup(
     linked = db.query(ApifyKey).filter(ApifyKey.email_account_id == row.id).first()
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
-    try:
-        result = start_apify_signup(row.browser_id, row.email, email_password, user, db)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+    task = _create_apify_signup_task(row, user, "start", db)
+    return task
 
 
-@router.post("/{account_id}/apify-signup/continue", response_model=ApifySignupStartOut)
+@router.post("/{account_id}/apify-signup/continue", response_model=ApifySignupTaskOut)
 def continue_email_apify_signup(
     account_id: int,
     db: Session = Depends(get_db),
@@ -226,15 +477,69 @@ def continue_email_apify_signup(
     linked = db.query(ApifyKey).filter(ApifyKey.email_account_id == row.id).first()
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
-    try:
-        result = continue_apify_signup(row.browser_id, row.email, user, db)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
+    task = _create_apify_signup_task(row, user, "continue", db)
+    return task
+
+
+@router.get("/{account_id}/apify-signup/tasks/latest", response_model=ApifySignupTaskOut | None)
+def get_latest_apify_signup_task(
+    account_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="邮箱账号不存在")
+    return (
+        db.query(ApifySignupTask)
+        .filter(ApifySignupTask.email_account_id == row.id, ApifySignupTask.owner_id == user.id)
+        .order_by(ApifySignupTask.id.desc())
+        .first()
+    )
+
+
+@router.get("/apify-signup/tasks", response_model=ApifySignupTaskPage)
+def list_apify_signup_tasks(
+    account_id: int | None = None,
+    status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(5, ge=1, le=50),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    query = db.query(ApifySignupTask).filter(ApifySignupTask.owner_id == user.id)
+    if account_id:
+        query = query.filter(ApifySignupTask.email_account_id == account_id)
+    if status:
+        query = query.filter(ApifySignupTask.status == status)
+    total = query.count()
+    items = (
+        query.order_by(ApifySignupTask.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return ApifySignupTaskPage(total=total, page=page, page_size=page_size, items=items)
+
+
+@router.get("/apify-signup/tasks/{task_id}", response_model=ApifySignupTaskOut)
+def get_apify_signup_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    task = (
+        db.query(ApifySignupTask)
+        .filter(ApifySignupTask.id == task_id, ApifySignupTask.owner_id == user.id)
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Apify 注册任务不存在")
+    return task
 
 
 @router.post("/{account_id}/mail-login/zoho", response_model=ZohoMailLoginOut)
