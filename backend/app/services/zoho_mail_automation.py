@@ -330,16 +330,51 @@ def _fill_zoho_verification_code_script(code: str) -> str:
     input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: value.slice(-1) || '0' }}));
     input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: value.slice(-1) || '0' }}));
   }};
+  const setDigit = (input, digit, index) => {{
+    input.focus();
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    if (desc && desc.set) desc.set.call(input, digit);
+    else input.value = digit;
+    input.setAttribute('value', digit);
+    input.classList.remove('empty_field');
+    input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: digit, code: `Digit${{digit}}`, keyCode: 48 + Number(digit), which: 48 + Number(digit) }}));
+    input.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, inputType: 'insertText', data: digit }}));
+    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: digit }}));
+    input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: digit, code: `Digit${{digit}}`, keyCode: 48 + Number(digit), which: 48 + Number(digit) }}));
+    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    const next = input.parentElement?.querySelectorAll('input.mfa_email_otp')[index + 1];
+    if (next) next.focus();
+  }};
+  const emailContainer = document.querySelector('#mfa_email_container');
+  const emailOtpBox = document.querySelector('#mfa_email');
+  const splitInputs = Array.from(document.querySelectorAll('#mfa_email input.mfa_email_otp, #mfa_email input.splitedText'));
+  if (emailContainer && visible(emailContainer) && splitInputs.length) {{
+    const digits = code.split('');
+    const fullValue = document.querySelector('#mfa_email_full_value') || document.querySelector('.mfa_email_full_value');
+    if (fullValue) setValue(fullValue, code);
+    if (emailOtpBox) {{
+      emailOtpBox.classList.remove('errorborder');
+      emailOtpBox.setAttribute('value', code);
+      emailOtpBox.dispatchEvent(new Event('click', {{ bubbles: true }}));
+    }}
+    splitInputs.forEach((input, index) => setDigit(input, digits[index] || '', index));
+    document.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    const filled = splitInputs.map((input) => input.value || '').join('').slice(0, code.length);
+    if ((fullValue?.value || filled) !== code && filled !== code) return false;
+  }} else {{
   const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
   const input = document.querySelector('input[name="otp"]')
     || document.querySelector('input[name="OTP"]')
     || document.querySelector('input[id*="otp" i]')
     || document.querySelector('input[id*="verify" i]')
+    || document.querySelector('#mfa_email_full_value')
+    || document.querySelector('#mfa_email input.mfa_email_otp')
     || inputs.find((el) => /認証コード|ワンタイム|code|otp|verification/i.test(`${{el.id}} ${{el.name}} ${{el.placeholder}}`))
     || inputs.find((el) => (el.type || '').toLowerCase() === 'text');
   if (!input) return false;
   setValue(input, code);
   if (input.value !== code) return false;
+  }}
   const buttons = Array.from(document.querySelectorAll('#nextbtn,#verifybtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
   const button = buttons.find((el) => /^(認証する|確認|送信|Verify|Submit|Next|次へ)$/i.test(textOf(el) || el.value || ''))
     || buttons.find((el) => /(認証する|確認|送信|Verify|Submit|Next|次へ)/i.test(textOf(el) || el.value || ''))
@@ -361,10 +396,21 @@ def _is_zoho_email_verification_step(page: CdpPage) -> bool:
   const text = document.body ? document.body.innerText : '';
   const codeInput = document.querySelector('input[name="otp"]')
     || document.querySelector('input[name="OTP"]')
+    || document.querySelector('#mfa_email_container input.mfa_email_otp')
+    || document.querySelector('#mfa_email_full_value')
+    || document.querySelector('#mfa_email')
     || document.querySelector('input[placeholder*="認証コード"]')
     || document.querySelector('input[placeholder*="ワンタイム"]')
     || document.querySelector('input[placeholder*="code" i]');
-  return Boolean(codeInput) && /メールアドレスで認証|ワンタイムパスワード|認証コード|verify/i.test(text);
+  const emailContainer = document.querySelector('#mfa_email_container');
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  return Boolean(codeInput)
+    && (!emailContainer || visible(emailContainer))
+    && /メールアドレスで認証|ワンタイムパスワード|認証コード|verify/i.test(text);
 })()
 """,
             timeout=5,
