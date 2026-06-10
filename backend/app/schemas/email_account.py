@@ -83,6 +83,10 @@ class ApifySignupStartOut(BaseModel):
     email_already_taken: bool = False
     apify_login_attempted: bool = False
     apify_logged_in: bool = False
+    apify_login_email_submitted: bool = False
+    apify_login_password_submitted: bool = False
+    apify_login_page_not_found: bool = False
+    apify_login_url: Optional[str] = None
     apify_mail_inbox_ready: bool = False
     apify_mail_opened: bool = False
     apify_verification_link_clicked: bool = False

@@ -236,7 +236,10 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
             and not bool(result.get("email_verification_required"))
         ):
             fresh_task.status = "paused"
-            fresh_task.error = "Apify 登录未完成，请查看登录页是否已填写邮箱和密码"
+            if bool(result.get("apify_login_page_not_found")):
+                fresh_task.error = "Apify 登录入口跳到了 page-not-found，任务已暂停"
+            else:
+                fresh_task.error = "Apify 登录未完成，请查看登录页是否已填写邮箱和密码"
             _append_apify_task_log(fresh_task, db, "login_existing_account", fresh_task.error)
         elif bool(result.get("email_verification_required")) and not bool(result.get("email_verified")):
             fresh_task.status = "paused"

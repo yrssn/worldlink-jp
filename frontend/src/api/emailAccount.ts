@@ -59,6 +59,10 @@ export interface ApifySignupStartResult {
   email_already_taken: boolean
   apify_login_attempted: boolean
   apify_logged_in: boolean
+  apify_login_email_submitted: boolean
+  apify_login_password_submitted: boolean
+  apify_login_page_not_found: boolean
+  apify_login_url?: string | null
   apify_mail_inbox_ready: boolean
   apify_mail_opened: boolean
   apify_verification_link_clicked: boolean

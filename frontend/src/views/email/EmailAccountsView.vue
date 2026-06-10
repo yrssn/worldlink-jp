@@ -221,6 +221,8 @@ async function showApifySignupResult(result: ApifySignupStartResult, isContinue 
     ElMessage.warning('该邮箱已注册 Apify，已改为登录；当前需要邮箱验证，请查看 Zoho/Apify 页面')
   } else if (result.apify_login_attempted && result.apify_logged_in) {
     ElMessage.success('该邮箱已注册 Apify，已改为登录并进入账号页面')
+  } else if (result.apify_login_page_not_found) {
+    ElMessage.warning('Apify 登录入口跳到了 page-not-found，任务已暂停，请查看任务日志')
   } else if (result.email_already_taken) {
     ElMessage.warning('该邮箱已注册 Apify，但自动登录未完成，请查看指纹浏览器窗口')
   } else if (result.still_logged_in) {
@@ -508,6 +510,7 @@ onMounted(() => {
                 <el-tag v-if="row.result.apify_key_created" type="success">已写入 Apify Key</el-tag>
                 <el-tag v-else-if="row.result.apify_token_collected" type="success">已采集 Token</el-tag>
                 <el-tag v-else-if="row.result.apify_token_collection_attempted" type="warning">Token 采集失败</el-tag>
+                <el-tag v-else-if="row.result.apify_login_page_not_found" type="danger">登录入口 404</el-tag>
                 <el-tag v-else-if="row.result.captcha_required" type="warning">需要/等待人机验证</el-tag>
                 <el-tag v-else type="info">已返回结果</el-tag>
               </div>
