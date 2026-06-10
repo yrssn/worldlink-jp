@@ -15,9 +15,11 @@ from app.schemas.email_account import (
     EmailAccountCreate,
     EmailAccountOut,
     EmailAccountUpdate,
+    VerificationMailLoginOut,
     ZohoMailLoginOut,
 )
 from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
+from app.services.onamae_mail_automation import open_onamae_mail_login
 from app.services.zoho_mail_automation import normalize_zoho_login_url, open_zoho_mail_login
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
@@ -78,7 +80,31 @@ def _open_mail_after_apify_if_ready(
         user,
         db,
     )
-    return {**result, **mail_result}
+    return _open_verification_mail_if_needed({**result, **mail_result}, row, user, db)
+
+
+def _open_verification_mail_if_needed(
+    result: dict[str, object],
+    row: EmailAccount,
+    user: User,
+    db: Session,
+) -> dict[str, object]:
+    if not bool(result.get("mail_verification_required")):
+        return result
+    if not row.verification_email or not row.verification_login_url:
+        return result
+    verification_password = decrypt_secret(row.verification_password)
+    if not verification_password:
+        return result
+    verification_result = open_onamae_mail_login(
+        row.browser_id or "",
+        row.verification_login_url,
+        row.verification_email,
+        verification_password,
+        user,
+        db,
+    )
+    return {**result, **verification_result}
 
 
 @router.get("", response_model=list[EmailAccountOut])
@@ -233,6 +259,47 @@ def start_email_zoho_mail_login(
             row.mail_login_url,
             row.email,
             email_password,
+            user,
+            db,
+        )
+        result = _open_verification_mail_if_needed(result, row, user, db)
+        return {"ok": True, "browser_id": row.browser_id, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.post("/{account_id}/mail-login/verification", response_model=VerificationMailLoginOut)
+def start_email_verification_mail_login(
+    account_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="邮箱账号不存在")
+    if not row.browser_id:
+        raise HTTPException(status_code=400, detail="请先为该邮箱选择指纹浏览器")
+    if not row.verification_email:
+        raise HTTPException(status_code=400, detail="请先填写验证码邮箱")
+    if not row.verification_login_url:
+        raise HTTPException(status_code=400, detail="请先填写验证码邮箱入口")
+    verification_password = decrypt_secret(row.verification_password)
+    if not verification_password:
+        raise HTTPException(status_code=400, detail="请先填写验证码邮箱密码")
+    try:
+        result = open_onamae_mail_login(
+            row.browser_id,
+            row.verification_login_url,
+            row.verification_email,
+            verification_password,
             user,
             db,
         )

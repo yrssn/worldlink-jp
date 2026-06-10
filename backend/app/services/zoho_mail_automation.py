@@ -50,6 +50,7 @@ def open_zoho_mail_login(
     final_url = target_url
     email_submitted = False
     password_submitted = False
+    verification_required = False
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
@@ -67,6 +68,7 @@ def open_zoho_mail_login(
             page.call("Page.bringToFront")
             _wait_page_ready(page)
             password_submitted = _submit_zoho_password(page, password)
+            verification_required = _is_zoho_email_verification_step(page)
             final_url = _current_url(page)
     return {
         "mail_opened": True,
@@ -75,6 +77,7 @@ def open_zoho_mail_login(
         "mail_closed_tab_count": closed_count,
         "mail_email_submitted": email_submitted,
         "mail_password_submitted": password_submitted,
+        "mail_verification_required": verification_required,
         "mail_open_hint": open_result.get("hint"),
     }
 
@@ -255,6 +258,25 @@ def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
 def _current_url(page: CdpPage) -> str:
     value = page.evaluate("window.location.href", timeout=5)
     return str(value or "")
+
+
+def _is_zoho_email_verification_step(page: CdpPage) -> bool:
+    return bool(
+        page.evaluate(
+            """
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const codeInput = document.querySelector('input[name="otp"]')
+    || document.querySelector('input[name="OTP"]')
+    || document.querySelector('input[placeholder*="認証コード"]')
+    || document.querySelector('input[placeholder*="ワンタイム"]')
+    || document.querySelector('input[placeholder*="code" i]');
+  return Boolean(codeInput) && /メールアドレスで認証|ワンタイムパスワード|認証コード|verify/i.test(text);
+})()
+""",
+            timeout=5,
+        )
+    )
 
 
 def _submit_zoho_email(page: CdpPage, email: str) -> bool:

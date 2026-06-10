@@ -84,8 +84,19 @@ class ApifySignupStartOut(BaseModel):
     mail_closed_tab_count: int = 0
     mail_email_submitted: bool = False
     mail_password_submitted: bool = False
+    mail_verification_required: bool = False
+    verification_mail_opened: bool = False
+    verification_mail_login_url: Optional[str] = None
+    verification_mail_final_url: Optional[str] = None
+    verification_mail_login_submitted: bool = False
+    verification_mail_opened: bool = False
+    verification_mail_open_hint: Optional[str] = None
+    verification_mail_login_url: Optional[str] = None
+    verification_mail_final_url: Optional[str] = None
+    verification_mail_login_submitted: bool = False
     open_hint: Optional[str] = None
     mail_open_hint: Optional[str] = None
+    verification_mail_open_hint: Optional[str] = None
 
 
 class ZohoMailLoginOut(BaseModel):
@@ -97,4 +108,15 @@ class ZohoMailLoginOut(BaseModel):
     mail_closed_tab_count: int = 0
     mail_email_submitted: bool = False
     mail_password_submitted: bool = False
+    mail_verification_required: bool = False
     mail_open_hint: Optional[str] = None
+
+
+class VerificationMailLoginOut(BaseModel):
+    ok: bool = True
+    browser_id: str
+    verification_mail_opened: bool = False
+    verification_mail_login_url: Optional[str] = None
+    verification_mail_final_url: Optional[str] = None
+    verification_mail_login_submitted: bool = False
+    verification_mail_open_hint: Optional[str] = None

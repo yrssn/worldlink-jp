@@ -17,6 +17,7 @@ const submitting = ref(false)
 const apifySignupId = ref<number | null>(null)
 const apifyContinueId = ref<number | null>(null)
 const mailLoginId = ref<number | null>(null)
+const verificationMailLoginId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
 const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
@@ -151,6 +152,10 @@ function canStartMailLogin(row: EmailAccount) {
   return !!row.browser_id && !!row.email_password
 }
 
+function canStartVerificationMailLogin(row: EmailAccount) {
+  return !!row.browser_id && !!row.verification_email && !!row.verification_password && !!row.verification_login_url
+}
+
 async function openCreate() {
   resetForm()
   await loadBrowserOptions()
@@ -221,7 +226,7 @@ async function handleStartApifySignup(row: EmailAccount) {
     } else if (result.captcha_required) {
       ElMessage.warning(`已清理 Apify 会话并提交注册；弹出图形验证码，请在指纹浏览器窗口里人工完成验证`)
     } else if (result.profile_submitted) {
-      ElMessage.success(result.mail_password_submitted ? '已提交 Apify 注册资料页，并已填写 Zoho 邮箱密码登录' : result.mail_email_submitted ? '已提交 Apify 注册资料页，并已填写 Zoho 邮箱账号' : result.mail_opened ? '已提交 Apify 注册资料页，并已打开邮箱登录页' : '已提交 Apify 注册资料页')
+      ElMessage.success(result.verification_mail_login_submitted ? '已提交 Apify 注册资料页，并已打开验证码邮箱登录' : result.mail_password_submitted ? '已提交 Apify 注册资料页，并已填写 Zoho 邮箱密码登录' : result.mail_email_submitted ? '已提交 Apify 注册资料页，并已填写 Zoho 邮箱账号' : result.mail_opened ? '已提交 Apify 注册资料页，并已打开邮箱登录页' : '已提交 Apify 注册资料页')
     } else if (result.password_submitted) {
       ElMessage.success(result.session_cleared ? '已清理 Apify 会话，并已填写邮箱密码提交注册' : '已填写邮箱密码提交注册')
     } else if (result.email_submitted) {
@@ -251,7 +256,7 @@ async function handleContinueApifySignup(row: EmailAccount) {
     if (result.captcha_required) {
       ElMessage.warning('仍检测到图形验证码，请先在指纹浏览器窗口里人工完成验证')
     } else if (result.profile_submitted) {
-      ElMessage.success(result.mail_password_submitted ? '已完成 Apify 注册资料，并已填写 Zoho 邮箱密码登录' : result.mail_email_submitted ? '已完成 Apify 注册资料，并已填写 Zoho 邮箱账号' : result.mail_opened ? '已完成 Apify 注册资料并打开邮箱登录页' : '已用邮箱前缀填写 Apify 注册资料并点击 Continue')
+      ElMessage.success(result.verification_mail_login_submitted ? '已完成 Apify 注册资料，并已打开验证码邮箱登录' : result.mail_password_submitted ? '已完成 Apify 注册资料，并已填写 Zoho 邮箱密码登录' : result.mail_email_submitted ? '已完成 Apify 注册资料，并已填写 Zoho 邮箱账号' : result.mail_opened ? '已完成 Apify 注册资料并打开邮箱登录页' : '已用邮箱前缀填写 Apify 注册资料并点击 Continue')
     } else if (result.ready) {
       ElMessage.success('Apify 当前已进入登录后的页面，可继续后续信息采集/关联')
     } else {
@@ -276,7 +281,11 @@ async function handleStartMailLogin(row: EmailAccount) {
   mailLoginId.value = row.id
   try {
     const result = await emailAccountApi.startZohoMailLogin(row.id)
-    if (result.mail_password_submitted) {
+    if (result.verification_mail_login_submitted) {
+      ElMessage.success('Zoho 已进入邮箱验证码验证，并已打开验证码邮箱登录')
+    } else if (result.mail_verification_required) {
+      ElMessage.warning('Zoho 已进入邮箱验证码验证，但验证码邮箱未自动登录，请检查验证码邮箱配置')
+    } else if (result.mail_password_submitted) {
       ElMessage.success('已打开 Zoho 登录页，并已填写邮箱账号和密码登录')
     } else if (result.mail_email_submitted) {
       ElMessage.warning('已填写 Zoho 邮箱账号，但密码步骤未完成，请查看指纹浏览器窗口')
@@ -289,6 +298,32 @@ async function handleStartMailLogin(row: EmailAccount) {
     /* 拦截器已提示 */
   } finally {
     mailLoginId.value = null
+  }
+}
+
+async function handleStartVerificationMailLogin(row: EmailAccount) {
+  if (!row.browser_id) {
+    ElMessage.warning('请先为该邮箱选择指纹浏览器')
+    return
+  }
+  if (!row.verification_email || !row.verification_password || !row.verification_login_url) {
+    ElMessage.warning('请先填写验证码邮箱、验证码邮箱密码和验证码邮箱入口')
+    return
+  }
+  verificationMailLoginId.value = row.id
+  try {
+    const result = await emailAccountApi.startVerificationMailLogin(row.id)
+    if (result.verification_mail_login_submitted) {
+      ElMessage.success('已打开验证码邮箱，并填写账号密码登录')
+    } else if (result.verification_mail_opened) {
+      ElMessage.warning('已打开验证码邮箱，但未完成登录，请查看指纹浏览器窗口')
+    } else {
+      ElMessage.warning('未完成验证码邮箱登录，请查看指纹浏览器窗口')
+    }
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    verificationMailLoginId.value = null
   }
 }
 
@@ -452,7 +487,7 @@ onMounted(() => {
       <el-table-column label="记录创建时间" width="170" align="center">
         <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="450" fixed="right" align="center">
+      <el-table-column label="操作" width="540" fixed="right" align="center">
         <template #default="{ row }">
           <el-button
             size="small"
@@ -461,6 +496,13 @@ onMounted(() => {
             :disabled="!canStartMailLogin(row)"
             @click="handleStartMailLogin(row)"
           >邮箱登录</el-button>
+          <el-button
+            size="small"
+            type="info"
+            :loading="verificationMailLoginId === row.id"
+            :disabled="!canStartVerificationMailLogin(row)"
+            @click="handleStartVerificationMailLogin(row)"
+          >验证码邮箱</el-button>
           <el-button
             size="small"
             type="success"

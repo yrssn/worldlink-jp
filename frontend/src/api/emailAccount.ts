@@ -60,8 +60,14 @@ export interface ApifySignupStartResult {
   mail_closed_tab_count: number
   mail_email_submitted: boolean
   mail_password_submitted: boolean
+  mail_verification_required: boolean
+  verification_mail_opened: boolean
+  verification_mail_login_url?: string | null
+  verification_mail_final_url?: string | null
+  verification_mail_login_submitted: boolean
   open_hint?: string | null
   mail_open_hint?: string | null
+  verification_mail_open_hint?: string | null
 }
 
 export interface ZohoMailLoginResult {
@@ -73,7 +79,23 @@ export interface ZohoMailLoginResult {
   mail_closed_tab_count: number
   mail_email_submitted: boolean
   mail_password_submitted: boolean
+  mail_verification_required: boolean
+  verification_mail_opened: boolean
+  verification_mail_login_url?: string | null
+  verification_mail_final_url?: string | null
+  verification_mail_login_submitted: boolean
   mail_open_hint?: string | null
+  verification_mail_open_hint?: string | null
+}
+
+export interface VerificationMailLoginResult {
+  ok: boolean
+  browser_id: string
+  verification_mail_opened: boolean
+  verification_mail_login_url?: string | null
+  verification_mail_final_url?: string | null
+  verification_mail_login_submitted: boolean
+  verification_mail_open_hint?: string | null
 }
 
 export const emailAccountApi = {
@@ -98,6 +120,12 @@ export const emailAccountApi = {
   startZohoMailLogin: (id: number) =>
     http.post<unknown, ZohoMailLoginResult>(
       `/email/accounts/${id}/mail-login/zoho`,
+      {},
+      { timeout: 60000 }
+    ),
+  startVerificationMailLogin: (id: number) =>
+    http.post<unknown, VerificationMailLoginResult>(
+      `/email/accounts/${id}/mail-login/verification`,
       {},
       { timeout: 60000 }
     )
