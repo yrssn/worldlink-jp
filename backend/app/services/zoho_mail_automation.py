@@ -227,22 +227,27 @@ def _submit_zoho_email(page: CdpPage, email: str) -> bool:
 
 
 def _submit_zoho_password(page: CdpPage, password: str) -> bool:
-    if not _wait_for_password_input(page):
-        return False
-    submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
-    if submitted:
-        time.sleep(2)
-    return submitted
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        if _wait_for_password_input(page, timeout=2):
+            submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
+            if submitted:
+                time.sleep(2)
+                return True
+        time.sleep(0.5)
+    return False
 
 
 def _wait_for_password_input(page: CdpPage, timeout: float = 12) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         present = page.evaluate(
-            "Boolean(Array.from(document.querySelectorAll('input[type=\"password\"]')).find((el) => {"
+            "Boolean(Array.from(document.querySelectorAll('input')).find((el) => {"
             "const r = el.getBoundingClientRect();"
             "const s = getComputedStyle(el);"
-            "return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';"
+            "const meta = `${el.id} ${el.name} ${el.placeholder} ${el.type}`;"
+            "return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'"
+            " && !el.disabled && !el.readOnly && /password|passwd|pwd|パスワード/i.test(meta);"
             "}))",
             timeout=5,
         )
@@ -309,15 +314,24 @@ def _fill_zoho_password_script(password: str) -> str:
     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
   }};
-  const input = Array.from(document.querySelectorAll('input[type="password"]'))
+  const inputMeta = (el) => `${{el.id}} ${{el.name}} ${{el.placeholder}} ${{el.type}} ${{el.autocomplete}}`;
+  const input = document.querySelector('#password')
+    || document.querySelector('input[name="PASSWORD"]')
+    || document.querySelector('input[name="password"]')
+    || Array.from(document.querySelectorAll('input'))
     .filter(visible)
-    .find((el) => !el.disabled && !el.readOnly);
+    .find((el) => !el.disabled && !el.readOnly && /password|passwd|pwd|パスワード/i.test(inputMeta(el)));
   if (!input) return false;
   input.focus();
   setValue(input, password);
-  const buttons = Array.from(document.querySelectorAll('button,input[type="button"],input[type="submit"],[role="button"]')).filter(visible);
-  const button = buttons.find((el) => /^(サインイン|ログイン|Sign\\s*in|Next|次へ)$/i.test(textOf(el) || el.value || ''))
-    || buttons.find((el) => /(サインイン|ログイン|Sign\\s*in|Next|次へ)/i.test(textOf(el) || el.value || ''));
+  input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: 'a' }}));
+  input.blur();
+  input.focus();
+  if (!input.value) return false;
+  const buttons = Array.from(document.querySelectorAll('#nextbtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"]')).filter(visible);
+  const button = buttons.find((el) => /^(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)$/i.test(textOf(el) || el.value || ''))
+    || buttons.find((el) => /(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)/i.test(textOf(el) || el.value || ''))
+    || document.querySelector('#nextbtn');
   if (!button) return false;
   setTimeout(() => button.click(), 250);
   return true;
