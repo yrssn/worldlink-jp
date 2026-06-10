@@ -220,10 +220,13 @@ def _current_url(page: CdpPage) -> str:
 
 
 def _submit_zoho_email(page: CdpPage, email: str) -> bool:
-    submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
-    if submitted:
-        _wait_for_password_input(page)
-    return submitted
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
+        if submitted and _wait_for_password_input(page, timeout=4):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _submit_zoho_password(page: CdpPage, password: str) -> bool:
@@ -269,27 +272,35 @@ def _fill_zoho_email_script(email: str) -> str:
   }};
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
   const setValue = (input, value) => {{
-    const proto = Object.getPrototypeOf(input);
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
     if (desc && desc.set) desc.set.call(input, value);
     else input.value = value;
+    input.setAttribute('value', value);
     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: value.slice(-1) || 'a' }}));
   }};
   const inputs = Array.from(document.querySelectorAll('input'))
     .filter(visible)
     .filter((el) => !el.disabled && !el.readOnly && (el.type || 'text') !== 'hidden');
-  const input = inputs.find((el) => (el.type || '').toLowerCase() === 'email')
+  const input = document.querySelector('#login_id')
+    || document.querySelector('input[name="LOGIN_ID"]')
+    || document.querySelector('input[name="login_id"]')
+    || inputs.find((el) => (el.type || '').toLowerCase() === 'email')
     || inputs.find((el) => /(email|mail|login|lid|identifier)/i.test(`${{el.id}} ${{el.name}} ${{el.placeholder}}`))
     || inputs[0];
   if (!input) return false;
   input.focus();
   setValue(input, email);
-  const buttons = Array.from(document.querySelectorAll('button,input[type="button"],input[type="submit"],[role="button"]')).filter(visible);
-  const button = buttons.find((el) => /^(次へ|Next)$/i.test(textOf(el) || el.value || ''))
+  if (input.value !== email) return false;
+  const buttons = Array.from(document.querySelectorAll('#nextbtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
+  const button = document.querySelector('#nextbtn')
+    || buttons.find((el) => /^(次へ|Next)$/i.test(textOf(el) || el.value || ''))
     || buttons.find((el) => /(次へ|Next)/i.test(textOf(el) || el.value || ''));
   if (!button) return false;
-  setTimeout(() => button.click(), 250);
+  button.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
+  button.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+  setTimeout(() => button.click(), 150);
   return true;
 }})()
 """
@@ -307,10 +318,10 @@ def _fill_zoho_password_script(password: str) -> str:
   }};
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
   const setValue = (input, value) => {{
-    const proto = Object.getPrototypeOf(input);
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
     if (desc && desc.set) desc.set.call(input, value);
     else input.value = value;
+    input.setAttribute('value', value);
     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
   }};
@@ -333,7 +344,9 @@ def _fill_zoho_password_script(password: str) -> str:
     || buttons.find((el) => /(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)/i.test(textOf(el) || el.value || ''))
     || document.querySelector('#nextbtn');
   if (!button) return false;
-  setTimeout(() => button.click(), 250);
+  button.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
+  button.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+  setTimeout(() => button.click(), 150);
   return true;
 }})()
 """
