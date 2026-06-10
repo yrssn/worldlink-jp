@@ -125,9 +125,14 @@ def open_latest_apify_verification_link(
     password: str,
     user: User,
     db: Session,
+    *,
+    ensure_login: bool = True,
 ) -> dict[str, object]:
     logger.info("[Apify signup] opening Zoho mailbox for Apify verification browser_id={} email={}", browser_id, email)
-    login_result = open_zoho_mail_login(browser_id, login_url, email, password, user, db)
+    if ensure_login:
+        login_result = open_zoho_mail_login(browser_id, login_url, email, password, user, db)
+    else:
+        login_result = wait_current_zoho_inbox_ready(browser_id, user, db, timeout=30)
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
         user,
@@ -191,6 +196,47 @@ def open_latest_apify_verification_link(
         "apify_verification_link_clicked": link_clicked,
         "apify_mail_final_url": final_url,
         "apify_mail_hint": open_result.get("hint"),
+    }
+
+
+def wait_current_zoho_inbox_ready(
+    browser_id: str,
+    user: User,
+    db: Session,
+    *,
+    timeout: float = 120,
+) -> dict[str, object]:
+    open_result = bitbrowser_service.open_browser_window(
+        browser_id,
+        user,
+        db,
+        headless=False,
+        restart=False,
+    )
+    open_data = open_result.get("data") or {}
+    if not isinstance(open_data, dict) or not open_data:
+        raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
+    http_base = _extract_devtools_http(open_data)
+    page_ws = _find_zoho_page_ws(http_base)
+    if not page_ws:
+        return {
+            "mail_inbox_ready": False,
+            "mail_open_hint": "未找到 Zoho Mail 页面",
+        }
+    inbox_ready = False
+    final_url = ""
+    with CdpPage(page_ws) as page:
+        page.call("Page.enable")
+        page.call("Runtime.enable")
+        page.call("Page.bringToFront")
+        _wait_page_ready(page)
+        _skip_zoho_mfa_prompt_if_present(page)
+        inbox_ready = _wait_for_zoho_inbox(page, timeout=timeout)
+        final_url = _current_url(page)
+    return {
+        "mail_inbox_ready": inbox_ready,
+        "mail_final_url": final_url,
+        "mail_open_hint": open_result.get("hint"),
     }
 
 
@@ -572,6 +618,12 @@ def _click_latest_apify_verify_message_script() -> str:
     return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
   };
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const bodyText = textOf(document.body || document.documentElement);
+  if (/hello@apify\\.com/i.test(bodyText)
+      && /Verify your email address for Apify/i.test(bodyText)
+      && /Verify email address/i.test(bodyText)) {
+    return true;
+  }
   const rows = Array.from(document.querySelectorAll('[role="option"], .zmList, [data-ty="lt"]'))
     .filter(visible)
     .filter((el) => {
@@ -598,16 +650,44 @@ def _click_apify_verify_email_link_script() -> str:
     const style = getComputedStyle(el);
     return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
   };
-  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-  const links = Array.from(document.querySelectorAll('a[href]')).filter(visible);
-  const target = links.find((el) => /console\\.apify\\.com\\/verify-email\\//i.test(el.href)
-      && /Verify email address/i.test(textOf(el)))
-    || links.find((el) => /console\\.apify\\.com\\/verify-email\\//i.test(el.href));
-  if (!target) return false;
-  target.removeAttribute('target');
-  target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-  target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-  target.click();
+  const textOf = (el) => (el.innerText || el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
+  const click = (el) => {
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.click();
+  };
+  const decode = (value) => {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = value;
+    return textarea.value;
+  };
+  const maybeShowImages = Array.from(document.querySelectorAll('button,[role="button"],.zmbtn__text__xm5hob'))
+    .filter(visible)
+    .find((el) => /^(表示する|Show images|Display images|Always display from this sender)$/i.test(textOf(el)));
+  if (maybeShowImages) click(maybeShowImages.closest('button,[role="button"]') || maybeShowImages);
+  const links = Array.from(document.querySelectorAll('a[href]'));
+  const verifyByHref = (el) => /apify/i.test(el.href) && /(verify|verification|email)/i.test(el.href);
+  const verifyByText = (el) => /Verify\\s+email\\s+address/i.test(textOf(el));
+  let target = links.find((el) => visible(el) && verifyByHref(el) && verifyByText(el))
+    || links.find((el) => verifyByHref(el) && verifyByText(el))
+    || links.find((el) => /console\\.apify\\.com/i.test(el.href) && /verify/i.test(el.href))
+    || links.find((el) => verifyByHref(el));
+  if (!target) {
+    const textTarget = Array.from(document.querySelectorAll('button,[role="button"],td,div,span,p'))
+      .filter(visible)
+      .find(verifyByText);
+    if (textTarget) target = textTarget.closest('a[href]') || textTarget.querySelector('a[href]');
+  }
+  if (target) {
+    target.removeAttribute('target');
+    click(target);
+    return true;
+  }
+  const html = document.documentElement ? document.documentElement.innerHTML : '';
+  const matches = html.match(/https?:\\/\\/[^"'<>\\s]+/gi) || [];
+  const raw = matches.find((url) => /apify/i.test(url) && /(verify|verification|email)/i.test(url));
+  if (!raw) return false;
+  location.href = decode(raw).replace(/&amp;/g, '&');
   return true;
 })()
 """

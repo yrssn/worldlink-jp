@@ -102,6 +102,7 @@ def start_apify_signup(
     db: Session,
     mail_login_url: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    mail_already_logged_in: bool = False,
 ) -> dict[str, object]:
     logger.info("[Apify signup] start flow browser_id={} email={}", browser_id, email)
     _emit_progress(progress_callback, "open_browser", "启动并清理 BitBrowser/Apify 会话")
@@ -264,6 +265,7 @@ def start_apify_signup(
             password,
             user,
             db,
+            ensure_login=not mail_already_logged_in,
         )
         email_verified = bool(mail_result.get("apify_verification_link_clicked"))
         logger.info(
@@ -275,9 +277,10 @@ def start_apify_signup(
             email_verified,
         )
 
-    can_collect_token = not captcha_required and (
-        apify_logged_in or email_verified or (ready and not email_verification_required)
-    )
+    if email_verification_required:
+        can_collect_token = not captcha_required and email_verified
+    else:
+        can_collect_token = not captcha_required and (apify_logged_in or ready)
     if can_collect_token:
         logger.info("[Apify signup] collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
@@ -387,6 +390,7 @@ def continue_apify_signup(
     email_password: str | None = None,
     mail_login_url: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    mail_already_logged_in: bool = False,
 ) -> dict[str, object]:
     logger.info("[Apify signup] continue flow browser_id={} email={}", browser_id, email)
     _emit_progress(progress_callback, "resume_browser", "打开现有 BitBrowser 窗口并恢复 Apify 流程")
@@ -489,6 +493,7 @@ def continue_apify_signup(
             str(email_password),
             user,
             db,
+            ensure_login=not mail_already_logged_in,
         )
         email_verified = bool(mail_result.get("apify_verification_link_clicked"))
         logger.info(
@@ -500,9 +505,10 @@ def continue_apify_signup(
             email_verified,
         )
 
-    can_collect_token = not captcha_required and (
-        apify_logged_in or email_verified or (ready and not email_verification_required)
-    )
+    if email_verification_required:
+        can_collect_token = not captcha_required and email_verified
+    else:
+        can_collect_token = not captcha_required and (apify_logged_in or ready)
     if can_collect_token:
         logger.info("[Apify signup] continue collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
@@ -885,7 +891,7 @@ def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> d
         _wait_for_login_result(page)
     final_url = _current_url(page)
     email_verification_required = _is_email_verification_page(page)
-    logged_in = bool(email_submitted and password_submitted and _is_apify_logged_in(page))
+    logged_in = bool(email_submitted and password_submitted and not email_verification_required and _is_apify_logged_in(page))
     return {
         "email_submitted": email_submitted,
         "password_submitted": password_submitted,
