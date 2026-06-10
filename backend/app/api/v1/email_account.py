@@ -32,6 +32,7 @@ from app.services.zoho_mail_automation import (
     normalize_zoho_login_url,
     open_zoho_mail_login,
     submit_zoho_verification_code,
+    wait_current_zoho_inbox_ready,
 )
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
@@ -165,6 +166,36 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
             task.finished_at = datetime.utcnow()
             db.commit()
             return
+        task.current_node = "mail_login"
+        db.add(task)
+        db.commit()
+        _append_apify_task_log(task, db, "mail_login", "先登录注册邮箱，确保可以读取 Apify 验证邮件")
+        mail_login_result = open_zoho_mail_login(
+            row.browser_id,
+            row.mail_login_url,
+            row.email,
+            email_password,
+            user,
+            db,
+        )
+        mail_login_result = _open_verification_mail_if_needed(mail_login_result, row, user, db)
+        inbox_result = wait_current_zoho_inbox_ready(row.browser_id, user, db)
+        mail_login_result = {**mail_login_result, **inbox_result}
+        mail_ready = bool(mail_login_result.get("mail_inbox_ready"))
+        zoho_verification_blocked = bool(mail_login_result.get("mail_verification_required")) and not bool(
+            mail_login_result.get("mail_verification_code_submitted")
+        )
+        if not mail_ready or zoho_verification_blocked:
+            task.status = "paused"
+            task.current_node = "mail_login"
+            task.error = "注册邮箱未登录成功，请先处理邮箱登录/邮箱自身验证后继续注册"
+            task.result = {"ok": False, "mail_login": _json_safe(mail_login_result)}
+            task.finished_at = datetime.utcnow()
+            db.add(task)
+            db.commit()
+            _append_apify_task_log(task, db, "mail_login", task.error)
+            return
+        _append_apify_task_log(task, db, "mail_login", "注册邮箱已登录，继续执行 Apify 注册任务")
 
         def progress(node: str, message: str) -> None:
             fresh_task = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
@@ -181,6 +212,7 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
                     email_password,
                     row.mail_login_url,
                     progress,
+                    mail_already_logged_in=True,
                 )
             else:
                 result = start_apify_signup(
@@ -191,6 +223,7 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
                     db,
                     row.mail_login_url,
                     progress,
+                    mail_already_logged_in=True,
                 )
             result = _create_apify_key_from_result(row, result, db)
         except Exception as e:  # noqa: BLE001
