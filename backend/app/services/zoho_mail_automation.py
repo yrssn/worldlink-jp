@@ -82,6 +82,42 @@ def open_zoho_mail_login(
     }
 
 
+def submit_zoho_verification_code(
+    browser_id: str,
+    code: str,
+    user: User,
+    db: Session,
+) -> dict[str, object]:
+    open_result = bitbrowser_service.open_browser_window(
+        browser_id,
+        user,
+        db,
+        headless=False,
+        restart=False,
+    )
+    open_data = open_result.get("data") or {}
+    if not isinstance(open_data, dict) or not open_data:
+        raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
+    http_base = _extract_devtools_http(open_data)
+    page_ws = _find_zoho_page_ws(http_base)
+    if not page_ws:
+        return {
+            "mail_verification_code_submitted": False,
+            "mail_verification_submit_hint": "未找到 Zoho 验证页面",
+        }
+    with CdpPage(page_ws) as page:
+        page.call("Page.enable")
+        page.call("Runtime.enable")
+        page.call("Page.bringToFront")
+        submitted = _submit_zoho_verification_code(page, code)
+        final_url = _current_url(page)
+    return {
+        "mail_verification_code_submitted": submitted,
+        "mail_verification_final_url": final_url,
+        "mail_verification_submit_hint": open_result.get("hint"),
+    }
+
+
 class CdpPage:
     def __init__(self, ws_url: str):
         self.ws_url = ws_url
@@ -258,6 +294,63 @@ def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
 def _current_url(page: CdpPage) -> str:
     value = page.evaluate("window.location.href", timeout=5)
     return str(value or "")
+
+
+def _submit_zoho_verification_code(page: CdpPage, code: str) -> bool:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        submitted = page.evaluate(_fill_zoho_verification_code_script(code), timeout=8)
+        if bool(submitted):
+            time.sleep(2)
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _fill_zoho_verification_code_script(code: str) -> str:
+    code_json = json.dumps(code)
+    return f"""
+(() => {{
+  const code = {code_json};
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }};
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const setValue = (input, value) => {{
+    input.focus();
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    if (desc && desc.set) desc.set.call(input, value);
+    else input.value = value;
+    input.setAttribute('value', value);
+    input.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, inputType: 'insertText', data: value }}));
+    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
+    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: value.slice(-1) || '0' }}));
+    input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: value.slice(-1) || '0' }}));
+  }};
+  const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
+  const input = document.querySelector('input[name="otp"]')
+    || document.querySelector('input[name="OTP"]')
+    || document.querySelector('input[id*="otp" i]')
+    || document.querySelector('input[id*="verify" i]')
+    || inputs.find((el) => /認証コード|ワンタイム|code|otp|verification/i.test(`${{el.id}} ${{el.name}} ${{el.placeholder}}`))
+    || inputs.find((el) => (el.type || '').toLowerCase() === 'text');
+  if (!input) return false;
+  setValue(input, code);
+  if (input.value !== code) return false;
+  const buttons = Array.from(document.querySelectorAll('#nextbtn,#verifybtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
+  const button = buttons.find((el) => /^(認証する|確認|送信|Verify|Submit|Next|次へ)$/i.test(textOf(el) || el.value || ''))
+    || buttons.find((el) => /(認証する|確認|送信|Verify|Submit|Next|次へ)/i.test(textOf(el) || el.value || ''))
+    || document.querySelector('#nextbtn');
+  if (!button) return false;
+  button.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
+  button.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+  button.click();
+  return true;
+}})()
+"""
 
 
 def _is_zoho_email_verification_step(page: CdpPage) -> bool:

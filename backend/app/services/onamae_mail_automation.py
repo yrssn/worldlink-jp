@@ -44,12 +44,21 @@ def open_onamae_mail_login(
         _wait_page_ready(page)
         time.sleep(1)
         login_submitted = _submit_onamae_login(page, email, password)
+        inbox_ready = _wait_for_onamae_inbox(page)
+        verification_code = None
+        code_extracted = False
+        if inbox_ready and _open_latest_zoho_otp_message(page):
+            verification_code = _extract_zoho_otp_code(page)
+            code_extracted = bool(verification_code)
         final_url = _current_url(page)
     return {
         "verification_mail_opened": True,
         "verification_mail_login_url": target_url,
         "verification_mail_final_url": final_url,
         "verification_mail_login_submitted": login_submitted,
+        "verification_mail_inbox_ready": inbox_ready,
+        "verification_mail_code_extracted": code_extracted,
+        "verification_code": verification_code,
         "verification_mail_open_hint": open_result.get("hint"),
     }
 
@@ -165,6 +174,8 @@ def _current_url(page: CdpPage) -> str:
 def _submit_onamae_login(page: CdpPage, email: str, password: str) -> bool:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
+        if bool(page.evaluate("Boolean(document.querySelector('#messagelist'))", timeout=5)):
+            return True
         submitted = bool(page.evaluate(_fill_onamae_login_script(email, password), timeout=8))
         if submitted:
             time.sleep(2)
@@ -221,3 +232,80 @@ def _fill_onamae_login_script(email: str, password: str) -> str:
   return true;
 }})()
 """
+
+
+def _wait_for_onamae_inbox(page: CdpPage, timeout: float = 30) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready = page.evaluate(
+            "Boolean(document.querySelector('#messagelist tbody tr.message') || document.querySelector('#messagelist'))",
+            timeout=5,
+        )
+        if bool(ready):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _open_latest_zoho_otp_message(page: CdpPage, timeout: float = 20) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        opened = page.evaluate(
+            """
+(() => {
+  const rows = Array.from(document.querySelectorAll('#messagelist tbody tr.message'));
+  const row = rows.find((item) => {
+    const text = item.innerText || '';
+    const from = item.querySelector('.rcmContactAddress')?.getAttribute('title') || '';
+    return /Zoho Team|zohoaccounts/i.test(`${text} ${from}`)
+      && /ワンタイムパスワード|認証コード|sign\\s*in|one\\s*time/i.test(text);
+  });
+  if (!row) return false;
+  const link = row.querySelector('a[href*="_action=show"]') || row.querySelector('a') || row;
+  link.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  link.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  link.click();
+  return true;
+})()
+""",
+            timeout=5,
+        )
+        if bool(opened):
+            time.sleep(1.5)
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _extract_zoho_otp_code(page: CdpPage, timeout: float = 30) -> str | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = page.evaluate(
+            """
+(() => {
+  const readFrame = (frame) => {
+    try {
+      return frame.contentDocument?.body?.innerText || frame.contentDocument?.body?.textContent || '';
+    } catch {
+      return '';
+    }
+  };
+  const parts = [
+    document.querySelector('#messagebody')?.innerText || '',
+    document.querySelector('#messagepreview')?.innerText || '',
+    document.querySelector('#mailview-right')?.innerText || '',
+    document.querySelector('#messagecontframe') ? readFrame(document.querySelector('#messagecontframe')) : '',
+    document.body?.innerText || '',
+  ];
+  const text = parts.join('\\n');
+  if (!/Zoho|ワンタイムパスワード|認証コード|one\\s*time/i.test(text)) return null;
+  const matches = Array.from(text.matchAll(/\\b\\d{6,8}\\b/g)).map((match) => match[0]);
+  return matches[0] || null;
+})()
+""",
+            timeout=5,
+        )
+        if isinstance(value, str) and value:
+            return value
+        time.sleep(0.5)
+    return None

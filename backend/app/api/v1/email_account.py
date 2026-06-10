@@ -1,6 +1,8 @@
 """邮箱账号管理 CRUD。"""
 from __future__ import annotations
 
+from datetime import datetime
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -20,7 +22,11 @@ from app.schemas.email_account import (
 )
 from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
 from app.services.onamae_mail_automation import open_onamae_mail_login
-from app.services.zoho_mail_automation import normalize_zoho_login_url, open_zoho_mail_login
+from app.services.zoho_mail_automation import (
+    normalize_zoho_login_url,
+    open_zoho_mail_login,
+    submit_zoho_verification_code,
+)
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
 
@@ -104,7 +110,20 @@ def _open_verification_mail_if_needed(
         user,
         db,
     )
-    return {**result, **verification_result}
+    verification_code = verification_result.get("verification_code")
+    submit_result: dict[str, object] = {}
+    if isinstance(verification_code, str) and verification_code:
+        row.last_verification_code = verification_code
+        row.last_verification_at = datetime.utcnow()
+        db.add(row)
+        db.commit()
+        submit_result = submit_zoho_verification_code(
+            row.browser_id or "",
+            verification_code,
+            user,
+            db,
+        )
+    return {**result, **verification_result, **submit_result}
 
 
 @router.get("", response_model=list[EmailAccountOut])
@@ -303,6 +322,12 @@ def start_email_verification_mail_login(
             user,
             db,
         )
+        verification_code = result.get("verification_code")
+        if isinstance(verification_code, str) and verification_code:
+            row.last_verification_code = verification_code
+            row.last_verification_at = datetime.utcnow()
+            db.add(row)
+            db.commit()
         return {"ok": True, "browser_id": row.browser_id, **result}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

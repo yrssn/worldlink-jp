@@ -65,6 +65,12 @@ export interface ApifySignupStartResult {
   verification_mail_login_url?: string | null
   verification_mail_final_url?: string | null
   verification_mail_login_submitted: boolean
+  verification_mail_inbox_ready: boolean
+  verification_mail_code_extracted: boolean
+  verification_code?: string | null
+  mail_verification_code_submitted: boolean
+  mail_verification_final_url?: string | null
+  mail_verification_submit_hint?: string | null
   open_hint?: string | null
   mail_open_hint?: string | null
   verification_mail_open_hint?: string | null
@@ -84,6 +90,12 @@ export interface ZohoMailLoginResult {
   verification_mail_login_url?: string | null
   verification_mail_final_url?: string | null
   verification_mail_login_submitted: boolean
+  verification_mail_inbox_ready: boolean
+  verification_mail_code_extracted: boolean
+  verification_code?: string | null
+  mail_verification_code_submitted: boolean
+  mail_verification_final_url?: string | null
+  mail_verification_submit_hint?: string | null
   mail_open_hint?: string | null
   verification_mail_open_hint?: string | null
 }
@@ -95,6 +107,9 @@ export interface VerificationMailLoginResult {
   verification_mail_login_url?: string | null
   verification_mail_final_url?: string | null
   verification_mail_login_submitted: boolean
+  verification_mail_inbox_ready: boolean
+  verification_mail_code_extracted: boolean
+  verification_code?: string | null
   verification_mail_open_hint?: string | null
 }
 
