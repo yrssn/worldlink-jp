@@ -56,6 +56,10 @@ export interface ApifySignupStartResult {
   captcha_required: boolean
   mail_opened: boolean
   mail_login_url?: string | null
+  mail_final_url?: string | null
+  mail_closed_tab_count: number
+  mail_email_submitted: boolean
+  mail_password_submitted: boolean
   open_hint?: string | null
   mail_open_hint?: string | null
 }
