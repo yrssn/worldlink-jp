@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   emailAccountApi,
   type ApifySignupStartResult,
+  type ApifySignupTask,
   type EmailAccount,
   type EmailAccountPayload
 } from '@/api/emailAccount'
@@ -22,6 +23,8 @@ const verificationMailLoginId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
 const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
+const apifyTasks = ref<ApifySignupTask[]>([])
+const apifyTaskLoading = ref(false)
 const defaultZohoLoginUrl = 'https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice&signupurl=https://www.zoho.com/jp/mail/zohomail-pricing.html&serviceurl=https://mail.zoho.com'
 
 const filters = reactive({
@@ -125,6 +128,17 @@ async function loadApifyKeys() {
   }
 }
 
+async function loadApifyTasks() {
+  apifyTaskLoading.value = true
+  try {
+    apifyTasks.value = await emailAccountApi.listApifySignupTasks({ limit: 100 })
+  } catch {
+    apifyTasks.value = []
+  } finally {
+    apifyTaskLoading.value = false
+  }
+}
+
 function browserLabel(row: BitBrowserCatalogRow) {
   const name = row.name || row.cached_window_name || row.browser_id
   const platform = row.platform_name || row.platform || row.cached_env_platform
@@ -139,6 +153,28 @@ function browserName(browserId?: string | null) {
 
 function linkedApifyKey(emailAccountId: number) {
   return apifyKeys.value.find((item) => item.email_account_id === emailAccountId)
+}
+
+function emailByAccountId(emailAccountId: number) {
+  return list.value.find((item) => item.id === emailAccountId)?.email || `邮箱账号 #${emailAccountId}`
+}
+
+function apifyTaskStatusType(status: string) {
+  if (status === 'done') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'paused') return 'warning'
+  if (status === 'running') return 'primary'
+  return 'info'
+}
+
+function apifyTaskLogLines(task: ApifySignupTask) {
+  if (!task.logs) return []
+  try {
+    const rows = JSON.parse(task.logs)
+    return Array.isArray(rows) ? rows.slice(-8) : []
+  } catch {
+    return []
+  }
 }
 
 function canStartApifySignup(row: EmailAccount) {
@@ -204,6 +240,7 @@ async function showApifySignupResult(result: ApifySignupStartResult, isContinue 
 
 async function handleApifySignupTask(taskId: number, isContinue = false) {
   ElMessage.info(`Apify 注册任务 #${taskId} 已挂后台执行，可在后端日志查看节点进度`)
+  await loadApifyTasks()
   const task = await waitApifySignupTask(taskId)
   if (task.status === 'done' && task.result) {
     await showApifySignupResult(task.result, isContinue)
@@ -217,6 +254,7 @@ async function handleApifySignupTask(taskId: number, isContinue = false) {
   } else {
     ElMessage.warning(`Apify 注册任务 #${task.id} 未结束，当前节点：${task.current_node || task.status}`)
   }
+  await loadApifyTasks()
 }
 
 async function openCreate() {
@@ -419,6 +457,7 @@ onMounted(() => {
   load()
   loadBrowserOptions()
   loadApifyKeys()
+  loadApifyTasks()
 })
 </script>
 
@@ -452,6 +491,57 @@ onMounted(() => {
           <el-button @click="resetFilters">重置</el-button>
         </el-form-item>
       </el-form>
+    </el-card>
+
+    <el-card shadow="never" style="margin-bottom: 16px">
+      <template #header>
+        <div style="display: flex; justify-content: space-between; align-items: center">
+          <span>Apify 注册任务</span>
+          <el-button size="small" @click="loadApifyTasks">刷新任务</el-button>
+        </div>
+      </template>
+      <el-table :data="apifyTasks" v-loading="apifyTaskLoading" border stripe size="small">
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div style="padding: 8px 16px">
+              <div v-if="row.error" style="margin-bottom: 8px; color: var(--el-color-danger)">
+                错误：{{ row.error }}
+              </div>
+              <div v-if="row.result" style="margin-bottom: 8px">
+                结果：
+                <el-tag v-if="row.result.apify_key_created" type="success">已写入 Apify Key</el-tag>
+                <el-tag v-else-if="row.result.apify_token_collected" type="success">已采集 Token</el-tag>
+                <el-tag v-else-if="row.result.captcha_required" type="warning">需要/等待人机验证</el-tag>
+                <el-tag v-else type="info">已返回结果</el-tag>
+              </div>
+              <div v-if="apifyTaskLogLines(row).length">
+                <div
+                  v-for="(log, index) in apifyTaskLogLines(row)"
+                  :key="index"
+                  style="font-family: monospace; font-size: 12px; line-height: 1.8"
+                >
+                  {{ formatDate(log.time) }} [{{ log.node }}] {{ log.message }}
+                </div>
+              </div>
+              <el-empty v-else description="暂无节点日志" :image-size="48" />
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="任务ID" prop="id" width="90" />
+        <el-table-column label="邮箱" min-width="220">
+          <template #default="{ row }">{{ emailByAccountId(row.email_account_id) }}</template>
+        </el-table-column>
+        <el-table-column label="动作" prop="action" width="100" />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="apifyTaskStatusType(row.status)">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="当前节点" prop="current_node" min-width="180" />
+        <el-table-column label="更新时间" width="170">
+          <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
+        </el-table-column>
+      </el-table>
     </el-card>
 
     <el-table :data="list" v-loading="loading" border stripe>

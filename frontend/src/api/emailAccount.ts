@@ -154,6 +154,8 @@ export const emailAccountApi = {
     ),
   getApifySignupTask: (taskId: number) =>
     http.get<unknown, ApifySignupTask>(`/email/accounts/apify-signup/tasks/${taskId}`),
+  listApifySignupTasks: (params?: { account_id?: number; status?: string; limit?: number }) =>
+    http.get<unknown, ApifySignupTask[]>('/email/accounts/apify-signup/tasks', { params }),
   getLatestApifySignupTask: (id: number) =>
     http.get<unknown, ApifySignupTask | null>(`/email/accounts/${id}/apify-signup/tasks/latest`),
   startZohoMailLogin: (id: number) =>
