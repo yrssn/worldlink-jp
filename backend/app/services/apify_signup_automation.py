@@ -187,6 +187,7 @@ def start_apify_signup(
         apify_login_attempted = False
         apify_logged_in = False
         email_verification_required = False
+        login_result: dict[str, object] = {}
         profile_details: dict[str, object] = {
             "submitted": False,
             "full_name": _profile_name_from_email(email),
@@ -223,14 +224,17 @@ def start_apify_signup(
             login_result = _login_existing_apify_account(page, email, password)
             apify_logged_in = bool(login_result.get("logged_in"))
             captcha_required = bool(login_result.get("captcha_required"))
-            email_verification_required = _is_email_verification_page(page)
+            email_verification_required = bool(login_result.get("email_verification_required"))
             logger.info(
-                "[Apify signup] login fallback finished browser_id={} email={} logged_in={} captcha_required={} email_verification_required={}",
+                "[Apify signup] login fallback finished browser_id={} email={} email_submitted={} password_submitted={} logged_in={} captcha_required={} email_verification_required={} final_url={}",
                 browser_id,
                 email,
+                bool(login_result.get("email_submitted")),
+                bool(login_result.get("password_submitted")),
                 apify_logged_in,
                 captcha_required,
                 email_verification_required,
+                str(login_result.get("final_url") or ""),
             )
         elif password_submitted and not email_already_taken and not captcha_required:
             logger.info("[Apify signup] completing welcome profile browser_id={} email={}", browser_id, email)
@@ -245,7 +249,10 @@ def start_apify_signup(
     mail_result: dict[str, object] = {}
     email_verified = False
     token_result: dict[str, object] = {}
-    ready = (password_submitted or apify_logged_in or email_verification_required) and not captcha_required
+    if apify_login_attempted:
+        ready = (apify_logged_in or email_verification_required) and not captcha_required
+    else:
+        ready = (password_submitted or apify_logged_in or email_verification_required) and not captcha_required
     if email_verification_required and password:
         logger.info("[Apify signup] opening Zoho verification mail browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "email_verification", "打开 Zoho 邮箱并点击 Apify 验证链接")
@@ -267,7 +274,10 @@ def start_apify_signup(
             email_verified,
         )
 
-    if not captcha_required and (ready or email_verified or apify_logged_in):
+    can_collect_token = not captcha_required and (
+        apify_logged_in or email_verified or (ready and not email_verification_required)
+    )
+    if can_collect_token:
         logger.info("[Apify signup] collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
         refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
@@ -313,6 +323,8 @@ def start_apify_signup(
         "email_already_taken": email_already_taken,
         "apify_login_attempted": apify_login_attempted,
         "apify_logged_in": apify_logged_in,
+        "apify_login_email_submitted": bool(login_result.get("email_submitted")),
+        "apify_login_password_submitted": bool(login_result.get("password_submitted")),
         "apify_full_name": profile_details.get("full_name"),
         "apify_username": profile_details.get("username"),
         "apify_user_id": token_result.get("apify_user_id"),
@@ -395,6 +407,7 @@ def continue_apify_signup(
     email_already_taken = False
     apify_login_attempted = False
     apify_logged_in = False
+    login_result: dict[str, object] = {}
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Network.enable")
@@ -428,14 +441,17 @@ def continue_apify_signup(
             login_result = _login_existing_apify_account(page, email, str(email_password))
             apify_logged_in = bool(login_result.get("logged_in"))
             captcha_required = bool(login_result.get("captcha_required"))
-            email_verification_required = _is_email_verification_page(page)
+            email_verification_required = bool(login_result.get("email_verification_required"))
             logger.info(
-                "[Apify signup] continue login fallback finished browser_id={} email={} logged_in={} captcha_required={} email_verification_required={}",
+                "[Apify signup] continue login fallback finished browser_id={} email={} email_submitted={} password_submitted={} logged_in={} captcha_required={} email_verification_required={} final_url={}",
                 browser_id,
                 email,
+                bool(login_result.get("email_submitted")),
+                bool(login_result.get("password_submitted")),
                 apify_logged_in,
                 captcha_required,
                 email_verification_required,
+                str(login_result.get("final_url") or ""),
             )
         elif not email_already_taken and not captcha_required:
             logger.info("[Apify signup] continue checking welcome profile/email verification browser_id={} email={}", browser_id, email)
@@ -479,7 +495,10 @@ def continue_apify_signup(
             email_verified,
         )
 
-    if not captcha_required and (ready or email_verified):
+    can_collect_token = not captcha_required and (
+        apify_logged_in or email_verified or (ready and not email_verification_required)
+    )
+    if can_collect_token:
         logger.info("[Apify signup] continue collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
         refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
@@ -525,6 +544,8 @@ def continue_apify_signup(
         "email_already_taken": email_already_taken,
         "apify_login_attempted": apify_login_attempted,
         "apify_logged_in": apify_logged_in,
+        "apify_login_email_submitted": bool(login_result.get("email_submitted")),
+        "apify_login_password_submitted": bool(login_result.get("password_submitted")),
         "apify_full_name": profile_details.get("full_name"),
         "apify_username": profile_details.get("username"),
         "apify_user_id": token_result.get("apify_user_id"),
@@ -806,12 +827,7 @@ def _is_apify_logged_in(page: CdpPage) -> bool:
 
 
 def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> dict[str, object]:
-    login_link_clicked = _click_login_link_if_present(page)
-    if login_link_clicked:
-        _wait_page_ready(page)
-        time.sleep(1)
-    if not _is_login_page(page):
-        page.call("Page.navigate", {"url": LOGIN_URL}, timeout=8)
+    page.call("Page.navigate", {"url": LOGIN_URL}, timeout=8)
     _wait_page_ready(page)
     time.sleep(1)
     email_submitted = bool(page.evaluate(_fill_login_email_script(email), timeout=8))
@@ -821,14 +837,16 @@ def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> d
     if password_submitted:
         _wait_for_login_result(page)
     final_url = _current_url(page)
-    logged_in = _is_apify_logged_in(page)
+    email_verification_required = bool(email_submitted and password_submitted and _is_email_verification_page(page))
+    logged_in = bool(email_submitted and password_submitted and _is_apify_logged_in(page))
     return {
         "email_submitted": email_submitted,
         "password_submitted": password_submitted,
         "logged_in": logged_in,
+        "email_verification_required": email_verification_required,
         "captcha_required": _has_captcha(page),
         "final_url": final_url,
-        "login_link_clicked": login_link_clicked,
+        "login_link_clicked": False,
     }
 
 

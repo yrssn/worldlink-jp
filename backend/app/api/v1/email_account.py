@@ -225,6 +225,18 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
         elif bool(result.get("apify_token_collected")):
             fresh_task.status = "done"
             _append_apify_task_log(fresh_task, db, "done", "已采集 Apify token")
+        elif (
+            bool(result.get("apify_login_attempted"))
+            and not bool(result.get("apify_logged_in"))
+            and not bool(result.get("email_verification_required"))
+        ):
+            fresh_task.status = "paused"
+            fresh_task.error = "Apify 登录未完成，请查看登录页是否已填写邮箱和密码"
+            _append_apify_task_log(fresh_task, db, "login_existing_account", fresh_task.error)
+        elif bool(result.get("email_verification_required")) and not bool(result.get("email_verified")):
+            fresh_task.status = "paused"
+            fresh_task.error = "Apify 需要邮箱验证，但验证流程未完成"
+            _append_apify_task_log(fresh_task, db, "email_verification", fresh_task.error)
         elif bool(result.get("ready")) or bool(result.get("email_verified")):
             fresh_task.status = "done"
             _append_apify_task_log(fresh_task, db, "done", "Apify 流程执行完成，请查看结果")
