@@ -105,17 +105,23 @@ def start_apify_signup(
     mail_already_logged_in: bool = False,
 ) -> dict[str, object]:
     logger.info("[Apify signup] start flow browser_id={} email={}", browser_id, email)
-    _emit_progress(progress_callback, "open_browser", "启动并清理 BitBrowser/Apify 会话")
-    bitbrowser_service.close_browser_window(browser_id, user)
-    time.sleep(1)
-    profile_clear_result = bitbrowser_service.clear_browser_profile_cookies(browser_id, user)
-    time.sleep(0.5)
+    if mail_already_logged_in:
+        _emit_progress(progress_callback, "open_browser", "复用已登录邮箱的 BitBrowser 窗口，保留 Zoho Cookie")
+        profile_clear_result: dict[str, object] = {}
+        restart_browser = False
+    else:
+        _emit_progress(progress_callback, "open_browser", "启动并清理 BitBrowser/Apify 会话")
+        bitbrowser_service.close_browser_window(browser_id, user)
+        time.sleep(1)
+        profile_clear_result = bitbrowser_service.clear_browser_profile_cookies(browser_id, user)
+        time.sleep(0.5)
+        restart_browser = True
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
         user,
         db,
         headless=False,
-        restart=True,
+        restart=restart_browser,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
@@ -144,7 +150,7 @@ def start_apify_signup(
             _wait_page_ready(page)
             time.sleep(1)
             post_clear_url = _current_url(page)
-        if _looks_logged_in_url(post_clear_url):
+        if _looks_logged_in_url(post_clear_url) and not mail_already_logged_in:
             _clear_all_browser_session(page)
             all_cookies_cleared = True
             page.call("Page.navigate", {"url": SIGNUP_URL})
