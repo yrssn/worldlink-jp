@@ -260,7 +260,7 @@ def _current_url(page: CdpPage) -> str:
 def _submit_zoho_email(page: CdpPage, email: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
-        if _wait_for_password_input(page, timeout=1):
+        if _is_zoho_password_step(page):
             return True
         focused = bool(page.evaluate(_focus_zoho_email_script(), timeout=5))
         submitted = False
@@ -341,20 +341,43 @@ def _press_enter(page: CdpPage) -> None:
 def _wait_for_password_input(page: CdpPage, timeout: float = 12) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        present = page.evaluate(
-            "Boolean(Array.from(document.querySelectorAll('input')).find((el) => {"
-            "const r = el.getBoundingClientRect();"
-            "const s = getComputedStyle(el);"
-            "const meta = `${el.id} ${el.name} ${el.placeholder} ${el.type}`;"
-            "return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'"
-            " && !el.disabled && !el.readOnly && /password|passwd|pwd|パスワード/i.test(meta);"
-            "}))",
-            timeout=5,
-        )
-        if bool(present):
+        if _is_zoho_password_step(page):
             return True
         time.sleep(0.5)
     return False
+
+
+def _is_zoho_password_step(page: CdpPage) -> bool:
+    return bool(page.evaluate(_zoho_password_step_script(), timeout=5))
+
+
+def _zoho_password_step_script() -> str:
+    return """
+(() => {
+  const passwordContainer = document.querySelector('#password_container');
+  const loginContainer = document.querySelector('#login_id_container');
+  const passwordInput = document.querySelector('#password') || document.querySelector('input[name="PASSWORD"]');
+  if (!passwordContainer || !passwordInput) return false;
+  const passwordStyle = getComputedStyle(passwordContainer);
+  const passwordRect = passwordContainer.getBoundingClientRect();
+  const passwordContainerVisible = passwordStyle.display !== 'none'
+    && passwordStyle.visibility !== 'hidden'
+    && !passwordContainer.classList.contains('zeroheight')
+    && passwordRect.width > 0
+    && passwordRect.height > 0;
+  if (!passwordContainerVisible) return false;
+  if (!loginContainer) return true;
+  const loginStyle = getComputedStyle(loginContainer);
+  const loginRect = loginContainer.getBoundingClientRect();
+  const loginContainerHidden = loginStyle.display === 'none'
+    || loginStyle.visibility === 'hidden'
+    || loginContainer.classList.contains('hide')
+    || loginRect.width === 0
+    || loginRect.height === 0;
+  const username = (passwordContainer.querySelector('.username')?.textContent || '').trim();
+  return loginContainerHidden || Boolean(username);
+})()
+"""
 
 
 def _fill_zoho_email_script(email: str) -> str:
