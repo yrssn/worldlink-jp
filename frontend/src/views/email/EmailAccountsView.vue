@@ -282,7 +282,11 @@ async function handleStartMailLogin(row: EmailAccount) {
   try {
     const result = await emailAccountApi.startZohoMailLogin(row.id)
     if (result.mail_verification_code_submitted) {
-      ElMessage.success(`已提取并回填 Zoho 验证码：${result.verification_code}`)
+      ElMessage.success(
+        result.mail_verification_refreshed
+          ? `已提取并回填 Zoho 验证码：${result.verification_code}，并刷新页面`
+          : `已提取并回填 Zoho 验证码：${result.verification_code}`
+      )
       await load()
     } else if (result.verification_mail_code_extracted) {
       ElMessage.success(`已从验证码邮箱提取到验证码：${result.verification_code}`)

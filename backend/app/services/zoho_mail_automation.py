@@ -115,9 +115,13 @@ def submit_zoho_verification_code(
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
         submitted = _submit_zoho_verification_code(page, code)
+        refreshed = False
+        if submitted:
+            refreshed = _refresh_zoho_current_page(page)
         final_url = _current_url(page)
     return {
         "mail_verification_code_submitted": submitted,
+        "mail_verification_refreshed": refreshed,
         "mail_verification_final_url": final_url,
         "mail_verification_submit_hint": open_result.get("hint"),
     }

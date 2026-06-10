@@ -100,6 +100,7 @@ class ZohoMailLoginOut(BaseModel):
     verification_mail_code_extracted: bool = False
     verification_code: Optional[str] = None
     mail_verification_code_submitted: bool = False
+    mail_verification_refreshed: bool = False
     mail_verification_final_url: Optional[str] = None
     mail_verification_submit_hint: Optional[str] = None
     mail_open_hint: Optional[str] = None
