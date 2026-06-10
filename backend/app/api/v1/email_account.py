@@ -18,6 +18,7 @@ from app.models.apify_signup_task import ApifySignupTask
 from app.models.email_account import EmailAccount
 from app.models.user import User
 from app.schemas.email_account import (
+    ApifySignupTaskPage,
     ApifySignupTaskOut,
     EmailAccountCreate,
     EmailAccountOut,
@@ -468,11 +469,12 @@ def get_latest_apify_signup_task(
     )
 
 
-@router.get("/apify-signup/tasks", response_model=list[ApifySignupTaskOut])
+@router.get("/apify-signup/tasks", response_model=ApifySignupTaskPage)
 def list_apify_signup_tasks(
     account_id: int | None = None,
     status: str | None = None,
-    limit: int = 50,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(5, ge=1, le=50),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -481,8 +483,14 @@ def list_apify_signup_tasks(
         query = query.filter(ApifySignupTask.email_account_id == account_id)
     if status:
         query = query.filter(ApifySignupTask.status == status)
-    safe_limit = max(1, min(limit, 200))
-    return query.order_by(ApifySignupTask.id.desc()).limit(safe_limit).all()
+    total = query.count()
+    items = (
+        query.order_by(ApifySignupTask.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return ApifySignupTaskPage(total=total, page=page, page_size=page_size, items=items)
 
 
 @router.get("/apify-signup/tasks/{task_id}", response_model=ApifySignupTaskOut)

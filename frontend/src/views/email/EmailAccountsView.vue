@@ -25,6 +25,9 @@ const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
 const apifyTasks = ref<ApifySignupTask[]>([])
 const apifyTaskLoading = ref(false)
+const apifyTaskTotal = ref(0)
+const apifyTaskPage = ref(1)
+const apifyTaskPageSize = ref(5)
 const defaultZohoLoginUrl = 'https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice&signupurl=https://www.zoho.com/jp/mail/zohomail-pricing.html&serviceurl=https://mail.zoho.com'
 
 const filters = reactive({
@@ -131,12 +134,34 @@ async function loadApifyKeys() {
 async function loadApifyTasks() {
   apifyTaskLoading.value = true
   try {
-    apifyTasks.value = await emailAccountApi.listApifySignupTasks({ limit: 100 })
+    const page = await emailAccountApi.listApifySignupTasks({
+      page: apifyTaskPage.value,
+      page_size: apifyTaskPageSize.value
+    })
+    apifyTasks.value = page.items
+    apifyTaskTotal.value = page.total
   } catch {
     apifyTasks.value = []
+    apifyTaskTotal.value = 0
   } finally {
     apifyTaskLoading.value = false
   }
+}
+
+function handleApifyTaskPageChange(page: number) {
+  apifyTaskPage.value = page
+  loadApifyTasks()
+}
+
+function handleApifyTaskSizeChange(pageSize: number) {
+  apifyTaskPageSize.value = pageSize
+  apifyTaskPage.value = 1
+  loadApifyTasks()
+}
+
+async function refreshApifyTasks() {
+  apifyTaskPage.value = 1
+  await loadApifyTasks()
 }
 
 function browserLabel(row: BitBrowserCatalogRow) {
@@ -244,7 +269,7 @@ async function showApifySignupResult(result: ApifySignupStartResult, isContinue 
 
 async function handleApifySignupTask(taskId: number, isContinue = false) {
   ElMessage.info(`Apify 注册任务 #${taskId} 已挂后台执行，可在后端日志查看节点进度`)
-  await loadApifyTasks()
+  await refreshApifyTasks()
   const task = await waitApifySignupTask(taskId)
   if (task.status === 'done' && task.result) {
     await showApifySignupResult(task.result, isContinue)
@@ -258,7 +283,7 @@ async function handleApifySignupTask(taskId: number, isContinue = false) {
   } else {
     ElMessage.warning(`Apify 注册任务 #${task.id} 未结束，当前节点：${task.current_node || task.status}`)
   }
-  await loadApifyTasks()
+  await refreshApifyTasks()
 }
 
 async function openCreate() {
@@ -501,7 +526,7 @@ onMounted(() => {
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center">
           <span>Apify 注册任务</span>
-          <el-button size="small" @click="loadApifyTasks">刷新任务</el-button>
+          <el-button size="small" @click="refreshApifyTasks">刷新任务</el-button>
         </div>
       </template>
       <el-table :data="apifyTasks" v-loading="apifyTaskLoading" border stripe size="small">
@@ -548,6 +573,18 @@ onMounted(() => {
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
       </el-table>
+      <div style="display: flex; justify-content: flex-end; margin-top: 12px">
+        <el-pagination
+          v-model:current-page="apifyTaskPage"
+          v-model:page-size="apifyTaskPageSize"
+          :total="apifyTaskTotal"
+          :page-sizes="[5, 10, 20]"
+          layout="total, sizes, prev, pager, next"
+          small
+          @current-change="handleApifyTaskPageChange"
+          @size-change="handleApifyTaskSizeChange"
+        />
+      </div>
     </el-card>
 
     <el-table :data="list" v-loading="loading" border stripe>

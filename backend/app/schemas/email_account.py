@@ -124,6 +124,14 @@ class ApifySignupTaskOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
+class ApifySignupTaskPage(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ApifySignupTaskOut]
+
+
 class ZohoMailLoginOut(BaseModel):
     ok: bool = True
     browser_id: str
