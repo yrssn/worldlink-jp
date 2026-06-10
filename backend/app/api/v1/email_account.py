@@ -225,6 +225,11 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
         elif bool(result.get("apify_token_collected")):
             fresh_task.status = "done"
             _append_apify_task_log(fresh_task, db, "done", "已采集 Apify token")
+        elif bool(result.get("apify_token_collection_attempted")):
+            fresh_task.status = "paused"
+            fresh_task.current_node = "collect_token"
+            fresh_task.error = "Apify token 采集失败，未写入 Apify Key；请查看 integrations 页面和任务日志"
+            _append_apify_task_log(fresh_task, db, "collect_token", fresh_task.error)
         elif (
             bool(result.get("apify_login_attempted"))
             and not bool(result.get("apify_logged_in"))
@@ -238,8 +243,9 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
             fresh_task.error = "Apify 需要邮箱验证，但验证流程未完成"
             _append_apify_task_log(fresh_task, db, "email_verification", fresh_task.error)
         elif bool(result.get("ready")) or bool(result.get("email_verified")):
-            fresh_task.status = "done"
-            _append_apify_task_log(fresh_task, db, "done", "Apify 流程执行完成，请查看结果")
+            fresh_task.status = "paused"
+            fresh_task.error = "Apify 已进入可继续状态，但未采集到 token，不能判定完成"
+            _append_apify_task_log(fresh_task, db, fresh_task.current_node or "paused", fresh_task.error)
         else:
             fresh_task.status = "paused"
             fresh_task.error = "流程未完成，请查看浏览器窗口和任务日志"

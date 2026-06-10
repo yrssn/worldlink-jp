@@ -87,6 +87,7 @@ class ApifySignupStartOut(BaseModel):
     apify_mail_opened: bool = False
     apify_verification_link_clicked: bool = False
     apify_token_collected: bool = False
+    apify_token_collection_attempted: bool = False
     apify_key_created: bool = False
     apify_key_id: Optional[int] = None
     apify_key_is_default: bool = False

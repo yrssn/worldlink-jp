@@ -63,6 +63,7 @@ export interface ApifySignupStartResult {
   apify_mail_opened: boolean
   apify_verification_link_clicked: boolean
   apify_token_collected: boolean
+  apify_token_collection_attempted: boolean
   apify_key_created: boolean
   apify_key_id?: number | null
   apify_key_is_default: boolean

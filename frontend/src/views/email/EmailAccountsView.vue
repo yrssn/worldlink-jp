@@ -213,6 +213,8 @@ async function showApifySignupResult(result: ApifySignupStartResult, isContinue 
   } else if (result.apify_token_collected) {
     ElMessage.success(`${isContinue ? '已获取' : '已登录已有 Apify 账号并获取'}默认 API Token，请刷新 Apify Key 管理确认`)
     await loadApifyKeys()
+  } else if (result.apify_token_collection_attempted) {
+    ElMessage.warning('已尝试采集 Apify Token，但未读取到 Token；任务已暂停，请查看 integrations 页面和任务日志')
   } else if (result.apify_verification_link_clicked) {
     ElMessage.warning('已点击 Apify 邮箱验证链接，但未能读取默认 API Token，请查看指纹浏览器窗口')
   } else if (result.apify_login_attempted && result.email_verification_required) {
@@ -505,6 +507,7 @@ onMounted(() => {
                 结果：
                 <el-tag v-if="row.result.apify_key_created" type="success">已写入 Apify Key</el-tag>
                 <el-tag v-else-if="row.result.apify_token_collected" type="success">已采集 Token</el-tag>
+                <el-tag v-else-if="row.result.apify_token_collection_attempted" type="warning">Token 采集失败</el-tag>
                 <el-tag v-else-if="row.result.captcha_required" type="warning">需要/等待人机验证</el-tag>
                 <el-tag v-else type="info">已返回结果</el-tag>
               </div>
