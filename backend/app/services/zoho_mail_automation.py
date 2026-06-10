@@ -222,7 +222,15 @@ def _current_url(page: CdpPage) -> str:
 def _submit_zoho_email(page: CdpPage, email: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
-        submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
+        if _wait_for_password_input(page, timeout=1):
+            return True
+        focused = bool(page.evaluate(_focus_zoho_email_script(), timeout=5))
+        submitted = False
+        if focused:
+            page.call("Input.insertText", {"text": email}, timeout=5)
+            submitted = bool(page.evaluate(_click_zoho_email_next_script(email), timeout=5))
+        if not submitted:
+            submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
         if submitted and _wait_for_password_input(page, timeout=4):
             return True
         time.sleep(0.5)
@@ -233,12 +241,33 @@ def _submit_zoho_password(page: CdpPage, password: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
         if _wait_for_password_input(page, timeout=2):
-            submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
+            focused = bool(page.evaluate(_focus_zoho_password_script(), timeout=5))
+            submitted = False
+            if focused:
+                page.call("Input.insertText", {"text": password}, timeout=5)
+                submitted = bool(page.evaluate(_click_zoho_password_submit_script(), timeout=5))
+                if submitted:
+                    _press_enter(page)
+            if not submitted:
+                submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
             if submitted:
                 time.sleep(2)
                 return True
         time.sleep(0.5)
     return False
+
+
+def _press_enter(page: CdpPage) -> None:
+    page.call(
+        "Input.dispatchKeyEvent",
+        {"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13},
+        timeout=5,
+    )
+    page.call(
+        "Input.dispatchKeyEvent",
+        {"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13},
+        timeout=5,
+    )
 
 
 def _wait_for_password_input(page: CdpPage, timeout: float = 12) -> bool:
@@ -282,7 +311,7 @@ def _fill_zoho_email_script(email: str) -> str:
   }};
   const inputs = Array.from(document.querySelectorAll('input'))
     .filter(visible)
-    .filter((el) => !el.disabled && !el.readOnly && (el.type || 'text') !== 'hidden');
+    .filter((el) => !el.disabled && !el.readOnly && !['hidden', 'password'].includes((el.type || 'text').toLowerCase()));
   const input = document.querySelector('#login_id')
     || document.querySelector('input[name="LOGIN_ID"]')
     || document.querySelector('input[name="login_id"]')
@@ -301,6 +330,62 @@ def _fill_zoho_email_script(email: str) -> str:
   button.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
   button.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
   setTimeout(() => button.click(), 150);
+  return true;
+}})()
+"""
+
+
+def _focus_zoho_email_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const inputs = Array.from(document.querySelectorAll('input'))
+    .filter(visible)
+    .filter((el) => !el.disabled && !el.readOnly && !['hidden', 'password'].includes((el.type || 'text').toLowerCase()));
+  const input = document.querySelector('#login_id')
+    || document.querySelector('input[name="LOGIN_ID"]')
+    || document.querySelector('input[name="login_id"]')
+    || inputs.find((el) => (el.type || '').toLowerCase() === 'email')
+    || inputs.find((el) => /(email|mail|login|lid|identifier)/i.test(`${el.id} ${el.name} ${el.placeholder}`));
+  if (!input) return false;
+  input.focus();
+  input.value = '';
+  input.setAttribute('value', '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return document.activeElement === input;
+})()
+"""
+
+
+def _click_zoho_email_next_script(email: str) -> str:
+    email_json = json.dumps(email)
+    return f"""
+(() => {{
+  const email = {email_json};
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }};
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const input = document.querySelector('#login_id') || document.querySelector('input[name="LOGIN_ID"]');
+  if (!input || input.value !== email) return false;
+  input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: email.slice(-1) || 'a' }}));
+  const buttons = Array.from(document.querySelectorAll('#nextbtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
+  const button = document.querySelector('#nextbtn')
+    || buttons.find((el) => /^(次へ|Next)$/i.test(textOf(el) || el.value || ''))
+    || buttons.find((el) => /(次へ|Next)/i.test(textOf(el) || el.value || ''));
+  if (!button) return false;
+  button.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
+  button.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+  button.click();
   return true;
 }})()
 """
@@ -349,4 +434,58 @@ def _fill_zoho_password_script(password: str) -> str:
   setTimeout(() => button.click(), 150);
   return true;
 }})()
+"""
+
+
+def _focus_zoho_password_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const inputMeta = (el) => `${el.id} ${el.name} ${el.placeholder} ${el.type} ${el.autocomplete}`;
+  const input = document.querySelector('#password')
+    || document.querySelector('input[name="PASSWORD"]')
+    || document.querySelector('input[name="password"]')
+    || Array.from(document.querySelectorAll('input'))
+      .filter(visible)
+      .find((el) => !el.disabled && !el.readOnly && /password|passwd|pwd|パスワード/i.test(inputMeta(el)));
+  if (!input) return false;
+  input.focus();
+  input.value = '';
+  input.setAttribute('value', '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return document.activeElement === input;
+})()
+"""
+
+
+def _click_zoho_password_submit_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const input = document.querySelector('#password') || document.querySelector('input[name="PASSWORD"]');
+  if (!input || !input.value) return false;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: input.value.slice(-1) || 'a' }));
+  input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: input.value.slice(-1) || 'a' }));
+  const buttons = Array.from(document.querySelectorAll('#nextbtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
+  const button = document.querySelector('#nextbtn')
+    || buttons.find((el) => /^(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)$/i.test(textOf(el) || el.value || ''))
+    || buttons.find((el) => /(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)/i.test(textOf(el) || el.value || ''));
+  if (!button) return false;
+  button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  button.click();
+  return true;
+})()
 """
