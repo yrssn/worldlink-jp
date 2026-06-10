@@ -445,11 +445,10 @@ def continue_apify_signup(
             if profile_submitted:
                 _wait_after_profile_continue(page)
             email_verification_required = _is_email_verification_page(page)
-        signed_in = _looks_logged_in_url(first_url)
         final_url = _current_url(page)
+        signed_in = _is_apify_logged_in(page)
         ready = (
             signed_in
-            or _looks_logged_in_url(final_url)
             or apify_logged_in
             or profile_submitted
             or email_verification_required
@@ -667,7 +666,7 @@ def _wait_for_apify_post_submit_state(page: CdpPage, timeout: float = 15) -> Non
                 or _has_captcha(page)
                 or _is_email_verification_page(page)
                 or bool(page.evaluate(_welcome_profile_present_script(), timeout=3))
-                or _looks_logged_in_url(_current_url(page))
+                or _is_apify_logged_in(page)
             ):
                 return
         except Exception as e:  # noqa: BLE001
@@ -696,7 +695,7 @@ def _wait_for_human_verification_result(
             email_already_taken = _has_email_already_taken_error(page)
             email_verification_required = _is_email_verification_page(page)
             welcome_profile_present = bool(page.evaluate(_welcome_profile_present_script(), timeout=3))
-            logged_in = _looks_logged_in_url(_current_url(page))
+            logged_in = _is_apify_logged_in(page)
             captcha_required = _has_captcha(page)
             last_state = {
                 "captcha_required": captcha_required,
@@ -742,7 +741,7 @@ def _wait_for_apify_email_verified(page: CdpPage, timeout: float = 30) -> bool:
     while time.monotonic() < deadline:
         try:
             text = str(page.evaluate("document.body ? document.body.innerText : ''", timeout=5) or "")
-            if "Email verified" in text or _looks_logged_in_url(_current_url(page)):
+            if "Email verified" in text or _is_apify_logged_in(page):
                 return True
         except Exception as e:  # noqa: BLE001
             logger.debug("[Apify signup] wait email verified skipped: {}", e)
@@ -779,6 +778,33 @@ def _looks_logged_in_url(url: str) -> bool:
     return "console.apify.com" in url and "/sign-up" not in url and "/log-in" not in url
 
 
+def _has_apify_auth_form(page: CdpPage) -> bool:
+    return bool(
+        page.evaluate(
+            """
+(() => {
+  const form = document.querySelector('[data-test="sign-in-form"],[data-test="sign-up-form"]');
+  if (form) return true;
+  const text = document.body ? document.body.innerText : '';
+  return /Log\\s+in\\s+to\\s+Apify|Sign\\s+up\\s+for\\s+Apify|Welcome\\s+back/i.test(text);
+})()
+""",
+            timeout=5,
+        )
+    )
+
+
+def _is_apify_logged_in(page: CdpPage) -> bool:
+    final_url = _current_url(page)
+    if not _looks_logged_in_url(final_url):
+        return False
+    try:
+        return not _has_apify_auth_form(page)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] logged-in DOM check skipped: {}", e)
+        return False
+
+
 def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> dict[str, object]:
     login_link_clicked = _click_login_link_if_present(page)
     if login_link_clicked:
@@ -795,10 +821,11 @@ def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> d
     if password_submitted:
         _wait_for_login_result(page)
     final_url = _current_url(page)
+    logged_in = _is_apify_logged_in(page)
     return {
         "email_submitted": email_submitted,
         "password_submitted": password_submitted,
-        "logged_in": _looks_logged_in_url(final_url),
+        "logged_in": logged_in,
         "captcha_required": _has_captcha(page),
         "final_url": final_url,
         "login_link_clicked": login_link_clicked,
@@ -828,7 +855,7 @@ def _wait_for_login_result(page: CdpPage, timeout: float = 20) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            if _looks_logged_in_url(_current_url(page)) or _is_email_verification_page(page) or _has_captcha(page):
+            if _is_apify_logged_in(page) or _is_email_verification_page(page) or _has_captcha(page):
                 return
         except Exception as e:  # noqa: BLE001
             logger.debug("[Apify signup] wait login result skipped: {}", e)
@@ -1049,8 +1076,9 @@ def _fill_password_and_signup_script(password: str) -> str:
 def _fill_login_email_script(email: str) -> str:
     email_json = json.dumps(email)
     return f"""
-(() => {{
+(async () => {{
   const email = {email_json};
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const visible = (el) => {{
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
@@ -1058,14 +1086,14 @@ def _fill_login_email_script(email: str) -> str:
   }};
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
   const setValue = (input, value) => {{
-    const proto = Object.getPrototypeOf(input);
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
     if (desc && desc.set) desc.set.call(input, value);
     else input.value = value;
-    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: value, inputType: 'insertText' }}));
     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
   }};
-  const input = Array.from(document.querySelectorAll('input'))
+  const form = document.querySelector('[data-test="sign-in-form"]') || document;
+  const input = Array.from(form.querySelectorAll('input'))
     .filter(visible)
     .find((el) => {{
       const hint = `${{el.type}} ${{el.name}} ${{el.placeholder}} ${{el.autocomplete}}`;
@@ -1074,12 +1102,21 @@ def _fill_login_email_script(email: str) -> str:
   if (!input) return false;
   input.focus();
   setValue(input, email);
-  const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
-  const button = buttons.find((el) => /^(continue|next|log in|sign in)$/i.test(textOf(el)))
+  input.blur();
+  input.focus();
+  for (let i = 0; i < 20; i += 1) {{
+    const buttons = Array.from(form.querySelectorAll('button,[role="button"]'))
+      .filter(visible)
+      .filter((el) => !/google|github/i.test(textOf(el)));
+    const button = buttons.find((el) => /^(continue|next|log in|sign in)$/i.test(textOf(el)))
     || buttons.find((el) => /continue|next|log in|sign in/i.test(textOf(el)));
-  if (!button) return false;
-  setTimeout(() => button.click(), 150);
-  return true;
+    if (button && !button.disabled && button.getAttribute('aria-disabled') !== 'true') {{
+      button.click();
+      return true;
+    }}
+    await sleep(250);
+  }}
+  return false;
 }})()
 """
 
@@ -1087,8 +1124,9 @@ def _fill_login_email_script(email: str) -> str:
 def _fill_login_password_script(password: str) -> str:
     password_json = json.dumps(password)
     return f"""
-(() => {{
+(async () => {{
   const password = {password_json};
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const visible = (el) => {{
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
@@ -1096,25 +1134,34 @@ def _fill_login_password_script(password: str) -> str:
   }};
   const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
   const setValue = (input, value) => {{
-    const proto = Object.getPrototypeOf(input);
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
     if (desc && desc.set) desc.set.call(input, value);
     else input.value = value;
-    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: value, inputType: 'insertText' }}));
     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
   }};
-  const input = Array.from(document.querySelectorAll('input[type="password"]'))
+  const form = document.querySelector('[data-test="sign-in-form"]') || document;
+  const input = Array.from(form.querySelectorAll('input[type="password"]'))
     .filter(visible)
     .find((el) => !el.disabled && !el.readOnly);
   if (!input) return false;
   input.focus();
   setValue(input, password);
-  const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
-  const button = buttons.find((el) => /^(log in|sign in|continue)$/i.test(textOf(el)))
+  input.blur();
+  input.focus();
+  for (let i = 0; i < 20; i += 1) {{
+    const buttons = Array.from(form.querySelectorAll('button,[role="button"]'))
+      .filter(visible)
+      .filter((el) => !/google|github/i.test(textOf(el)));
+    const button = buttons.find((el) => /^(log in|sign in|continue)$/i.test(textOf(el)))
     || buttons.find((el) => /log in|sign in|continue/i.test(textOf(el)));
-  if (!button) return false;
-  setTimeout(() => button.click(), 250);
-  return true;
+    if (button && !button.disabled && button.getAttribute('aria-disabled') !== 'true') {{
+      button.click();
+      return true;
+    }}
+    await sleep(250);
+  }}
+  return false;
 }})()
 """
 

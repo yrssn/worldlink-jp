@@ -447,6 +447,23 @@ def get_latest_apify_signup_task(
     )
 
 
+@router.get("/apify-signup/tasks", response_model=list[ApifySignupTaskOut])
+def list_apify_signup_tasks(
+    account_id: int | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    query = db.query(ApifySignupTask).filter(ApifySignupTask.owner_id == user.id)
+    if account_id:
+        query = query.filter(ApifySignupTask.email_account_id == account_id)
+    if status:
+        query = query.filter(ApifySignupTask.status == status)
+    safe_limit = max(1, min(limit, 200))
+    return query.order_by(ApifySignupTask.id.desc()).limit(safe_limit).all()
+
+
 @router.get("/apify-signup/tasks/{task_id}", response_model=ApifySignupTaskOut)
 def get_apify_signup_task(
     task_id: int,
