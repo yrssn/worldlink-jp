@@ -125,13 +125,13 @@ export const emailAccountApi = {
     http.post<unknown, ApifySignupStartResult>(
       `/email/accounts/${id}/apify-signup/start`,
       {},
-      { timeout: 420000 }
+      { timeout: 900000 }
     ),
   continueApifySignup: (id: number) =>
     http.post<unknown, ApifySignupStartResult>(
       `/email/accounts/${id}/apify-signup/continue`,
       {},
-      { timeout: 420000 }
+      { timeout: 900000 }
     ),
   startZohoMailLogin: (id: number) =>
     http.post<unknown, ZohoMailLoginResult>(
