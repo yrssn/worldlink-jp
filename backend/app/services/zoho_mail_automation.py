@@ -50,6 +50,7 @@ def open_zoho_mail_login(
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
+        page.call("Page.bringToFront")
         page.call("Page.navigate", {"url": target_url})
         _wait_page_ready(page)
         time.sleep(1)
@@ -241,13 +242,16 @@ def _submit_zoho_password(page: CdpPage, password: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
         if _wait_for_password_input(page, timeout=2):
+            page.call("Page.bringToFront")
             focused = bool(page.evaluate(_focus_zoho_password_script(), timeout=5))
             submitted = False
             if focused:
-                page.call("Input.insertText", {"text": password}, timeout=5)
+                _type_text(page, password)
                 submitted = bool(page.evaluate(_click_zoho_password_submit_script(), timeout=5))
                 if submitted:
                     _press_enter(page)
+            if not submitted:
+                submitted = bool(page.evaluate(_force_submit_zoho_password_script(password), timeout=8))
             if not submitted:
                 submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
             if submitted:
@@ -255,6 +259,19 @@ def _submit_zoho_password(page: CdpPage, password: str) -> bool:
                 return True
         time.sleep(0.5)
     return False
+
+
+def _type_text(page: CdpPage, text: str) -> None:
+    page.call("Input.insertText", {"text": text}, timeout=5)
+    filled = page.evaluate(
+        "(() => { const el = document.querySelector('#password') || document.activeElement; "
+        "return Boolean(el && el.value); })()",
+        timeout=5,
+    )
+    if bool(filled):
+        return
+    for char in text:
+        page.call("Input.dispatchKeyEvent", {"type": "char", "text": char, "unmodifiedText": char}, timeout=5)
 
 
 def _press_enter(page: CdpPage) -> None:
@@ -432,6 +449,53 @@ def _fill_zoho_password_script(password: str) -> str:
   button.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
   button.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
   setTimeout(() => button.click(), 150);
+  return true;
+}})()
+"""
+
+
+def _force_submit_zoho_password_script(password: str) -> str:
+    password_json = json.dumps(password)
+    return f"""
+(() => {{
+  const password = {password_json};
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  }};
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const input = document.querySelector('#password')
+    || document.querySelector('input[name="PASSWORD"]')
+    || document.querySelector('input[name="password"]')
+    || Array.from(document.querySelectorAll('input[type="password"]')).find(visible);
+  if (!input) return false;
+  input.focus();
+  input.value = '';
+  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  if (desc && desc.set) desc.set.call(input, password);
+  else input.value = password;
+  input.setAttribute('value', password);
+  input.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, inputType: 'insertText', data: password }}));
+  input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: password }}));
+  input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  input.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: password.slice(-1) || 'a' }}));
+  input.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: password.slice(-1) || 'a' }}));
+  if (input.value !== password) return false;
+  const buttons = Array.from(document.querySelectorAll('#nextbtn,#login,#signin,button,input[type="button"],input[type="submit"],[role="button"],.btn,.button')).filter(visible);
+  const button = document.querySelector('#nextbtn')
+    || buttons.find((el) => /^(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)$/i.test(textOf(el) || el.value || ''))
+    || buttons.find((el) => /(サインインする|サインイン|ログイン|Sign\\s*in|Log\\s*in|Next|次へ)/i.test(textOf(el) || el.value || ''));
+  if (button) {{
+    button.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }}));
+    button.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true }}));
+    button.click();
+    return true;
+  }}
+  const form = input.closest('form') || document.querySelector('form#login') || document.querySelector('form');
+  if (!form) return false;
+  if (form.requestSubmit) form.requestSubmit();
+  else form.submit();
   return true;
 }})()
 """
