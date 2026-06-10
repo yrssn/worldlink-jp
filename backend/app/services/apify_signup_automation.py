@@ -288,6 +288,7 @@ def start_apify_signup(
             page.call("Runtime.enable")
             page.call("Page.bringToFront")
             if email_verified:
+                _refresh_apify_after_email_verification(page)
                 _wait_for_apify_email_verified(page)
             token_result = _collect_apify_token_from_settings(page)
             if token_result.get("apify_token"):
@@ -512,6 +513,7 @@ def continue_apify_signup(
             page.call("Runtime.enable")
             page.call("Page.bringToFront")
             if email_verified:
+                _refresh_apify_after_email_verification(page)
                 _wait_for_apify_email_verified(page)
             token_result = _collect_apify_token_from_settings(page)
             if token_result.get("apify_token"):
@@ -882,7 +884,7 @@ def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> d
     if password_submitted:
         _wait_for_login_result(page)
     final_url = _current_url(page)
-    email_verification_required = bool(email_submitted and password_submitted and _is_email_verification_page(page))
+    email_verification_required = _is_email_verification_page(page)
     logged_in = bool(email_submitted and password_submitted and _is_apify_logged_in(page))
     return {
         "email_submitted": email_submitted,
@@ -894,6 +896,14 @@ def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> d
         "login_url": login_url,
         "page_not_found": _is_apify_page_not_found(page),
     }
+
+
+def _refresh_apify_after_email_verification(page: CdpPage) -> None:
+    if not _is_email_verification_page(page):
+        return
+    page.call("Page.reload", {"ignoreCache": True}, timeout=8)
+    _wait_page_ready(page)
+    time.sleep(2)
 
 
 def _open_apify_login_page(page: CdpPage, login_href: str | None) -> str | None:
