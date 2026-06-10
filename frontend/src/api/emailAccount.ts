@@ -54,6 +54,23 @@ export interface ApifySignupStartResult {
   password_submitted: boolean
   profile_submitted: boolean
   captcha_required: boolean
+  email_verification_required: boolean
+  email_verified: boolean
+  apify_mail_inbox_ready: boolean
+  apify_mail_opened: boolean
+  apify_verification_link_clicked: boolean
+  apify_token_collected: boolean
+  apify_key_created: boolean
+  apify_key_id?: number | null
+  apify_key_is_default: boolean
+  apify_full_name?: string | null
+  apify_username?: string | null
+  apify_user_id?: string | null
+  apify_token?: string | null
+  apify_registered_at?: string | null
+  apify_mail_final_url?: string | null
+  apify_mail_hint?: string | null
+  apify_settings_final_url?: string | null
   open_hint?: string | null
 }
 
@@ -111,7 +128,7 @@ export const emailAccountApi = {
     http.post<unknown, ApifySignupStartResult>(
       `/email/accounts/${id}/apify-signup/continue`,
       {},
-      { timeout: 60000 }
+      { timeout: 420000 }
     ),
   startZohoMailLogin: (id: number) =>
     http.post<unknown, ZohoMailLoginResult>(

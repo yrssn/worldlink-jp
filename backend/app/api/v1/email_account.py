@@ -224,7 +224,34 @@ def continue_email_apify_signup(
     if linked:
         raise HTTPException(status_code=400, detail="该邮箱已关联 Apify Key，无需重复注册")
     try:
-        result = continue_apify_signup(row.browser_id, row.email, user, db)
+        result = continue_apify_signup(
+            row.browser_id,
+            row.email,
+            user,
+            db,
+            email_password,
+            row.mail_login_url,
+        )
+        token = result.get("apify_token")
+        if isinstance(token, str) and token.strip():
+            has_default = db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).first() is not None
+            key = ApifyKey(
+                label=f"{row.email} Apify",
+                token=token.strip(),
+                is_default=not has_default,
+                remark="邮箱管理自动注册采集",
+                email_account_id=row.id,
+                apify_full_name=_clean_text(str(result.get("apify_full_name") or "")),
+                apify_username=_clean_text(str(result.get("apify_username") or "")),
+                apify_user_id=_clean_text(str(result.get("apify_user_id") or "")),
+                apify_registered_at=result.get("apify_registered_at"),
+            )
+            db.add(key)
+            db.commit()
+            db.refresh(key)
+            result["apify_key_created"] = True
+            result["apify_key_id"] = key.id
+            result["apify_key_is_default"] = key.is_default
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

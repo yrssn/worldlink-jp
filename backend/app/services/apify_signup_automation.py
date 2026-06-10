@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from itertools import count
 from urllib.parse import quote, urlparse
 
@@ -13,8 +14,10 @@ from websockets.sync.client import connect
 
 from app.models.user import User
 from app.services import bitbrowser_service
+from app.services.zoho_mail_automation import open_latest_apify_verification_link
 
 SIGNUP_URL = "https://console.apify.com/sign-up"
+SETTINGS_INTEGRATIONS_URL = "https://console.apify.com/settings/integrations"
 
 
 class CdpPage:
@@ -197,11 +200,23 @@ def _profile_name_from_email(email: str) -> str:
 
 
 def _complete_welcome_profile(page: CdpPage, email: str) -> bool:
+    return bool(_complete_welcome_profile_details(page, email).get("submitted"))
+
+
+def _complete_welcome_profile_details(page: CdpPage, email: str) -> dict[str, object]:
     display_name = _profile_name_from_email(email)
-    submitted = bool(page.evaluate(_fill_welcome_profile_script(display_name), timeout=8))
+    result = page.evaluate(_fill_welcome_profile_script(display_name), timeout=8)
+    details: dict[str, object]
+    if isinstance(result, dict):
+        details = result
+    else:
+        details = {"submitted": bool(result), "full_name": display_name, "username": None}
+    submitted = bool(details.get("submitted"))
     if submitted:
         time.sleep(2)
-    return submitted
+    if not details.get("full_name"):
+        details["full_name"] = display_name
+    return details
 
 
 def _wait_after_profile_continue(page: CdpPage, timeout: float = 10) -> None:
@@ -220,6 +235,8 @@ def continue_apify_signup(
     email: str,
     user: User,
     db: Session,
+    email_password: str | None = None,
+    mail_login_url: str | None = None,
 ) -> dict[str, object]:
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
@@ -234,6 +251,12 @@ def continue_apify_signup(
 
     http_base = _extract_devtools_http(open_data)
     page_ws = _find_apify_page(http_base) or _create_page(http_base, SIGNUP_URL)
+    profile_details: dict[str, object] = {
+        "submitted": False,
+        "full_name": _profile_name_from_email(email),
+        "username": None,
+    }
+    email_verification_required = False
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Network.enable")
@@ -244,12 +267,48 @@ def continue_apify_signup(
         captcha_required = _has_captcha(page)
         profile_submitted = False
         if not captcha_required:
-            profile_submitted = _complete_welcome_profile(page, email)
+            profile_details = _complete_welcome_profile_details(page, email)
+            profile_submitted = bool(profile_details.get("submitted"))
             if profile_submitted:
                 _wait_after_profile_continue(page)
+            email_verification_required = _is_email_verification_page(page)
         signed_in = _looks_logged_in_url(first_url)
         final_url = _current_url(page)
-        ready = (signed_in or _looks_logged_in_url(final_url) or profile_submitted) and not captcha_required
+        ready = (
+            signed_in
+            or _looks_logged_in_url(final_url)
+            or profile_submitted
+            or email_verification_required
+        ) and not captcha_required
+
+    mail_result: dict[str, object] = {}
+    email_verified = False
+    token_result: dict[str, object] = {}
+    should_open_mail = email_verification_required and bool(email_password)
+    if should_open_mail:
+        mail_result = open_latest_apify_verification_link(
+            browser_id,
+            mail_login_url,
+            email,
+            str(email_password),
+            user,
+            db,
+        )
+        email_verified = bool(mail_result.get("apify_verification_link_clicked"))
+
+    if not captcha_required and (ready or email_verified):
+        refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
+        with CdpPage(refreshed_ws) as page:
+            page.call("Page.enable")
+            page.call("Network.enable")
+            page.call("Runtime.enable")
+            page.call("Page.bringToFront")
+            if email_verified:
+                _wait_for_apify_email_verified(page)
+            token_result = _collect_apify_token_from_settings(page)
+            if token_result.get("apify_token"):
+                ready = True
+                final_url = str(token_result.get("final_url") or final_url)
 
     return {
         "ok": True,
@@ -269,6 +328,16 @@ def continue_apify_signup(
         "password_submitted": ready,
         "profile_submitted": profile_submitted,
         "captcha_required": captcha_required,
+        "email_verification_required": email_verification_required,
+        "email_verified": email_verified,
+        "apify_full_name": profile_details.get("full_name"),
+        "apify_username": profile_details.get("username"),
+        "apify_user_id": token_result.get("apify_user_id"),
+        "apify_token": token_result.get("apify_token"),
+        "apify_token_collected": bool(token_result.get("apify_token")),
+        "apify_registered_at": token_result.get("apify_registered_at"),
+        "apify_settings_final_url": token_result.get("final_url"),
+        **mail_result,
         "open_hint": open_result.get("hint"),
     }
 
@@ -363,6 +432,58 @@ def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
 def _current_url(page: CdpPage) -> str:
     value = page.evaluate("location.href", timeout=5)
     return str(value or "")
+
+
+def _is_email_verification_page(page: CdpPage) -> bool:
+    return bool(
+        page.evaluate(
+            """
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return /Check your email|Confirm your email address|verification email/i.test(text);
+})()
+""",
+            timeout=5,
+        )
+    )
+
+
+def _wait_for_apify_email_verified(page: CdpPage, timeout: float = 30) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            text = str(page.evaluate("document.body ? document.body.innerText : ''", timeout=5) or "")
+            if "Email verified" in text or _looks_logged_in_url(_current_url(page)):
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] wait email verified skipped: {}", e)
+        time.sleep(1)
+    return False
+
+
+def _collect_apify_token_from_settings(page: CdpPage) -> dict[str, object]:
+    page.call("Page.navigate", {"url": SETTINGS_INTEGRATIONS_URL}, timeout=8)
+    _wait_page_ready(page)
+    time.sleep(2)
+    last_info: dict[str, object] = {}
+    for _ in range(15):
+        try:
+            page.evaluate(_reveal_apify_token_script(), timeout=5)
+            time.sleep(0.5)
+            info = page.evaluate(_read_apify_settings_info_script(), timeout=8)
+            if isinstance(info, dict):
+                last_info = info
+                if info.get("apify_token"):
+                    break
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] collect token skipped: {}", e)
+        time.sleep(1)
+    return {
+        "apify_token": last_info.get("apify_token"),
+        "apify_user_id": last_info.get("apify_user_id"),
+        "apify_registered_at": datetime.utcnow(),
+        "final_url": last_info.get("final_url") or _current_url(page),
+    }
 
 
 def _looks_logged_in_url(url: str) -> bool:
@@ -659,6 +780,51 @@ def _welcome_profile_present_script() -> str:
 """
 
 
+def _reveal_apify_token_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
+  const inputs = Array.from(document.querySelectorAll('input,textarea')).filter(visible);
+  const masked = inputs.find((el) => /^\\*{8,}$/.test(el.value || '') || el.type === 'password');
+  if (!masked) return false;
+  let cur = masked.parentElement;
+  for (let i = 0; cur && i < 5; i += 1, cur = cur.parentElement) {
+    const buttons = Array.from(cur.querySelectorAll('button,[role="button"]')).filter(visible)
+      .filter((el) => !/Create a new token|Delete|新規|削除/i.test(textOf(el)));
+    if (buttons.length) {
+      buttons[0].click();
+      return true;
+    }
+  }
+  return false;
+})()
+"""
+
+
+def _read_apify_settings_info_script() -> str:
+    return """
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const values = Array.from(document.querySelectorAll('input,textarea'))
+    .map((el) => el.value || '')
+    .filter(Boolean);
+  const joined = `${text}\\n${values.join('\\n')}`;
+  const tokenMatch = joined.match(/apify_api_[A-Za-z0-9_-]+/);
+  const userIdMatch = joined.match(/Apify\\s+user\\s+ID\\s*:?\\s*([A-Za-z0-9_-]+)/i);
+  return {
+    apify_token: tokenMatch ? tokenMatch[0] : null,
+    apify_user_id: userIdMatch ? userIdMatch[1] : null,
+    final_url: location.href,
+  };
+})()
+"""
+
+
 def _fill_welcome_profile_script(display_name: str) -> str:
     display_name_json = json.dumps(display_name)
     return f"""
@@ -688,11 +854,13 @@ def _fill_welcome_profile_script(display_name: str) -> str:
   if (!fullNameInput) return false;
   fullNameInput.focus();
   setValue(fullNameInput, displayName);
+  const usernameInput = inputs.find((el) => /username/i.test(`${{el.id}} ${{el.name}} ${{el.placeholder}}`));
+  const username = usernameInput ? usernameInput.value : '';
   const buttons = Array.from(document.querySelectorAll('button,[role="button"]')).filter(visible);
   const button = buttons.find((el) => /^continue$/i.test(textOf(el))) || buttons.find((el) => /continue/i.test(textOf(el)));
   if (!button) return false;
   setTimeout(() => button.click(), 700);
-  return true;
+  return {{ submitted: true, full_name: displayName, username }};
 }})()
 """
 
