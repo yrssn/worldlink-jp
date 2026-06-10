@@ -16,6 +16,7 @@ const editingId = ref<number | null>(null)
 const submitting = ref(false)
 const apifySignupId = ref<number | null>(null)
 const apifyContinueId = ref<number | null>(null)
+const mailLoginId = ref<number | null>(null)
 const showSecret = ref<Record<string, boolean>>({})
 const browserOptions = ref<BitBrowserCatalogRow[]>([])
 const apifyKeys = ref<ApifyKey[]>([])
@@ -146,6 +147,10 @@ function canContinueApifySignup(row: EmailAccount) {
   return !linkedApifyKey(row.id) && !!row.browser_id
 }
 
+function canStartMailLogin(row: EmailAccount) {
+  return !!row.browser_id && !!row.email_password
+}
+
 async function openCreate() {
   resetForm()
   await loadBrowserOptions()
@@ -256,6 +261,34 @@ async function handleContinueApifySignup(row: EmailAccount) {
     /* 拦截器已提示 */
   } finally {
     apifyContinueId.value = null
+  }
+}
+
+async function handleStartMailLogin(row: EmailAccount) {
+  if (!row.browser_id) {
+    ElMessage.warning('请先为该邮箱选择指纹浏览器')
+    return
+  }
+  if (!row.email_password) {
+    ElMessage.warning('请先为该邮箱填写邮箱密码')
+    return
+  }
+  mailLoginId.value = row.id
+  try {
+    const result = await emailAccountApi.startZohoMailLogin(row.id)
+    if (result.mail_password_submitted) {
+      ElMessage.success('已打开 Zoho 登录页，并已填写邮箱账号和密码登录')
+    } else if (result.mail_email_submitted) {
+      ElMessage.warning('已填写 Zoho 邮箱账号，但密码步骤未完成，请查看指纹浏览器窗口')
+    } else if (result.mail_opened) {
+      ElMessage.warning('已打开 Zoho 登录页，但未完成账号填写，请查看指纹浏览器窗口')
+    } else {
+      ElMessage.warning('未完成 Zoho 邮箱登录，请查看指纹浏览器窗口')
+    }
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    mailLoginId.value = null
   }
 }
 
@@ -419,8 +452,15 @@ onMounted(() => {
       <el-table-column label="记录创建时间" width="170" align="center">
         <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="380" fixed="right" align="center">
+      <el-table-column label="操作" width="450" fixed="right" align="center">
         <template #default="{ row }">
+          <el-button
+            size="small"
+            type="primary"
+            :loading="mailLoginId === row.id"
+            :disabled="!canStartMailLogin(row)"
+            @click="handleStartMailLogin(row)"
+          >邮箱登录</el-button>
           <el-button
             size="small"
             type="success"

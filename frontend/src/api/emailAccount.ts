@@ -64,6 +64,18 @@ export interface ApifySignupStartResult {
   mail_open_hint?: string | null
 }
 
+export interface ZohoMailLoginResult {
+  ok: boolean
+  browser_id: string
+  mail_opened: boolean
+  mail_login_url?: string | null
+  mail_final_url?: string | null
+  mail_closed_tab_count: number
+  mail_email_submitted: boolean
+  mail_password_submitted: boolean
+  mail_open_hint?: string | null
+}
+
 export const emailAccountApi = {
   list: (params?: { q?: string; purpose?: string; status?: string }) =>
     http.get<unknown, EmailAccount[]>('/email/accounts', { params }),
@@ -80,6 +92,12 @@ export const emailAccountApi = {
   continueApifySignup: (id: number) =>
     http.post<unknown, ApifySignupStartResult>(
       `/email/accounts/${id}/apify-signup/continue`,
+      {},
+      { timeout: 60000 }
+    ),
+  startZohoMailLogin: (id: number) =>
+    http.post<unknown, ZohoMailLoginResult>(
+      `/email/accounts/${id}/mail-login/zoho`,
       {},
       { timeout: 60000 }
     )

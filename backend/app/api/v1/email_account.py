@@ -15,6 +15,7 @@ from app.schemas.email_account import (
     EmailAccountCreate,
     EmailAccountOut,
     EmailAccountUpdate,
+    ZohoMailLoginOut,
 )
 from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
 from app.services.zoho_mail_automation import normalize_zoho_login_url, open_zoho_mail_login
@@ -200,6 +201,42 @@ def continue_email_apify_signup(
     try:
         result = continue_apify_signup(row.browser_id, row.email, user, db)
         return _open_mail_after_apify_if_ready(result, row, email_password, user, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.post("/{account_id}/mail-login/zoho", response_model=ZohoMailLoginOut)
+def start_email_zoho_mail_login(
+    account_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="邮箱账号不存在")
+    if not row.browser_id:
+        raise HTTPException(status_code=400, detail="请先为该邮箱选择指纹浏览器")
+    email_password = decrypt_secret(row.email_password)
+    if not email_password:
+        raise HTTPException(status_code=400, detail="请先为该邮箱填写邮箱密码")
+    try:
+        result = open_zoho_mail_login(
+            row.browser_id,
+            row.mail_login_url,
+            row.email,
+            email_password,
+            user,
+            db,
+        )
+        return {"ok": True, "browser_id": row.browser_id, **result}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:

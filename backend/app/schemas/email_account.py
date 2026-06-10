@@ -86,3 +86,15 @@ class ApifySignupStartOut(BaseModel):
     mail_password_submitted: bool = False
     open_hint: Optional[str] = None
     mail_open_hint: Optional[str] = None
+
+
+class ZohoMailLoginOut(BaseModel):
+    ok: bool = True
+    browser_id: str
+    mail_opened: bool = False
+    mail_login_url: Optional[str] = None
+    mail_final_url: Optional[str] = None
+    mail_closed_tab_count: int = 0
+    mail_email_submitted: bool = False
+    mail_password_submitted: bool = False
+    mail_open_hint: Optional[str] = None
