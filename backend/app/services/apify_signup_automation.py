@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from itertools import count
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from loguru import logger
@@ -19,6 +19,7 @@ from app.services.zoho_mail_automation import open_latest_apify_verification_lin
 
 SIGNUP_URL = "https://console.apify.com/sign-up"
 LOGIN_URL = "https://console.apify.com/log-in"
+SIGNIN_URL = "https://console.apify.com/sign-in"
 SETTINGS_INTEGRATIONS_URL = "https://console.apify.com/settings/integrations"
 HUMAN_VERIFICATION_TIMEOUT = 600
 ProgressCallback = Callable[[str, str], None]
@@ -325,11 +326,14 @@ def start_apify_signup(
         "apify_logged_in": apify_logged_in,
         "apify_login_email_submitted": bool(login_result.get("email_submitted")),
         "apify_login_password_submitted": bool(login_result.get("password_submitted")),
+        "apify_login_page_not_found": bool(login_result.get("page_not_found")),
+        "apify_login_url": login_result.get("login_url"),
         "apify_full_name": profile_details.get("full_name"),
         "apify_username": profile_details.get("username"),
         "apify_user_id": token_result.get("apify_user_id"),
         "apify_token": token_result.get("apify_token"),
         "apify_token_collected": bool(token_result.get("apify_token")),
+        "apify_token_collection_attempted": can_collect_token,
         "apify_registered_at": token_result.get("apify_registered_at"),
         "apify_settings_final_url": token_result.get("final_url"),
         **mail_result,
@@ -546,11 +550,14 @@ def continue_apify_signup(
         "apify_logged_in": apify_logged_in,
         "apify_login_email_submitted": bool(login_result.get("email_submitted")),
         "apify_login_password_submitted": bool(login_result.get("password_submitted")),
+        "apify_login_page_not_found": bool(login_result.get("page_not_found")),
+        "apify_login_url": login_result.get("login_url"),
         "apify_full_name": profile_details.get("full_name"),
         "apify_username": profile_details.get("username"),
         "apify_user_id": token_result.get("apify_user_id"),
         "apify_token": token_result.get("apify_token"),
         "apify_token_collected": bool(token_result.get("apify_token")),
+        "apify_token_collection_attempted": can_collect_token,
         "apify_registered_at": token_result.get("apify_registered_at"),
         "apify_settings_final_url": token_result.get("final_url"),
         **mail_result,
@@ -796,7 +803,34 @@ def _collect_apify_token_from_settings(page: CdpPage) -> dict[str, object]:
 
 
 def _looks_logged_in_url(url: str) -> bool:
-    return "console.apify.com" in url and "/sign-up" not in url and "/log-in" not in url
+    lowered = url.lower()
+    return (
+        "console.apify.com" in lowered
+        and "/sign-up" not in lowered
+        and "/log-in" not in lowered
+        and "/sign-in" not in lowered
+        and "/login" not in lowered
+        and "/page-not-found" not in lowered
+    )
+
+
+def _is_apify_page_not_found(page: CdpPage) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """
+(() => {
+  const href = location.href;
+  const text = document.body ? document.body.innerText : '';
+  return href.includes('/page-not-found') || /Houston,\\s+we\\s+have\\s+a\\s+problem|page you.*wasn't found/i.test(text);
+})()
+""",
+                timeout=5,
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] page-not-found check skipped: {}", e)
+        return False
 
 
 def _has_apify_auth_form(page: CdpPage) -> bool:
@@ -827,9 +861,20 @@ def _is_apify_logged_in(page: CdpPage) -> bool:
 
 
 def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> dict[str, object]:
-    page.call("Page.navigate", {"url": LOGIN_URL}, timeout=8)
-    _wait_page_ready(page)
-    time.sleep(1)
+    login_href = _read_login_link_href(page)
+    login_url = _open_apify_login_page(page, login_href)
+    if not _is_login_page(page):
+        final_url = _current_url(page)
+        return {
+            "email_submitted": False,
+            "password_submitted": False,
+            "logged_in": False,
+            "email_verification_required": False,
+            "captcha_required": _has_captcha(page),
+            "final_url": final_url,
+            "login_url": login_url,
+            "page_not_found": _is_apify_page_not_found(page),
+        }
     email_submitted = bool(page.evaluate(_fill_login_email_script(email), timeout=8))
     if email_submitted:
         _wait_for_password_step(page)
@@ -846,12 +891,36 @@ def _login_existing_apify_account(page: CdpPage, email: str, password: str) -> d
         "email_verification_required": email_verification_required,
         "captcha_required": _has_captcha(page),
         "final_url": final_url,
-        "login_link_clicked": False,
+        "login_url": login_url,
+        "page_not_found": _is_apify_page_not_found(page),
     }
 
 
-def _click_login_link_if_present(page: CdpPage) -> bool:
-    return _click_point_from_script(page, _login_link_point_script())
+def _open_apify_login_page(page: CdpPage, login_href: str | None) -> str | None:
+    candidates: list[str] = []
+    if login_href:
+        candidates.append(urljoin("https://console.apify.com", login_href))
+    candidates.extend([LOGIN_URL, SIGNIN_URL])
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        page.call("Page.navigate", {"url": candidate}, timeout=8)
+        _wait_page_ready(page)
+        time.sleep(1)
+        if _is_login_page(page) and not _is_apify_page_not_found(page):
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _read_login_link_href(page: CdpPage) -> str | None:
+    try:
+        href = page.evaluate(_login_link_href_script(), timeout=5)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] read login href skipped: {}", e)
+        return None
+    return str(href).strip() if href else None
 
 
 def _is_login_page(page: CdpPage) -> bool:
@@ -860,8 +929,10 @@ def _is_login_page(page: CdpPage) -> bool:
             """
 (() => {
   const href = location.href;
+  if (href.includes('/page-not-found')) return false;
+  if (document.querySelector('[data-test="sign-in-form"]')) return true;
   const text = document.body ? document.body.innerText : '';
-  return href.includes('/log-in') || /Log\\s+in\\s+to\\s+Apify|Welcome\\s+back/i.test(text);
+  return href.includes('/log-in') || href.includes('/sign-in') || /Log\\s+in\\s+to\\s+Apify|Welcome\\s+back/i.test(text);
 })()
 """,
             timeout=5,
@@ -1181,6 +1252,29 @@ def _fill_login_password_script(password: str) -> str:
   }}
   return false;
 }})()
+"""
+
+
+def _login_link_href_script() -> str:
+    return """
+(() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const nodes = Array.from(document.querySelectorAll('a,button,[role="button"],[tabindex],div,span'))
+    .filter(visible)
+    .filter((el) => /^log\\s*in$/i.test(textOf(el)) || /already\\s+have\\s+an\\s+account.*log\\s*in/i.test(textOf(el)));
+  const target = nodes.find((el) => !/google|github/i.test(textOf(el)));
+  const clickable = target ? (target.closest('a,button,[role="button"],[tabindex]') || target) : null;
+  if (!clickable) return null;
+  const href = clickable.getAttribute && clickable.getAttribute('href');
+  if (href) return href;
+  const anchor = clickable.closest && clickable.closest('a[href]');
+  return anchor ? anchor.getAttribute('href') : null;
+})()
 """
 
 
