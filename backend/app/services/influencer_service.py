@@ -17,6 +17,7 @@ from typing import Any, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.models.fb_group_scrape import FbGroupPost
 from app.models.influencer import Influencer, InfluencerSource
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
@@ -219,3 +220,70 @@ def _attach_posts(
         {Post.influencer_id: influencer_id}, synchronize_session=False
     )
     db.commit()
+
+
+def create_from_group_post(
+    db: Session,
+    owner_id: int,
+    post: FbGroupPost,
+    page_profile: Optional[dict[str, Any]] = None,
+    profile_url: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> tuple[Influencer, bool]:
+    """从 Facebook 群组帖子的【预建联】入库。
+
+    - 优先用 page_profile（facebook-pages-scraper 抓回来的完整资料）映射字段；
+    - profile 缺失字段用帖子里的 user_name / user_id / 主页 URL 兜底；
+    - 入库前按 fb_page_id / fb_page_url / email 去重，命中则直接复用已有达人；
+    - 把该帖子的 influencer_id 关联过去。
+
+    返回 (influencer, created)，created 为 True 表示新建，False 表示命中已有。
+    """
+    profile_data: dict[str, Any] = {}
+    if page_profile:
+        profile_data.update(_map_page_profile(page_profile))
+
+    # 帖子兜底：群组帖子里的作者就是个人主页，用其作为最低限度的资料
+    profile_data.setdefault("display_name", post.user_name or "Unknown")
+    if profile_url:
+        profile_data.setdefault("fb_page_url", profile_url)
+    if post.user_id:
+        profile_data.setdefault("fb_page_id", str(post.user_id))
+    profile_data.setdefault("display_name", "Unknown")
+
+    profile_data["source"] = InfluencerSource.scrape
+    profile_data["owner_id"] = owner_id
+    if notes:
+        profile_data["notes"] = notes
+
+    existing = find_duplicate(
+        db,
+        owner_id=owner_id,
+        fb_page_id=profile_data.get("fb_page_id"),
+        fb_page_url=profile_data.get("fb_page_url"),
+        email=profile_data.get("email"),
+    )
+    if existing:
+        post.influencer_id = existing.id
+        db.commit()
+        return existing, False
+
+    inf = Influencer(**profile_data)
+    db.add(inf)
+    db.flush()
+
+    if inf.fb_page_url or inf.fb_page_id:
+        db.add(
+            InfluencerSocialAccount(
+                influencer_id=inf.id,
+                platform=SocialPlatform.facebook,
+                handle=inf.fb_page_id,
+                url=inf.fb_page_url,
+                followers=inf.fb_followers,
+            )
+        )
+
+    post.influencer_id = inf.id
+    db.commit()
+    db.refresh(inf)
+    return inf, True

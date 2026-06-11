@@ -252,6 +252,9 @@ const postsKeyword = ref('')
 const postsLoading = ref(false)
 const postsDetailRow = ref<FbGroupPost | null>(null)
 const postsDetailVisible = ref(false)
+const postsExcludeContacted = ref(true)
+const postsFilteredCount = ref(0)
+const preContactingIds = ref<Set<number>>(new Set())
 
 // ─── 定时任务 ────────────────────────────────────────────────────
 const scheduleDrawerVisible = ref(false)
@@ -292,10 +295,12 @@ async function loadPosts() {
     const r = await fbGroupScrapeApi.listTaskPosts(postsTask.value.id, {
       page: postsPage.value,
       page_size: postsPageSize.value,
-      keyword: postsKeyword.value.trim() || undefined
+      keyword: postsKeyword.value.trim() || undefined,
+      exclude_contacted: postsExcludeContacted.value
     })
     posts.value = r.items
     postsTotal.value = r.total
+    postsFilteredCount.value = r.filtered_count ?? 0
   } catch { /* 拦截器 */ } finally {
     postsLoading.value = false
   }
@@ -306,9 +311,47 @@ function onPostsPageChange(p: number) {
   loadPosts()
 }
 
+function onPostsFilterChange() {
+  postsPage.value = 1
+  loadPosts()
+}
+
 function showPostDetail(row: FbGroupPost) {
   postsDetailRow.value = row
   postsDetailVisible.value = true
+}
+
+// ─── 预建联 ───────────────────────────────────────────────────────
+function preContactStatusInfo(row: FbGroupPost): { label: string; type: '' | 'success' | 'warning' | 'info' | 'danger' } | null {
+  if (row.influencer_id) return { label: '已建联', type: 'success' }
+  switch (row.pre_contact_status) {
+    case 'pending':
+    case 'running':
+      return { label: '建联中', type: 'warning' }
+    case 'failed':
+      return { label: '建联失败', type: 'danger' }
+    case 'done':
+      return { label: '已建联', type: 'success' }
+    default:
+      return null
+  }
+}
+
+async function preContact(row: FbGroupPost) {
+  if (preContactingIds.value.has(row.id)) return
+  preContactingIds.value = new Set(preContactingIds.value).add(row.id)
+  try {
+    const r = await fbGroupScrapeApi.preContact(row.id)
+    ElMessage.success(r.message)
+    row.pre_contact_status = (r.status as FbGroupPost['pre_contact_status']) || 'pending'
+    if (r.influencer_id) row.influencer_id = r.influencer_id
+    // 稍后刷新一次列表，拿到后台建联结果
+    setTimeout(() => { if (postsDrawerVisible.value) loadPosts() }, 6000)
+  } catch { /* 拦截器 */ } finally {
+    const s = new Set(preContactingIds.value)
+    s.delete(row.id)
+    preContactingIds.value = s
+  }
 }
 
 // ─── 通用工具 ────────────────────────────────────────────────────
@@ -550,6 +593,15 @@ onUnmounted(stopPoll)
         />
         <el-button type="primary" @click="loadPosts">搜索</el-button>
         <span style="font-size:12px;color:#909399;margin-left:8px">共 {{ postsTotal }} 条</span>
+        <el-switch
+          v-model="postsExcludeContacted"
+          style="margin-left:16px"
+          active-text="隐藏已建联"
+          @change="onPostsFilterChange"
+        />
+        <el-tag v-if="postsFilteredCount" type="info" size="small" style="margin-left:8px">
+          已建联 {{ postsFilteredCount }} 条
+        </el-tag>
       </div>
       <el-table v-loading="postsLoading" :data="posts" border stripe row-key="id" size="small">
         <el-table-column prop="legacy_id" label="FB 帖子 ID" width="160" show-overflow-tooltip />
@@ -582,9 +634,26 @@ onUnmounted(stopPoll)
             <span v-else class="fb-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="建联" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="preContactStatusInfo(row)" :type="preContactStatusInfo(row)!.type" size="small">
+              {{ preContactStatusInfo(row)!.label }}
+            </el-tag>
+            <span v-else class="fb-muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
             <el-button size="small" plain @click="showPostDetail(row)">详情</el-button>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="preContactingIds.has(row.id) || row.pre_contact_status === 'pending' || row.pre_contact_status === 'running'"
+              :disabled="!!row.influencer_id"
+              @click="preContact(row)"
+            >
+              {{ row.influencer_id ? '已建联' : '预建联' }}
+            </el-button>
           </template>
         </el-table-column>
       </el-table>

@@ -114,6 +114,23 @@ class FbGroupPost(Base, TimestampMixin):
     has_shared_post: Mapped[bool] = mapped_column(default=False, nullable=False)
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="原始 JSON")
 
+    # ─── 建联 / 分析 ───────────────────────────────────────────────
+    # 预建联后关联到的达人（NULL 表示尚未建联）
+    influencer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("influencers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="预建联生成/命中的达人 id",
+    )
+    # 预建联任务状态：pending / running / done / failed（NULL 表示从未触发）
+    pre_contact_status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="预建联状态 pending/running/done/failed"
+    )
+    pre_contact_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 多维度分析结果（可扩展，见 services/fb_group_analysis.py）
+    analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="多维度分析结果")
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
 
 class FbGroupScheduleTaskStatus(str, enum.Enum):
     """定时任务状态"""

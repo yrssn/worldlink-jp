@@ -25,6 +25,7 @@ from app.schemas.fb_group_scrape import (
     FbGroupBatchPullBody,
     FbGroupPostOut,
     FbGroupPostPage,
+    FbGroupPreContactOut,
     FbGroupPullTaskCreate,
     FbGroupPullTaskOut,
     FbGroupScrapeCreate,
@@ -34,7 +35,7 @@ from app.schemas.fb_group_scrape import (
     FbGroupScheduleTaskOut,
     FbGroupScheduleTaskUpdate,
 )
-from app.services import apify_service
+from app.services import apify_service, fb_group_analysis, influencer_service
 
 router = APIRouter(prefix="/scraper/fb-group-scrapes", tags=["scraper-fb-group"])
 
@@ -137,6 +138,7 @@ def _run_pull_task_bg(task_id: int) -> None:
 
         saved = 0
         duplicates = 0
+        saved_posts: list[FbGroupPost] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -147,6 +149,7 @@ def _run_pull_task_bg(task_id: int) -> None:
                 with db.begin_nested():   # SAVEPOINT：只回滚这一条，不影响其他帖子
                     db.add(post)
                 saved += 1
+                saved_posts.append(post)
             except IntegrityError:
                 duplicates += 1  # 记录重复帖子
 
@@ -155,9 +158,20 @@ def _run_pull_task_bg(task_id: int) -> None:
         task.status = FbGroupPullTaskStatus.done
         task.finished_at = datetime.utcnow()
         db.commit()
+
+        # 抓帖子后跑分析：对比「建联达人」做去重标记，命中的帖子在列表里默认隐藏。
+        try:
+            filtered = fb_group_analysis.analyze_posts(
+                db, task.created_by_id, saved_posts
+            )
+        except Exception as e:  # noqa: BLE001
+            filtered = 0
+            logger.warning("[FbGroupPullTask#{}] analyze posts failed: {}", task_id, e)
+
         logger.info(
-            "[FbGroupPullTask#{}] done, saved {} posts, {} duplicates, {} total fetched",
-            task_id, saved, duplicates, task.total_fetched
+            "[FbGroupPullTask#{}] done, saved {} posts, {} duplicates, "
+            "{} already-contacted, {} total fetched",
+            task_id, saved, duplicates, filtered, task.total_fetched
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("[FbGroupPullTask#{}] unexpected error: {}", task_id, e)
@@ -167,6 +181,70 @@ def _run_pull_task_bg(task_id: int) -> None:
                 task.status = FbGroupPullTaskStatus.failed
                 task.error = str(e)[:2000]
                 task.finished_at = datetime.utcnow()
+                db.commit()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db.close()
+
+
+def _run_pre_contact_bg(post_id: int, owner_id: int) -> None:
+    """后台线程：对群组帖子作者跑 facebook-pages-scraper 抓主页资料并入库建联。"""
+    db = SessionLocal()
+    try:
+        post: FbGroupPost | None = db.query(FbGroupPost).filter(
+            FbGroupPost.id == post_id
+        ).first()
+        if not post:
+            return
+
+        post.pre_contact_status = "running"
+        post.pre_contact_error = None
+        db.commit()
+
+        profile_url = fb_group_analysis.build_fb_profile_url(post)
+
+        page_profile: dict | None = None
+        if profile_url:
+            try:
+                result = apify_service.run_fb_pages(
+                    [profile_url], max_items=1, db=db
+                )
+                items = result.get("items") or []
+                if items and isinstance(items[0], dict):
+                    page_profile = items[0]
+            except Exception as e:  # noqa: BLE001
+                # 抓取失败（个人主页非主页等）不阻断建联，记录到错误但仍以帖子信息兜底入库
+                post.pre_contact_error = f"主页抓取失败，已用帖子信息兜底：{str(e)[:300]}"
+                logger.warning(
+                    "[FbGroupPreContact post#{}] page scrape failed: {}", post_id, e
+                )
+                db.commit()
+
+        inf, created = influencer_service.create_from_group_post(
+            db,
+            owner_id=owner_id,
+            post=post,
+            page_profile=page_profile,
+            profile_url=profile_url,
+        )
+
+        post.pre_contact_status = "done"
+        # 重新跑分析，刷新「已建联」标记
+        post.analysis = fb_group_analysis.analyze_post(db, owner_id, post)
+        post.analyzed_at = datetime.utcnow()
+        db.commit()
+        logger.info(
+            "[FbGroupPreContact post#{}] {} influencer #{}",
+            post_id, "created" if created else "matched existing", inf.id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[FbGroupPreContact post#{}] failed: {}", post_id, e)
+        try:
+            post = db.query(FbGroupPost).filter(FbGroupPost.id == post_id).first()
+            if post:
+                post.pre_contact_status = "failed"
+                post.pre_contact_error = str(e)[:2000]
                 db.commit()
         except Exception:  # noqa: BLE001
             pass
@@ -575,6 +653,9 @@ def list_task_posts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     keyword: str | None = Query(None, description="文本/用户名关键词"),
+    exclude_contacted: bool = Query(
+        False, description="是否隐藏已建联（分析命中已有达人）的帖子"
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -585,13 +666,17 @@ def list_task_posts(
     if not is_admin(user) and task.created_by_id != user.id:
         raise HTTPException(status_code=403, detail="无权访问")
 
-    q = db.query(FbGroupPost).filter(FbGroupPost.task_id == task_id)
+    base = db.query(FbGroupPost).filter(FbGroupPost.task_id == task_id)
     kw = (keyword or "").strip()
     if kw:
         like = f"%{kw}%"
-        q = q.filter(
+        base = base.filter(
             (FbGroupPost.text.like(like)) | (FbGroupPost.user_name.like(like))
         )
+    filtered_count = base.filter(FbGroupPost.influencer_id.isnot(None)).count()
+    q = base
+    if exclude_contacted:
+        q = q.filter(FbGroupPost.influencer_id.is_(None))
     total = q.count()
     items = (
         q.order_by(FbGroupPost.post_time.desc(), FbGroupPost.id.desc())
@@ -604,6 +689,7 @@ def list_task_posts(
         page=page,
         page_size=page_size,
         items=[FbGroupPostOut.model_validate(p) for p in items],
+        filtered_count=filtered_count,
     )
 
 
@@ -613,18 +699,25 @@ def list_config_posts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     keyword: str | None = Query(None),
+    exclude_contacted: bool = Query(
+        False, description="是否隐藏已建联（分析命中已有达人）的帖子"
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """分页查询某群组配置的所有帖子（跨任务）。"""
     row = _get_or_404(db, user, record_id, include_deleted=True)
-    q = db.query(FbGroupPost).filter(FbGroupPost.config_id == row.id)
+    base = db.query(FbGroupPost).filter(FbGroupPost.config_id == row.id)
     kw = (keyword or "").strip()
     if kw:
         like = f"%{kw}%"
-        q = q.filter(
+        base = base.filter(
             (FbGroupPost.text.like(like)) | (FbGroupPost.user_name.like(like))
         )
+    filtered_count = base.filter(FbGroupPost.influencer_id.isnot(None)).count()
+    q = base
+    if exclude_contacted:
+        q = q.filter(FbGroupPost.influencer_id.is_(None))
     total = q.count()
     items = (
         q.order_by(FbGroupPost.post_time.desc(), FbGroupPost.id.desc())
@@ -637,7 +730,74 @@ def list_config_posts(
         page=page,
         page_size=page_size,
         items=[FbGroupPostOut.model_validate(p) for p in items],
+        filtered_count=filtered_count,
     )
+
+
+def _get_post_or_404(db: Session, user: User, post_id: int) -> FbGroupPost:
+    post = db.query(FbGroupPost).filter(FbGroupPost.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="帖子不存在")
+    task = db.query(FbGroupPullTask).filter(FbGroupPullTask.id == post.task_id).first()
+    if task and not is_admin(user) and task.created_by_id != user.id:
+        raise HTTPException(status_code=403, detail="无权访问")
+    return post
+
+
+@router.post("/posts/{post_id}/pre-contact", response_model=FbGroupPreContactOut)
+def pre_contact_post_author(
+    post_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """预建联：对帖子作者跑 facebook-pages-scraper 抓主页资料并入库到「建联达人」。
+
+    主页抓取较慢，放后台线程执行；前端可轮询帖子列表看 pre_contact_status。
+    """
+    post = _get_post_or_404(db, user, post_id)
+    if post.pre_contact_status in ("pending", "running"):
+        raise HTTPException(status_code=400, detail="该帖子正在预建联中，请稍候")
+    if post.influencer_id:
+        return FbGroupPreContactOut(
+            post_id=post.id,
+            influencer_id=post.influencer_id,
+            created=False,
+            status="done",
+            message="该作者已在建联达人中，已关联",
+        )
+
+    post.pre_contact_status = "pending"
+    post.pre_contact_error = None
+    db.commit()
+
+    t = threading.Thread(
+        target=_run_pre_contact_bg, args=(post.id, user.id), daemon=True
+    )
+    t.start()
+    return FbGroupPreContactOut(
+        post_id=post.id,
+        influencer_id=None,
+        created=False,
+        status="pending",
+        message="已提交预建联，正在抓取主页资料并入库（稍后在「建联达人」查看）",
+    )
+
+
+@router.post("/tasks/{task_id}/analyze")
+def analyze_task_posts_endpoint(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """重新对该任务下的所有帖子跑分析（去重等多维度），刷新「已建联」标记。"""
+    task = db.query(FbGroupPullTask).filter(FbGroupPullTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not is_admin(user) and task.created_by_id != user.id:
+        raise HTTPException(status_code=403, detail="无权访问")
+    posts = db.query(FbGroupPost).filter(FbGroupPost.task_id == task_id).all()
+    filtered = fb_group_analysis.analyze_posts(db, task.created_by_id, posts)
+    return {"ok": True, "analyzed": len(posts), "filtered": filtered}
 
 
 @router.post("/{record_id}/restore", response_model=FbGroupScrapeOut)
