@@ -63,6 +63,7 @@ class InfluencerBase(BaseModel):
     tags: Optional[list[str]] = None
     notes: Optional[str] = None
     status: InfluencerStatus = InfluencerStatus.pre_contact
+    platform_id: Optional[int] = None
 
 
 class InfluencerCreate(InfluencerBase):
@@ -87,6 +88,7 @@ class InfluencerUpdate(BaseModel):
     tags: Optional[list[str]] = None
     notes: Optional[str] = None
     status: Optional[InfluencerStatus] = None
+    platform_id: Optional[int] = None
 
 
 class InfluencerOut(InfluencerBase):
@@ -94,6 +96,7 @@ class InfluencerOut(InfluencerBase):
 
     id: int
     source: InfluencerSource
+    platform_name: Optional[str] = None
     owner_id: int
     created_at: datetime
     updated_at: datetime

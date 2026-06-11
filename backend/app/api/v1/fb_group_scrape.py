@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,11 +20,14 @@ from app.models.fb_group_scrape import (
     FbGroupScheduleTask,
     FbGroupScheduleTaskStatus,
 )
+from app.models.influencer import Influencer, InfluencerSource, InfluencerStatus
+from app.models.social_account import InfluencerSocialAccount, SocialPlatform
 from app.models.user import User
 from app.schemas.fb_group_scrape import (
     FbGroupBatchPullBody,
     FbGroupPostOut,
     FbGroupPostPage,
+    FbGroupPreContactOut,
     FbGroupPullTaskCreate,
     FbGroupPullTaskOut,
     FbGroupScrapeCreate,
@@ -34,7 +37,11 @@ from app.schemas.fb_group_scrape import (
     FbGroupScheduleTaskOut,
     FbGroupScheduleTaskUpdate,
 )
-from app.services import apify_service
+from app.services import apify_service, influencer_service
+from app.services.fb_group_post_filter import (
+    exclude_known_influencer_posts,
+    should_filter_group_post_item,
+)
 
 router = APIRouter(prefix="/scraper/fb-group-scrapes", tags=["scraper-fb-group"])
 
@@ -50,6 +57,54 @@ def _parse_post_time(raw: str | None) -> Optional[datetime]:
         return dt.replace(tzinfo=None)
     except Exception:
         return None
+
+
+def _format_apify_since(value: datetime) -> str:
+    return value.replace(microsecond=0).isoformat()
+
+
+def _last_successful_pull_started_at(db: Session, config_id: int) -> datetime | None:
+    task = (
+        db.query(FbGroupPullTask)
+        .filter(
+            FbGroupPullTask.config_id == config_id,
+            FbGroupPullTask.status == FbGroupPullTaskStatus.done,
+            FbGroupPullTask.started_at.isnot(None),
+        )
+        .order_by(FbGroupPullTask.started_at.desc(), FbGroupPullTask.id.desc())
+        .first()
+    )
+    if not task or not task.started_at:
+        return None
+    return task.started_at - timedelta(minutes=5)
+
+
+def _build_pull_params(
+    db: Session,
+    config_id: int,
+    *,
+    results_limit: int | None,
+    view_option: str,
+    search_group_keyword: str | None,
+    search_group_year: str | None,
+    only_posts_newer_than: str | None,
+) -> dict:
+    since = (only_posts_newer_than or "").strip()
+    auto_since = False
+    if not since:
+        last_started_at = _last_successful_pull_started_at(db, config_id)
+        if last_started_at:
+            since = _format_apify_since(last_started_at)
+            auto_since = True
+    params = {
+        "results_limit": results_limit,
+        "view_option": view_option,
+        "search_group_keyword": search_group_keyword,
+        "search_group_year": search_group_year,
+        "only_posts_newer_than": since or None,
+        "auto_only_posts_newer_than": auto_since,
+    }
+    return params
 
 
 def _item_to_post(item: dict, task_id: int, config_id: int) -> FbGroupPost | None:
@@ -114,7 +169,7 @@ def _run_pull_task_bg(task_id: int) -> None:
         try:
             result = apify_service.run_fb_groups(
                 group_url,
-                results_limit=params.get("results_limit", 5),
+                results_limit=params.get("results_limit"),
                 view_option=params.get("view_option", "CHRONOLOGICAL"),
                 search_group_keyword=params.get("search_group_keyword"),
                 search_group_year=params.get("search_group_year"),
@@ -137,8 +192,12 @@ def _run_pull_task_bg(task_id: int) -> None:
 
         saved = 0
         duplicates = 0
+        filtered = 0
         for item in items:
             if not isinstance(item, dict):
+                continue
+            if should_filter_group_post_item(db, task.created_by_id, item):
+                filtered += 1
                 continue
             post = _item_to_post(item, task_id=task_id, config_id=task.config_id)
             if post is None:
@@ -152,12 +211,13 @@ def _run_pull_task_bg(task_id: int) -> None:
 
         task.result_count = saved
         task.duplicate_count = duplicates
+        task.filtered_count = filtered
         task.status = FbGroupPullTaskStatus.done
         task.finished_at = datetime.utcnow()
         db.commit()
         logger.info(
-            "[FbGroupPullTask#{}] done, saved {} posts, {} duplicates, {} total fetched",
-            task_id, saved, duplicates, task.total_fetched
+            "[FbGroupPullTask#{}] done, saved {} posts, {} duplicates, {} filtered, {} total fetched",
+            task_id, saved, duplicates, filtered, task.total_fetched
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("[FbGroupPullTask#{}] unexpected error: {}", task_id, e)
@@ -186,8 +246,9 @@ def _to_task_out(task: FbGroupPullTask) -> FbGroupPullTaskOut:
         apify_run_id=task.apify_run_id,
         apify_dataset_id=task.apify_dataset_id,
         result_count=task.result_count,
-        duplicate_count=getattr(task, 'duplicate_count', 0),
-        total_fetched=getattr(task, 'total_fetched', 0),
+        duplicate_count=task.duplicate_count,
+        filtered_count=task.filtered_count,
+        total_fetched=task.total_fetched,
         error=task.error,
         started_at=task.started_at,
         finished_at=task.finished_at,
@@ -391,17 +452,20 @@ def pull_fb_group_posts_async(
     if row.deleted_at is not None:
         raise HTTPException(status_code=400, detail="已删除的记录不可拉取")
     opts = body or FbGroupPullTaskCreate()
+    params = _build_pull_params(
+        db,
+        row.id,
+        results_limit=opts.results_limit,
+        view_option=opts.view_option,
+        search_group_keyword=opts.search_group_keyword,
+        search_group_year=opts.search_group_year,
+        only_posts_newer_than=opts.only_posts_newer_than,
+    )
     task = FbGroupPullTask(
         config_id=row.id,
         created_by_id=user.id,
         status=FbGroupPullTaskStatus.pending,
-        params={
-            "results_limit": opts.results_limit,
-            "view_option": opts.view_option,
-            "search_group_keyword": opts.search_group_keyword,
-            "search_group_year": opts.search_group_year,
-            "only_posts_newer_than": opts.only_posts_newer_than,
-        },
+        params=params,
     )
     db.add(task)
     db.commit()
@@ -447,16 +511,17 @@ def batch_pull_fb_group_posts(
     if missing:
         raise HTTPException(status_code=404, detail=f"以下配置不存在或已删除: {missing}")
 
-    params = {
-        "results_limit": body.results_limit,
-        "view_option": body.view_option,
-        "search_group_keyword": body.search_group_keyword,
-        "search_group_year": body.search_group_year,
-        "only_posts_newer_than": body.only_posts_newer_than,
-    }
-
     created_tasks: list[FbGroupPullTask] = []
     for config in configs:
+        params = _build_pull_params(
+            db,
+            config.id,
+            results_limit=body.results_limit,
+            view_option=body.view_option,
+            search_group_keyword=body.search_group_keyword,
+            search_group_year=body.search_group_year,
+            only_posts_newer_than=body.only_posts_newer_than,
+        )
         task = FbGroupPullTask(
             config_id=config.id,
             created_by_id=user.id,
@@ -586,6 +651,7 @@ def list_task_posts(
         raise HTTPException(status_code=403, detail="无权访问")
 
     q = db.query(FbGroupPost).filter(FbGroupPost.task_id == task_id)
+    q = exclude_known_influencer_posts(q, db, task.created_by_id)
     kw = (keyword or "").strip()
     if kw:
         like = f"%{kw}%"
@@ -607,6 +673,79 @@ def list_task_posts(
     )
 
 
+@router.post("/posts/{post_id}/pre-contact", response_model=FbGroupPreContactOut)
+def pre_contact_from_group_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把 Facebook 群组帖子作者加入建联达人，按 user 去重。"""
+    post = db.get(FbGroupPost, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="帖子不存在")
+    task = db.get(FbGroupPullTask, post.task_id)
+    if not task or (task.created_by_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=403, detail="无权操作")
+
+    raw = post.raw_data or {}
+    user_obj = raw.get("user") if isinstance(raw.get("user"), dict) else {}
+    display_name = (post.user_name or user_obj.get("name") or "").strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="帖子缺少 user.name，无法预建联")
+
+    platform = influencer_service.get_or_create_facebook_platform(db, user.id)
+    profile_url = (
+        user_obj.get("profileUrl")
+        or user_obj.get("url")
+        or user_obj.get("profile_url")
+    )
+    existing = influencer_service.find_duplicate_for_platform_user(
+        db,
+        owner_id=user.id,
+        platform_id=platform.id,
+        fb_page_id=post.user_id,
+        fb_page_url=profile_url,
+        display_name=display_name,
+    )
+    if existing:
+        return FbGroupPreContactOut(influencer=existing, created=False)
+
+    notes = f"来自 Facebook 群组帖子：{post.post_url or post.legacy_id}"
+    influencer = Influencer(
+        display_name=display_name,
+        fb_page_id=post.user_id,
+        fb_page_url=profile_url,
+        fb_page_title=display_name,
+        status=InfluencerStatus.pre_contact,
+        source=InfluencerSource.scrape,
+        platform_id=platform.id,
+        owner_id=user.id,
+        notes=notes,
+        raw_profile={
+            "source": "facebook_group_post",
+            "group_title": post.group_title,
+            "post_id": post.id,
+            "post_url": post.post_url,
+            "user": user_obj,
+            "post": raw,
+        },
+    )
+    db.add(influencer)
+    db.flush()
+    if post.user_id or profile_url:
+        db.add(
+            InfluencerSocialAccount(
+                influencer_id=influencer.id,
+                platform=SocialPlatform.facebook,
+                handle=post.user_id,
+                url=profile_url,
+            )
+        )
+    db.commit()
+    db.refresh(influencer)
+    return FbGroupPreContactOut(influencer=influencer, created=True)
+
+
 @router.get("/{record_id}/posts", response_model=FbGroupPostPage)
 def list_config_posts(
     record_id: int,
@@ -619,6 +758,7 @@ def list_config_posts(
     """分页查询某群组配置的所有帖子（跨任务）。"""
     row = _get_or_404(db, user, record_id, include_deleted=True)
     q = db.query(FbGroupPost).filter(FbGroupPost.config_id == row.id)
+    q = exclude_known_influencer_posts(q, db, row.created_by_id)
     kw = (keyword or "").strip()
     if kw:
         like = f"%{kw}%"
@@ -822,16 +962,16 @@ def execute_schedule_now(
     if not is_admin(user) and schedule.created_by_id != user.id:
         raise HTTPException(status_code=403, detail="无权执行")
 
-    # 构建拉取参数，支持增量拉取
-    pull_params = dict(schedule.pull_params or {})
-    
-    # 如果上次任务成功完成，自动设置 only_posts_newer_than 为上次完成时间
-    if schedule.last_task_id:
-        last_task = db.query(FbGroupPullTask).filter(
-            FbGroupPullTask.id == schedule.last_task_id
-        ).first()
-        if last_task and last_task.status == FbGroupPullTaskStatus.done and last_task.finished_at:
-            pull_params["only_posts_newer_than"] = last_task.finished_at.isoformat()
+    raw_pull_params = dict(schedule.pull_params or {})
+    pull_params = _build_pull_params(
+        db,
+        schedule.config_id,
+        results_limit=raw_pull_params.get("results_limit"),
+        view_option=raw_pull_params.get("view_option") or "CHRONOLOGICAL",
+        search_group_keyword=raw_pull_params.get("search_group_keyword"),
+        search_group_year=raw_pull_params.get("search_group_year"),
+        only_posts_newer_than=raw_pull_params.get("only_posts_newer_than"),
+    )
 
     # 创建拉取任务
     task = FbGroupPullTask(

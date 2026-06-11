@@ -119,19 +119,20 @@ class FbGroupScheduler:
 
             # 构建拉取参数，支持增量拉取
             pull_params = dict(schedule.pull_params or {})
-            
-            # 如果上次任务成功完成，自动设置 only_posts_newer_than 为上次完成时间
-            # 这样可以避免重复拉取旧帖子
+
+            # 如果上次任务成功开始，自动设置 only_posts_newer_than 为上次开始前 5 分钟
+            # 配合帖子唯一约束去重，避免任务运行期间的新帖在下一次被漏掉。
             if schedule.last_task_id:
                 last_task = db.query(FbGroupPullTask).filter(
                     FbGroupPullTask.id == schedule.last_task_id
                 ).first()
-                if last_task and last_task.status == FbGroupPullTaskStatus.done and last_task.finished_at:
-                    # 使用上次完成时间作为增量拉取的起点
-                    pull_params["only_posts_newer_than"] = last_task.finished_at.isoformat()
+                if last_task and last_task.status == FbGroupPullTaskStatus.done and last_task.started_at:
+                    since = last_task.started_at - timedelta(minutes=5)
+                    pull_params["only_posts_newer_than"] = since.replace(microsecond=0).isoformat()
+                    pull_params["auto_only_posts_newer_than"] = True
                     logger.info(
                         "[FbGroupScheduler] Schedule#{} incremental fetch from {}",
-                        schedule_id, last_task.finished_at.isoformat()
+                        schedule_id, pull_params["only_posts_newer_than"]
                     )
 
             # 创建拉取任务

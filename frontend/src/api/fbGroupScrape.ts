@@ -7,7 +7,7 @@ export type FbGroupViewOption =
   | 'CHRONOLOGICAL_LISTINGS'
 
 export interface FbGroupPullParams {
-  results_limit?: number
+  results_limit?: number | null
   view_option?: FbGroupViewOption
   search_group_keyword?: string
   search_group_year?: string
@@ -40,6 +40,7 @@ export interface FbGroupPullTask {
   apify_dataset_id?: string | null
   result_count: number
   duplicate_count: number
+  filtered_count: number
   total_fetched: number
   error?: string | null
   started_at?: string | null
@@ -162,6 +163,12 @@ export const fbGroupScrapeApi = {
     http.get<unknown, FbGroupPostPage>(`/scraper/fb-group-scrapes/${configId}/posts`, {
       params: params || {}
     }),
+
+  preContactPost: (postId: number) =>
+    http.post<unknown, { influencer: { id: number; display_name: string }; created: boolean }>(
+      `/scraper/fb-group-scrapes/posts/${postId}/pre-contact`,
+      {}
+    ),
 
   // ─── 定时任务 ───────────────────────────────────────────────────
   /** 为某配置创建定时拉取任务 */

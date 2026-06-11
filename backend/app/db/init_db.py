@@ -35,6 +35,8 @@ def create_all() -> None:
     _ensure_bitbrowser_window_catalog_columns()
     _ensure_apify_keys_columns()
     _ensure_fb_group_posts_columns()
+    _ensure_fb_group_pull_task_columns()
+    _ensure_influencer_platform_column()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -113,6 +115,44 @@ def _ensure_fb_group_posts_columns() -> None:
                 conn.execute(text(sql))
         except Exception as e:  # noqa: BLE001
             logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_fb_group_pull_task_columns() -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "fb_group_pull_tasks" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("fb_group_pull_tasks")}
+    if "filtered_count" not in cols:
+        sql = "ALTER TABLE fb_group_pull_tasks ADD COLUMN filtered_count INT NOT NULL DEFAULT 0"
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_influencer_platform_column() -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "influencers" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("influencers")}
+    if "platform_id" not in cols:
+        statements = [
+            "ALTER TABLE influencers ADD COLUMN platform_id INT NULL",
+            "CREATE INDEX ix_influencers_platform_id ON influencers (platform_id)",
+        ]
+        for sql in statements:
+            try:
+                logger.info("[schema-patch] {}", sql)
+                with engine.begin() as conn:
+                    conn.execute(text(sql))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[schema-patch] failed: {} -> {}", sql, e)
 
 
 def _ensure_apify_keys_columns() -> None:
