@@ -199,6 +199,11 @@ def _map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    """对外暴露：把 apify facebook-pages-scraper 抓回来的字段映射到 Influencer 字段。"""
+    return _map_page_profile(profile)
+
+
 def create_from_scrape(
     db: Session,
     owner_id: int,

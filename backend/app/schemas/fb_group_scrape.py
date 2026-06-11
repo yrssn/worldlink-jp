@@ -44,7 +44,7 @@ class FbGroupScrapeUpdate(BaseModel):
 class FbGroupPullBody(BaseModel):
     """调用 Apify facebook-groups-scraper 的可选参数。"""
 
-    results_limit: Optional[int] = Field(None, ge=1, le=5000, description="帖子条数上限；为空表示抓取全部")
+    results_limit: int = Field(20, ge=1, le=500, description="帖子条数上限")
     view_option: FbGroupViewOption = Field(
         "CHRONOLOGICAL",
         description="排序：CHRONOLOGICAL / RECENT_ACTIVITY / TOP_POSTS / CHRONOLOGICAL_LISTINGS",
@@ -101,7 +101,7 @@ class FbGroupPullTaskOut(BaseModel):
 class FbGroupPullTaskCreate(BaseModel):
     """提交后台拉取任务的请求体（与 FbGroupPullBody 相同字段）。"""
 
-    results_limit: Optional[int] = Field(None, ge=1, le=5000)
+    results_limit: int = Field(20, ge=1, le=500)
     view_option: FbGroupViewOption = Field("CHRONOLOGICAL")
     search_group_keyword: Optional[str] = None
     search_group_year: Optional[str] = None
@@ -112,7 +112,7 @@ class FbGroupBatchPullBody(BaseModel):
     """批量拉取请求体：多个 config_id + 共享拉取参数。"""
 
     config_ids: list[int] = Field(..., min_length=1, description="群组配置 ID 列表")
-    results_limit: Optional[int] = Field(None, ge=1, le=5000)
+    results_limit: int = Field(20, ge=1, le=500)
     view_option: FbGroupViewOption = Field("CHRONOLOGICAL")
     search_group_keyword: Optional[str] = None
     search_group_year: Optional[str] = None

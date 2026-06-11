@@ -7,7 +7,7 @@ export type FbGroupViewOption =
   | 'CHRONOLOGICAL_LISTINGS'
 
 export interface FbGroupPullParams {
-  results_limit?: number | null
+  results_limit?: number
   view_option?: FbGroupViewOption
   search_group_keyword?: string
   search_group_year?: string
