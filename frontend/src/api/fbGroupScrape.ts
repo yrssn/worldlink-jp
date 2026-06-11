@@ -68,6 +68,12 @@ export interface FbGroupPost {
   has_shared_post: boolean
   raw_data?: Record<string, unknown> | null
   created_at: string
+  // 建联 / 分析
+  influencer_id?: number | null
+  pre_contact_status?: 'pending' | 'running' | 'done' | 'failed' | null
+  pre_contact_error?: string | null
+  analysis?: Record<string, { hit?: boolean; filter?: boolean; influencer_id?: number; matched_by?: string }> | null
+  analyzed_at?: string | null
 }
 
 export interface FbGroupPostPage {
@@ -75,6 +81,15 @@ export interface FbGroupPostPage {
   page: number
   page_size: number
   items: FbGroupPost[]
+  filtered_count: number
+}
+
+export interface FbGroupPreContactResult {
+  post_id: number
+  influencer_id?: number | null
+  created: boolean
+  status: string
+  message: string
 }
 
 export interface FbGroupScheduleTask {
@@ -149,11 +164,25 @@ export const fbGroupScrapeApi = {
   /** 查询某任务的帖子（分页） */
   listTaskPosts: (
     taskId: number,
-    params?: { page?: number; page_size?: number; keyword?: string }
+    params?: { page?: number; page_size?: number; keyword?: string; exclude_contacted?: boolean }
   ) =>
     http.get<unknown, FbGroupPostPage>(`/scraper/fb-group-scrapes/tasks/${taskId}/posts`, {
       params: params || {}
     }),
+
+  /** 预建联：对帖子作者跑 facebook-pages-scraper 抓主页并入库到「建联达人」 */
+  preContact: (postId: number) =>
+    http.post<unknown, FbGroupPreContactResult>(
+      `/scraper/fb-group-scrapes/posts/${postId}/pre-contact`,
+      {}
+    ),
+
+  /** 重新对任务下帖子跑分析（去重等多维度），刷新「已建联」标记 */
+  analyzeTask: (taskId: number) =>
+    http.post<unknown, { ok: boolean; analyzed: number; filtered: number }>(
+      `/scraper/fb-group-scrapes/tasks/${taskId}/analyze`,
+      {}
+    ),
 
   /** 查询某配置的所有帖子（跨任务，分页） */
   listConfigPosts: (

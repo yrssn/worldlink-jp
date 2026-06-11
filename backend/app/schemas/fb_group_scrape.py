@@ -145,6 +145,13 @@ class FbGroupPostOut(BaseModel):
     raw_data: Optional[dict[str, Any]] = None
     created_at: datetime
 
+    # 建联 / 分析
+    influencer_id: Optional[int] = None
+    pre_contact_status: Optional[str] = None
+    pre_contact_error: Optional[str] = None
+    analysis: Optional[dict[str, Any]] = None
+    analyzed_at: Optional[datetime] = None
+
 
 class FbGroupPostPage(BaseModel):
     """帖子分页响应。"""
@@ -153,6 +160,19 @@ class FbGroupPostPage(BaseModel):
     page: int
     page_size: int
     items: list[FbGroupPostOut]
+    filtered_count: int = Field(
+        0, description="命中分析过滤（已建联）的帖子数（当前过滤条件下）"
+    )
+
+
+class FbGroupPreContactOut(BaseModel):
+    """预建联结果。"""
+
+    post_id: int
+    influencer_id: Optional[int] = None
+    created: bool = False
+    status: str
+    message: str
 
 
 class FbGroupPreContactOut(BaseModel):

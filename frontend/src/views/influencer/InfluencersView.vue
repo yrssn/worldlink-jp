@@ -3,7 +3,6 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { influencerApi, type Influencer } from '@/api/influencer'
-import { bitbrowserApi, type BitBrowserPlatform } from '@/api/bitbrowser'
 
 const router = useRouter()
 const list = ref<Influencer[]>([])
@@ -12,7 +11,6 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const statusFilter = ref<string>('')
-const platforms = ref<BitBrowserPlatform[]>([])
 const loading = ref(false)
 
 const dialogVisible = ref(false)
@@ -28,6 +26,29 @@ const STATUS_OPTIONS = [
   { label: '已签约', value: 'signed' },
   { label: '已放弃', value: 'dropped' }
 ]
+
+const STATUS_TAG_TYPE: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
+  pre_contact: 'info',
+  contacting: 'warning',
+  signed: 'success',
+  dropped: 'danger'
+}
+
+function statusLabel(status?: string) {
+  return STATUS_OPTIONS.find((o) => o.value === status)?.label || status || '—'
+}
+
+async function changeStatus(row: Influencer, status: string) {
+  const prev = row.status
+  if (prev === status) return
+  try {
+    await influencerApi.update(row.id, { status: status as Influencer['status'] })
+    row.status = status as Influencer['status']
+    ElMessage.success(`已更新为「${statusLabel(status)}」`)
+  } catch {
+    row.status = prev
+  }
+}
 
 async function refresh() {
   loading.value = true
@@ -45,10 +66,6 @@ async function refresh() {
   }
 }
 
-async function loadPlatforms() {
-  platforms.value = await bitbrowserApi.listPlatforms()
-}
-
 function openCreate() {
   Object.assign(form, {
     display_name: '',
@@ -61,8 +78,7 @@ function openCreate() {
     city: '',
     bio: '',
     notes: '',
-    status: 'pre_contact',
-    platform_id: undefined
+    status: 'pre_contact'
   })
   dialogVisible.value = true
 }
@@ -92,9 +108,7 @@ async function remove(row: Influencer) {
   refresh()
 }
 
-onMounted(async () => {
-  await Promise.all([refresh(), loadPlatforms()])
-})
+onMounted(refresh)
 </script>
 
 <template>
@@ -126,15 +140,19 @@ onMounted(async () => {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="类型" width="120">
+      <el-table-column label="状态" width="130">
         <template #default="{ row }">
-          <el-tag v-if="row.platform_name" size="small" type="info">{{ row.platform_name }}</el-tag>
-          <span v-else style="color:#909399">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="100">
-        <template #default="{ row }">
-          <el-tag size="small">{{ row.status }}</el-tag>
+          <el-select
+            :model-value="row.status"
+            size="small"
+            style="width: 110px"
+            :class="`status-select status-${row.status}`"
+            @change="(v: string) => changeStatus(row, v)"
+          >
+            <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value">
+              <el-tag size="small" :type="STATUS_TAG_TYPE[o.value] || 'info'" effect="plain">{{ o.label }}</el-tag>
+            </el-option>
+          </el-select>
         </template>
       </el-table-column>
       <el-table-column prop="email" label="邮箱" />
@@ -172,11 +190,6 @@ onMounted(async () => {
         </el-form-item>
         <el-form-item label="电话">
           <el-input v-model="form.phone" />
-        </el-form-item>
-        <el-form-item label="达人类型">
-          <el-select v-model="form.platform_id" clearable placeholder="选择平台管理中的类型" style="width:100%">
-            <el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" />
-          </el-select>
         </el-form-item>
         <el-form-item label="网站">
           <el-input v-model="form.website" />
