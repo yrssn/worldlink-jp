@@ -27,6 +27,29 @@ const STATUS_OPTIONS = [
   { label: '已放弃', value: 'dropped' }
 ]
 
+const STATUS_TAG_TYPE: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
+  pre_contact: 'info',
+  contacting: 'warning',
+  signed: 'success',
+  dropped: 'danger'
+}
+
+function statusLabel(status?: string) {
+  return STATUS_OPTIONS.find((o) => o.value === status)?.label || status || '—'
+}
+
+async function changeStatus(row: Influencer, status: string) {
+  const prev = row.status
+  if (prev === status) return
+  try {
+    await influencerApi.update(row.id, { status: status as Influencer['status'] })
+    row.status = status as Influencer['status']
+    ElMessage.success(`已更新为「${statusLabel(status)}」`)
+  } catch {
+    row.status = prev
+  }
+}
+
 async function refresh() {
   loading.value = true
   try {
@@ -117,9 +140,19 @@ onMounted(refresh)
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="130">
         <template #default="{ row }">
-          <el-tag size="small">{{ row.status }}</el-tag>
+          <el-select
+            :model-value="row.status"
+            size="small"
+            style="width: 110px"
+            :class="`status-select status-${row.status}`"
+            @change="(v: string) => changeStatus(row, v)"
+          >
+            <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value">
+              <el-tag size="small" :type="STATUS_TAG_TYPE[o.value] || 'info'" effect="plain">{{ o.label }}</el-tag>
+            </el-option>
+          </el-select>
         </template>
       </el-table-column>
       <el-table-column prop="email" label="邮箱" />
