@@ -96,16 +96,33 @@ def _ensure_bitbrowser_window_catalog_columns() -> None:
 
 
 def _ensure_fb_group_posts_columns() -> None:
-    """修复 fb_group_posts 列宽（user_id/legacy_id 可能超长）。"""
+    """修复 fb_group_posts 列宽并补齐预建联/分析新列（启动时尝试）。"""
     from sqlalchemy import inspect, text
 
     insp = inspect(engine)
     if "fb_group_posts" not in insp.get_table_names():
         return
+    cols = {c["name"] for c in insp.get_columns("fb_group_posts")}
     patches: list[str] = [
         "ALTER TABLE fb_group_posts MODIFY COLUMN user_id VARCHAR(255) NULL",
         "ALTER TABLE fb_group_posts MODIFY COLUMN legacy_id VARCHAR(128) NOT NULL",
     ]
+    # 预建联 / 分析相关新列（与 alembic 006 对应；dev 启动时自动补齐）
+    if "influencer_id" not in cols:
+        patches.append("ALTER TABLE fb_group_posts ADD COLUMN influencer_id INT NULL")
+        patches.append(
+            "ALTER TABLE fb_group_posts ADD INDEX ix_fb_group_posts_influencer_id (influencer_id)"
+        )
+    if "pre_contact_status" not in cols:
+        patches.append(
+            "ALTER TABLE fb_group_posts ADD COLUMN pre_contact_status VARCHAR(20) NULL"
+        )
+    if "pre_contact_error" not in cols:
+        patches.append("ALTER TABLE fb_group_posts ADD COLUMN pre_contact_error TEXT NULL")
+    if "analysis" not in cols:
+        patches.append("ALTER TABLE fb_group_posts ADD COLUMN analysis JSON NULL")
+    if "analyzed_at" not in cols:
+        patches.append("ALTER TABLE fb_group_posts ADD COLUMN analyzed_at DATETIME NULL")
     for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)
