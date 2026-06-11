@@ -4,7 +4,7 @@ import json
 import time
 from itertools import count
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 from websockets.sync.client import connect
@@ -18,8 +18,6 @@ class CdpPage:
         self._ws = None
 
     def __enter__(self) -> "CdpPage":
-        if self._force_relay():
-            return self
         if not self._use_relay():
             self._ws = connect(self.ws_url, open_timeout=15)
         return self
@@ -35,9 +33,6 @@ class CdpPage:
 
         return relay_manager.has_relay(self.user_id)
 
-    def _force_relay(self) -> bool:
-        return _is_loopback_url(self.ws_url) and self._use_relay()
-
     def call(
         self,
         method: str,
@@ -47,7 +42,7 @@ class CdpPage:
     ) -> dict[str, object]:
         msg_id = next(self._ids)
         message = {"id": msg_id, "method": method, "params": params or {}}
-        if self._force_relay() or self._use_relay():
+        if self._use_relay():
             from app.services.bitbrowser_relay import relay_manager
 
             data = relay_manager.call_sync(
@@ -134,42 +129,3 @@ def devtools_request(
         if not (response.content or b"").strip():
             return None
         return response.json()
-
-
-def _is_loopback_url(url: str) -> bool:
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
-
-
-def target_ws_url(browser_ws_url: str, target_id: str) -> str:
-    prefix, _, _browser_id = browser_ws_url.rpartition("/devtools/browser/")
-    if not prefix:
-        raise RuntimeError("BitBrowser CDP WebSocket 地址格式异常")
-    return f"{prefix}/devtools/page/{target_id}"
-
-
-def create_cdp_target(browser_ws_url: str, url: str, *, user_id: int | None = None) -> str:
-    with CdpPage(browser_ws_url, user_id=user_id) as browser:
-        result = browser.call("Target.createTarget", {"url": url}, timeout=15)
-    target_id = str(result.get("targetId") or "")
-    if not target_id:
-        raise RuntimeError("创建浏览器页面失败：CDP 未返回 targetId")
-    return target_ws_url(browser_ws_url, target_id)
-
-
-def list_cdp_targets(browser_ws_url: str, *, user_id: int | None = None) -> list[dict[str, Any]]:
-    with CdpPage(browser_ws_url, user_id=user_id) as browser:
-        result = browser.call("Target.getTargets", timeout=10)
-    targets = result.get("targetInfos") or []
-    return [t for t in targets if isinstance(t, dict)]
-
-
-def activate_cdp_target(browser_ws_url: str, target_id: str, *, user_id: int | None = None) -> None:
-    with CdpPage(browser_ws_url, user_id=user_id) as browser:
-        browser.call("Target.activateTarget", {"targetId": target_id}, timeout=10)
-
-
-def close_cdp_target(browser_ws_url: str, target_id: str, *, user_id: int | None = None) -> None:
-    with CdpPage(browser_ws_url, user_id=user_id) as browser:
-        browser.call("Target.closeTarget", {"targetId": target_id}, timeout=10)

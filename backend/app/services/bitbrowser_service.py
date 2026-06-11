@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
@@ -50,30 +49,6 @@ def _local_headers(ctx: BitBrowserClientContext) -> dict[str, str]:
     if not ctx.api_key:
         return {}
     return {"x-api-key": ctx.api_key}
-
-
-def sanitize_open_data_for_client(data: dict[str, Any]) -> dict[str, Any]:
-    """隐藏本机 CDP localhost 地址，避免公网部署误以为服务器会直连。"""
-    if not isinstance(data, dict):
-        return {}
-    sanitized = dict(data)
-    ws = str(sanitized.get("ws") or "")
-    http = str(sanitized.get("http") or "")
-    if _is_loopback_connection(ws):
-        sanitized["ws"] = "browser-relay://local-cdp"
-        sanitized["relay_cdp"] = True
-    if _is_loopback_connection(http):
-        sanitized["http"] = "browser-relay://local-devtools"
-        sanitized["relay_cdp"] = True
-    return sanitized
-
-
-def _is_loopback_connection(value: str) -> bool:
-    if not value:
-        return False
-    parsed = urlparse(value if "://" in value else f"http://{value}")
-    host = (parsed.hostname or "").lower()
-    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
 def _post_local(
@@ -376,7 +351,6 @@ def list_running_windows_for_user(db: Session, user: User) -> list[dict[str, Any
         c = id_to_cat.get(bid)
         cached = _cache_for_bid(bid)
         open_data = cached.get("data") if isinstance(cached.get("data"), dict) else {}
-        open_data_for_client = sanitize_open_data_for_client(open_data)
         items.append(
             {
                 "browser_id": bid,
@@ -387,7 +361,7 @@ def list_running_windows_for_user(db: Session, user: User) -> list[dict[str, Any
                 "headless": bool(cached.get("headless")),
                 "opened_at": cached.get("opened_at"),
                 "hint": cached.get("hint"),
-                "open_data": open_data_for_client,
+                "open_data": open_data,
             }
         )
     return items
