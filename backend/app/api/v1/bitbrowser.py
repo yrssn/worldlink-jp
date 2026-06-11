@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import and_
 from sqlalchemy.exc import SQLAlchemyError
@@ -36,34 +36,60 @@ from app.services import bitbrowser_service
 router = APIRouter(prefix="/bitbrowser", tags=["bitbrowser"])
 
 
-# ── 浏览器中继 WebSocket 入口 ────────────────────────────────────
-@router.websocket("/relay/ws")
-async def bitbrowser_relay_ws(websocket: WebSocket, token: str = Query(...)):
-    """前端页面连接此 WS，充当「本机 BitBrowser → 后端」的反向代理中继。"""
+def _relay_user_id_from_token(token: str) -> int | None:
     payload = decode_token(token)
     if not payload or payload.get("type") != "access":
-        await websocket.close(code=4001)
-        return
+        return None
     user_id_raw = payload.get("sub")
     if user_id_raw is None:
-        await websocket.close(code=4001)
-        return
+        return None
     try:
         user_id = int(user_id_raw)
     except (TypeError, ValueError):
-        await websocket.close(code=4001)
-        return
+        return None
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if not user or not user.is_active:
-            await websocket.close(code=4001)
-            return
+            return None
     finally:
         db.close()
+    return user_id
+
+
+# ── 浏览器中继 WebSocket 入口 ────────────────────────────────────
+@router.websocket("/relay/ws")
+async def bitbrowser_relay_ws(websocket: WebSocket, token: str = Query(...)):
+    """前端页面连接此 WS，充当「本机 BitBrowser → 后端」的反向代理中继。"""
+    user_id = _relay_user_id_from_token(token)
+    if user_id is None:
+        await websocket.close(code=4001)
+        return
     await websocket.accept()
     logger.info("[BitBrowserRelay] WS accepted for user {}", user_id)
     await relay_manager.connect(user_id, websocket)
+
+
+@router.get("/relay/poll")
+async def bitbrowser_relay_poll(token: str = Query(...)):
+    """HTTP long-polling fallback for deployments that do not proxy WebSocket Upgrade."""
+    user_id = _relay_user_id_from_token(token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="BitBrowser 中继 token 无效")
+    return await relay_manager.poll(user_id)
+
+
+@router.post("/relay/respond")
+async def bitbrowser_relay_respond(
+    token: str = Query(...),
+    body: dict[str, object] = Body(...),
+):
+    """Return a BitBrowser Local API response for the HTTP polling relay."""
+    user_id = _relay_user_id_from_token(token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="BitBrowser 中继 token 无效")
+    await relay_manager.respond(user_id, body)
+    return {"ok": True}
 
 
 @router.get("/relay/status")
