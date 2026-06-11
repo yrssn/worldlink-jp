@@ -65,7 +65,13 @@ def _post_local(
         if relay_manager.has_relay(ctx.user_id):
             t = float(timeout_sec) if timeout_sec is not None else ctx.http_timeout_sec
             logger.debug("[BitBrowser] relay path: user={} {}", ctx.user_id, path)
-            return relay_manager.call_sync(ctx.user_id, path, body, timeout=t)
+            return relay_manager.call_sync(
+                ctx.user_id,
+                path,
+                body,
+                headers=_local_headers(ctx),
+                timeout=t,
+            )
     # ── 直连 ─────────────────────────────────────────────────────────
     url = f"{ctx.base_url}{path}"
     headers = _local_headers(ctx)

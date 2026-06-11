@@ -115,6 +115,18 @@ class BitBrowserRelayManager:
             return
         if "error" in data:
             fut.set_exception(RuntimeError(str(data["error"])))
+        elif int(data.get("status") or 0) >= 400:
+            status = int(data.get("status") or 0)
+            body = data.get("body")
+            if status in (401, 403):
+                fut.set_exception(
+                    RuntimeError(
+                        "BitBrowser 返回未授权：请检查「本机连接配置」中的 API Token "
+                        "是否与比特浏览器「设置 → 本地 API」完全一致"
+                    )
+                )
+            else:
+                fut.set_exception(RuntimeError(f"BitBrowser 本地接口返回 HTTP {status}: {body}"))
         else:
             fut.set_result(data.get("body") or {})
 
@@ -125,6 +137,7 @@ class BitBrowserRelayManager:
         path: str,
         body: dict[str, Any],
         *,
+        headers: dict[str, str] | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         ws = self._connections.get(user_id)
@@ -137,7 +150,14 @@ class BitBrowserRelayManager:
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
         self._pending[req_id] = (fut, user_id)
-        req = {"type": "req", "id": req_id, "method": "POST", "path": path, "body": body}
+        req = {
+            "type": "req",
+            "id": req_id,
+            "method": "POST",
+            "path": path,
+            "body": body,
+            "headers": headers or {},
+        }
         try:
             if ws is not None:
                 await ws.send_json(req)
@@ -156,6 +176,7 @@ class BitBrowserRelayManager:
         path: str,
         body: dict[str, Any],
         *,
+        headers: dict[str, str] | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         """从同步代码中阻塞式调用异步中继（线程安全）。"""
@@ -163,7 +184,7 @@ class BitBrowserRelayManager:
         if loop is None or not loop.is_running():
             raise RuntimeError("BitBrowser 中继事件循环未就绪，请重启后端服务")
         future = asyncio.run_coroutine_threadsafe(
-            self.call_async(user_id, path, body, timeout=timeout), loop
+            self.call_async(user_id, path, body, headers=headers, timeout=timeout), loop
         )
         try:
             return future.result(timeout=timeout + 5)

@@ -60,9 +60,12 @@ async function executeLocalBitBrowserRequest(req: Record<string, unknown>): Prom
     return executeLocalCdpCall(reqId, payload.ws_url as string, payload.message as Record<string, unknown>)
   }
   try {
+    const relayHeaders = req.headers && typeof req.headers === 'object'
+      ? req.headers as Record<string, string>
+      : {}
     const resp = await fetch(`${localBbUrl}${path}`, {
       method: (req.method as string) || 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...relayHeaders },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30000)
     })
