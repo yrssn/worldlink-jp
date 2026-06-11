@@ -29,6 +29,7 @@ def open_onamae_mail_login(
         db,
         headless=False,
         restart=False,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:

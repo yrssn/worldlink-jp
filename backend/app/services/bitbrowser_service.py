@@ -424,8 +424,10 @@ def clear_browser_profile_cookies(browser_id: str, user: User) -> dict[str, bool
     }
 
 
-def _build_open_payload(browser_id: str, *, headless: bool) -> dict[str, Any]:
+def _build_open_payload(browser_id: str, *, headless: bool, ignore_default_urls: bool = False) -> dict[str, Any]:
     payload: dict[str, Any] = {"id": browser_id, "queue": True}
+    if ignore_default_urls:
+        payload["ignoreDefaultUrls"] = True
     if headless:
         raw = (getattr(settings, "bitbrowser_headless_chrome_args", None) or "--headless").strip()
         parts = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
@@ -469,6 +471,7 @@ def open_browser_window(
     *,
     headless: bool = False,
     restart: bool = False,
+    ignore_default_urls: bool = False,
 ) -> dict[str, Any]:
     """``POST /browser/open`` 打开指定窗口，返回 ws / http / driver 等（见官方文档）。
 
@@ -511,7 +514,7 @@ def open_browser_window(
         is_running = False
         time.sleep(0.6)
 
-    payload = _build_open_payload(bid, headless=headless)
+    payload = _build_open_payload(bid, headless=headless, ignore_default_urls=ignore_default_urls)
 
     # 同模式已运行：再调 open 唤起/刷新连接（官方无单独 focus 接口）
     if is_running and not restart:

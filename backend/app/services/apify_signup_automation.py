@@ -122,6 +122,7 @@ def start_apify_signup(
         db,
         headless=False,
         restart=restart_browser,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
@@ -406,6 +407,7 @@ def continue_apify_signup(
         db,
         headless=False,
         restart=False,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:

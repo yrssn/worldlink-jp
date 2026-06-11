@@ -36,6 +36,7 @@ def open_zoho_mail_login(
         db,
         headless=False,
         restart=False,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
@@ -95,6 +96,7 @@ def submit_zoho_verification_code(
         db,
         headless=False,
         restart=False,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
@@ -140,6 +142,7 @@ def open_latest_apify_verification_link(
         db,
         headless=False,
         restart=False,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
@@ -213,6 +216,7 @@ def wait_current_zoho_inbox_ready(
         db,
         headless=False,
         restart=False,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
