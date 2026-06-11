@@ -13,7 +13,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
 
@@ -81,6 +81,9 @@ class Influencer(Base, TimestampMixin):
     source: Mapped[InfluencerSource] = mapped_column(
         Enum(InfluencerSource), default=InfluencerSource.manual, nullable=False
     )
+    platform_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bitbrowser_platforms.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # 原始资料备份（来自 Pages Scraper 的完整 JSON）
     raw_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -88,3 +91,8 @@ class Influencer(Base, TimestampMixin):
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    platform = relationship("BitBrowserPlatform")
+
+    @property
+    def platform_name(self) -> str | None:
+        return self.platform.name if self.platform else None

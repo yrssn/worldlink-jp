@@ -14,12 +14,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.models.bitbrowser import BitBrowserPlatform
 from app.models.influencer import Influencer, InfluencerSource
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
+from app.services.fb_group_post_filter import normalize_influencer_name
 
 
 def find_duplicate(
@@ -41,6 +43,63 @@ def find_duplicate(
     if not conds:
         return None
     return q.filter(or_(*conds)).first()
+
+
+def find_duplicate_for_platform_user(
+    db: Session,
+    owner_id: int,
+    *,
+    platform_id: int | None,
+    fb_page_id: Optional[str] = None,
+    fb_page_url: Optional[str] = None,
+    email: Optional[str] = None,
+    display_name: Optional[str] = None,
+) -> Optional[Influencer]:
+    existing = find_duplicate(
+        db,
+        owner_id,
+        fb_page_id=fb_page_id,
+        fb_page_url=fb_page_url,
+        email=email,
+    )
+    if existing:
+        return existing
+    normalized_name = normalize_influencer_name(display_name)
+    if not normalized_name:
+        return None
+    return (
+        db.query(Influencer)
+        .filter(
+            Influencer.owner_id == owner_id,
+            func.lower(func.trim(Influencer.display_name)) == normalized_name,
+        )
+        .first()
+    )
+
+
+def get_or_create_facebook_platform(db: Session, owner_id: int) -> BitBrowserPlatform:
+    row = (
+        db.query(BitBrowserPlatform)
+        .filter(BitBrowserPlatform.owner_id == owner_id)
+        .filter(
+            (func.lower(BitBrowserPlatform.code).in_(("facebook", "fb")))
+            | (func.lower(BitBrowserPlatform.name) == "facebook")
+        )
+        .order_by(BitBrowserPlatform.id.asc())
+        .first()
+    )
+    if row:
+        return row
+    row = BitBrowserPlatform(
+        owner_id=owner_id,
+        name="Facebook",
+        code="facebook",
+        remark="自动用于 Facebook 群组帖子预建联",
+        sort_order=0,
+    )
+    db.add(row)
+    db.flush()
+    return row
 
 
 def _to_int(v: Any) -> Optional[int]:
@@ -165,15 +224,19 @@ def create_from_scrape(
     profile_data.setdefault("display_name", "Unknown")
     profile_data["source"] = InfluencerSource.scrape
     profile_data["owner_id"] = owner_id
+    if not profile_data.get("platform_id"):
+        profile_data["platform_id"] = get_or_create_facebook_platform(db, owner_id).id
     if notes:
         profile_data["notes"] = notes
 
-    existing = find_duplicate(
+    existing = find_duplicate_for_platform_user(
         db,
         owner_id=owner_id,
+        platform_id=profile_data.get("platform_id"),
         fb_page_id=profile_data.get("fb_page_id"),
         fb_page_url=profile_data.get("fb_page_url"),
         email=profile_data.get("email"),
+        display_name=profile_data.get("display_name"),
     )
     if existing:
         # 把当前 post + page_profile 上挂的所有源帖子统一关联过去

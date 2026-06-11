@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import get_current_user, get_db, is_admin
+from app.models.bitbrowser import BitBrowserPlatform
 from app.models.influencer import Influencer
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount
@@ -22,6 +23,18 @@ from app.services import influencer_service
 from app.utils.csv_export import build_csv, csv_response
 
 router = APIRouter(prefix="/influencers", tags=["influencer"])
+
+
+def _ensure_platform_access(db: Session, owner_id: int, platform_id: int | None) -> None:
+    if platform_id is None:
+        return
+    exists = (
+        db.query(BitBrowserPlatform.id)
+        .filter(BitBrowserPlatform.id == platform_id, BitBrowserPlatform.owner_id == owner_id)
+        .first()
+    )
+    if not exists:
+        raise HTTPException(status_code=400, detail="达人类型不存在或无权使用")
 
 
 INFLUENCER_CSV_COLUMNS = [
@@ -51,6 +64,7 @@ INFLUENCER_CSV_COLUMNS = [
     ("广告状态", "fb_ad_status"),
     ("状态", lambda r: r.status.value if r.status else ""),
     ("来源", lambda r: r.source.value if r.source else ""),
+    ("类型", lambda r: r.platform_name or ""),
     ("标签", "tags"),
     ("备注", "notes"),
     ("创建时间", "created_at"),
@@ -66,7 +80,7 @@ def list_influencers(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = db.query(Influencer)
+    q = db.query(Influencer).options(joinedload(Influencer.platform))
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
     if keyword:
@@ -97,7 +111,7 @@ def export_influencers(
     user: User = Depends(get_current_user),
 ):
     """按当前过滤条件导出达人列表（CSV）。"""
-    q = db.query(Influencer)
+    q = db.query(Influencer).options(joinedload(Influencer.platform))
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
     if keyword:
@@ -122,6 +136,7 @@ def create_influencer(
     user: User = Depends(get_current_user),
 ):
     data = payload.model_dump(exclude={"social_accounts"})
+    _ensure_platform_access(db, user.id, data.get("platform_id"))
     inf = Influencer(**data, owner_id=user.id)
     db.add(inf)
     db.flush()
@@ -202,7 +217,9 @@ def update_influencer(
     inf = db.get(Influencer, iid)
     if not inf or (inf.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="influencer not found")
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    _ensure_platform_access(db, inf.owner_id, data.get("platform_id"))
+    for k, v in data.items():
         setattr(inf, k, v)
     db.commit()
     db.refresh(inf)

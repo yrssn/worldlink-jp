@@ -25,6 +25,7 @@ const form = reactive({
   max_consecutive_failures: 5,
   remark: ''
 })
+const unlimited = ref(true)
 
 async function loadSchedules() {
   loading.value = true
@@ -44,6 +45,7 @@ function openCreate() {
   form.view_option = 'CHRONOLOGICAL'
   form.max_consecutive_failures = 5
   form.remark = ''
+  unlimited.value = true
   dialogVisible.value = true
 }
 
@@ -55,7 +57,9 @@ function openEdit(row: FbGroupScheduleTask) {
   } else {
     form.interval_hours = (row.schedule_config as any)?.hours || 24
   }
-  form.results_limit = (row.pull_params as any)?.results_limit || 20
+  const savedLimit = (row.pull_params as any)?.results_limit
+  unlimited.value = !savedLimit
+  form.results_limit = savedLimit || 20
   form.view_option = (row.pull_params as any)?.view_option || 'CHRONOLOGICAL'
   form.max_consecutive_failures = row.max_consecutive_failures
   form.remark = row.remark || ''
@@ -75,7 +79,7 @@ async function submitForm() {
         : { hours: form.interval_hours }
 
     const pull_params = {
-      results_limit: form.results_limit,
+      results_limit: unlimited.value ? undefined : form.results_limit,
       view_option: form.view_option
     }
 
@@ -177,7 +181,7 @@ onMounted(() => loadSchedules())
       <el-table-column label="拉取参数" width="150">
         <template #default="{ row }">
           <span style="font-size: 12px; color: #606266">
-            条数: {{ (row.pull_params as any)?.results_limit || 20 }}
+            条数: {{ (row.pull_params as any)?.results_limit || '全部' }}
           </span>
         </template>
       </el-table-column>
@@ -262,7 +266,10 @@ onMounted(() => loadSchedules())
         </el-form-item>
 
         <el-form-item label="拉取条数">
-          <el-input-number v-model="form.results_limit" :min="1" :max="500" />
+          <div style="display:flex;gap:10px;align-items:center">
+            <el-checkbox v-model="unlimited">抓取全部</el-checkbox>
+            <el-input-number v-model="form.results_limit" :min="1" :max="5000" :disabled="unlimited" />
+          </div>
         </el-form-item>
 
         <el-form-item label="排序方式">

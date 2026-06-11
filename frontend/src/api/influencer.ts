@@ -43,6 +43,8 @@ export interface Influencer {
   fb_rating_count?: number | null
   status: InfluencerStatus
   source: InfluencerSource
+  platform_id?: number | null
+  platform_name?: string | null
   notes?: string | null
   tags?: string[] | null
   owner_id: number

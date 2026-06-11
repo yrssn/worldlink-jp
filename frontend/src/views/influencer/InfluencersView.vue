@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { influencerApi, type Influencer } from '@/api/influencer'
+import { bitbrowserApi, type BitBrowserPlatform } from '@/api/bitbrowser'
 
 const router = useRouter()
 const list = ref<Influencer[]>([])
@@ -11,6 +12,7 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const statusFilter = ref<string>('')
+const platforms = ref<BitBrowserPlatform[]>([])
 const loading = ref(false)
 
 const dialogVisible = ref(false)
@@ -43,6 +45,10 @@ async function refresh() {
   }
 }
 
+async function loadPlatforms() {
+  platforms.value = await bitbrowserApi.listPlatforms()
+}
+
 function openCreate() {
   Object.assign(form, {
     display_name: '',
@@ -55,7 +61,8 @@ function openCreate() {
     city: '',
     bio: '',
     notes: '',
-    status: 'pre_contact'
+    status: 'pre_contact',
+    platform_id: undefined
   })
   dialogVisible.value = true
 }
@@ -85,7 +92,9 @@ async function remove(row: Influencer) {
   refresh()
 }
 
-onMounted(refresh)
+onMounted(async () => {
+  await Promise.all([refresh(), loadPlatforms()])
+})
 </script>
 
 <template>
@@ -115,6 +124,12 @@ onMounted(refresh)
           <el-tag size="small" :type="row.source === 'scrape' ? 'warning' : 'info'">
             {{ row.source === 'scrape' ? '抓取' : '手工' }}
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="类型" width="120">
+        <template #default="{ row }">
+          <el-tag v-if="row.platform_name" size="small" type="info">{{ row.platform_name }}</el-tag>
+          <span v-else style="color:#909399">—</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="100">
@@ -157,6 +172,11 @@ onMounted(refresh)
         </el-form-item>
         <el-form-item label="电话">
           <el-input v-model="form.phone" />
+        </el-form-item>
+        <el-form-item label="达人类型">
+          <el-select v-model="form.platform_id" clearable placeholder="选择平台管理中的类型" style="width:100%">
+            <el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
         </el-form-item>
         <el-form-item label="网站">
           <el-input v-model="form.website" />

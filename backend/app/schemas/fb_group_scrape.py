@@ -5,6 +5,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.influencer import InfluencerOut
+
 FbGroupViewOption = Literal[
     "CHRONOLOGICAL",
     "RECENT_ACTIVITY",
@@ -40,9 +42,9 @@ class FbGroupScrapeUpdate(BaseModel):
 
 
 class FbGroupPullBody(BaseModel):
-    """调用 Apify facebook-groups-scraper 的可选参数（测试默认条数较小）。"""
+    """调用 Apify facebook-groups-scraper 的可选参数。"""
 
-    results_limit: int = Field(5, ge=1, le=500, description="帖子条数上限")
+    results_limit: Optional[int] = Field(None, ge=1, le=5000, description="帖子条数上限；为空表示抓取全部")
     view_option: FbGroupViewOption = Field(
         "CHRONOLOGICAL",
         description="排序：CHRONOLOGICAL / RECENT_ACTIVITY / TOP_POSTS / CHRONOLOGICAL_LISTINGS",
@@ -86,6 +88,9 @@ class FbGroupPullTaskOut(BaseModel):
     apify_run_id: Optional[str] = None
     apify_dataset_id: Optional[str] = None
     result_count: int = 0
+    duplicate_count: int = 0
+    filtered_count: int = 0
+    total_fetched: int = 0
     error: Optional[str] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
@@ -96,7 +101,7 @@ class FbGroupPullTaskOut(BaseModel):
 class FbGroupPullTaskCreate(BaseModel):
     """提交后台拉取任务的请求体（与 FbGroupPullBody 相同字段）。"""
 
-    results_limit: int = Field(5, ge=1, le=500)
+    results_limit: Optional[int] = Field(None, ge=1, le=5000)
     view_option: FbGroupViewOption = Field("CHRONOLOGICAL")
     search_group_keyword: Optional[str] = None
     search_group_year: Optional[str] = None
@@ -107,7 +112,7 @@ class FbGroupBatchPullBody(BaseModel):
     """批量拉取请求体：多个 config_id + 共享拉取参数。"""
 
     config_ids: list[int] = Field(..., min_length=1, description="群组配置 ID 列表")
-    results_limit: int = Field(20, ge=1, le=500)
+    results_limit: Optional[int] = Field(None, ge=1, le=5000)
     view_option: FbGroupViewOption = Field("CHRONOLOGICAL")
     search_group_keyword: Optional[str] = None
     search_group_year: Optional[str] = None
@@ -148,6 +153,11 @@ class FbGroupPostPage(BaseModel):
     page: int
     page_size: int
     items: list[FbGroupPostOut]
+
+
+class FbGroupPreContactOut(BaseModel):
+    influencer: InfluencerOut
+    created: bool = False
 
 
 # ─── 定时任务 ──────────────────────────────────────────────────────

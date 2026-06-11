@@ -100,6 +100,7 @@ const batchPullForm = reactive({
   search_group_year: '',
   only_posts_newer_than: ''
 })
+const batchPullUnlimited = ref(true)
 
 function openBatchPull() {
   batchPullForm.results_limit = 20
@@ -107,6 +108,7 @@ function openBatchPull() {
   batchPullForm.search_group_keyword = ''
   batchPullForm.search_group_year = ''
   batchPullForm.only_posts_newer_than = ''
+  batchPullUnlimited.value = true
   batchPullVisible.value = true
 }
 
@@ -116,7 +118,7 @@ async function confirmBatchPull() {
   try {
     const tasks = await fbGroupScrapeApi.batchPull({
       config_ids: selectedConfigs.value.map(c => c.id),
-      results_limit: batchPullForm.results_limit,
+      results_limit: batchPullUnlimited.value ? undefined : batchPullForm.results_limit,
       view_option: batchPullForm.view_option,
       search_group_keyword: batchPullForm.search_group_keyword.trim() || undefined,
       search_group_year: batchPullForm.search_group_year.trim() || undefined,
@@ -141,6 +143,7 @@ const pullForm = reactive({
   search_group_year: '',
   only_posts_newer_than: ''
 })
+const pullUnlimited = ref(true)
 
 const taskPanelVisible = ref(false)
 const taskPanelConfig = ref<FbGroupScrape | null>(null)
@@ -155,6 +158,7 @@ function openPull(row: FbGroupScrape) {
   pullForm.search_group_keyword = ''
   pullForm.search_group_year = ''
   pullForm.only_posts_newer_than = ''
+  pullUnlimited.value = true
   pullDialogVisible.value = true
 }
 
@@ -163,7 +167,7 @@ async function confirmPull() {
   pullSubmitting.value = true
   try {
     const task = await fbGroupScrapeApi.pull(pullTarget.value.id, {
-      results_limit: pullForm.results_limit,
+      results_limit: pullUnlimited.value ? undefined : pullForm.results_limit,
       view_option: pullForm.view_option,
       search_group_keyword: pullForm.search_group_keyword.trim() || undefined,
       search_group_year: pullForm.search_group_year.trim() || undefined,
@@ -252,6 +256,7 @@ const postsKeyword = ref('')
 const postsLoading = ref(false)
 const postsDetailRow = ref<FbGroupPost | null>(null)
 const postsDetailVisible = ref(false)
+const preContactingPostIds = ref<Set<number>>(new Set())
 
 // ─── 定时任务 ────────────────────────────────────────────────────
 const scheduleDrawerVisible = ref(false)
@@ -311,6 +316,31 @@ function showPostDetail(row: FbGroupPost) {
   postsDetailVisible.value = true
 }
 
+function isPreContacting(postId: number) {
+  return preContactingPostIds.value.has(postId)
+}
+
+async function preContactPost(row: FbGroupPost) {
+  if (!row.user_name && !row.user_id) {
+    ElMessage.warning('该帖子缺少用户信息，无法预建联')
+    return
+  }
+  const next = new Set(preContactingPostIds.value)
+  next.add(row.id)
+  preContactingPostIds.value = next
+  try {
+    const result = await fbGroupScrapeApi.preContactPost(row.id)
+    const name = result.influencer.display_name || row.user_name || '达人'
+    ElMessage.success(result.created ? `已预建联：${name}` : `达人已存在：${name}`)
+  } catch {
+    /* 拦截器 */
+  } finally {
+    const done = new Set(preContactingPostIds.value)
+    done.delete(row.id)
+    preContactingPostIds.value = done
+  }
+}
+
 // ─── 通用工具 ────────────────────────────────────────────────────
 function formatTime(iso: string | null | undefined) {
   if (!iso) return '—'
@@ -321,6 +351,11 @@ function formatTime(iso: string | null | undefined) {
 function truncate(s: string | null | undefined, n = 80) {
   if (!s) return '—'
   return s.length > n ? s.slice(0, n) + '…' : s
+}
+
+function taskLimitLabel(row: FbGroupPullTask) {
+  const limit = row.params?.results_limit
+  return typeof limit === 'number' && limit > 0 ? `${limit} 条` : '全部'
 }
 
 onMounted(refresh)
@@ -431,7 +466,10 @@ onUnmounted(stopPoll)
         title="点击「提交」后任务在后台运行，页面立即返回，可通过「任务」按钮查看进度和结果。" />
       <el-form label-width="120px">
         <el-form-item label="帖子条数">
-          <el-input-number v-model="pullForm.results_limit" :min="1" :max="500" />
+          <div style="display:flex;gap:10px;align-items:center">
+            <el-checkbox v-model="pullUnlimited">抓取全部</el-checkbox>
+            <el-input-number v-model="pullForm.results_limit" :min="1" :max="5000" :disabled="pullUnlimited" />
+          </div>
         </el-form-item>
         <el-form-item label="排序 viewOption">
           <el-select v-model="pullForm.view_option" style="width:100%">
@@ -479,11 +517,12 @@ onUnmounted(stopPoll)
             <el-tag :type="taskStatusType(row.status)" size="small">{{ taskStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="新增/重复/总数" width="140" align="center">
+        <el-table-column label="新增/重复/过滤/总数" width="150" align="center">
           <template #default="{ row }">
             <div style="font-size:12px;line-height:1.6">
               <div style="color:#67c23a">✓ {{ row.result_count }}</div>
               <div v-if="row.duplicate_count > 0" style="color:#e6a23c">⊘ {{ row.duplicate_count }}</div>
+              <div v-if="row.filtered_count > 0" style="color:#909399">滤 {{ row.filtered_count }}</div>
               <div style="color:#909399">/ {{ row.total_fetched }}</div>
             </div>
           </template>
@@ -491,7 +530,7 @@ onUnmounted(stopPoll)
         <el-table-column label="参数" min-width="120" show-overflow-tooltip>
           <template #default="{ row }">
             <span style="font-size:12px">
-              {{ row.params?.results_limit }} 条 / {{ row.params?.view_option }}
+              {{ taskLimitLabel(row) }} / {{ row.params?.view_option }}
             </span>
           </template>
         </el-table-column>
@@ -582,9 +621,18 @@ onUnmounted(stopPoll)
             <span v-else class="fb-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" plain @click="showPostDetail(row)">详情</el-button>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              <el-button
+                size="small"
+                type="success"
+                plain
+                :loading="isPreContacting(row.id)"
+                @click="preContactPost(row)"
+              >预建联</el-button>
+              <el-button size="small" plain @click="showPostDetail(row)">详情</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -610,7 +658,10 @@ onUnmounted(stopPoll)
       </el-descriptions>
       <el-form label-width="120px">
         <el-form-item label="帖子条数">
-          <el-input-number v-model="batchPullForm.results_limit" :min="1" :max="500" />
+          <div style="display:flex;gap:10px;align-items:center">
+            <el-checkbox v-model="batchPullUnlimited">抓取全部</el-checkbox>
+            <el-input-number v-model="batchPullForm.results_limit" :min="1" :max="5000" :disabled="batchPullUnlimited" />
+          </div>
         </el-form-item>
         <el-form-item label="排序 viewOption">
           <el-select v-model="batchPullForm.view_option" style="width:100%">

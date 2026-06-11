@@ -70,6 +70,7 @@ class FbGroupPullTask(Base, TimestampMixin):
     apify_dataset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="新增帖子数")
     duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="重复帖子数（去重后跳过）")
+    filtered_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="达人库已存在而过滤的帖子数")
     total_fetched: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="Apify 返回的总帖子数")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
