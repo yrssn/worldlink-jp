@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import json
 import time
-from itertools import count
 from urllib.parse import quote, urlparse
 
-import httpx
 from sqlalchemy.orm import Session
-from websockets.sync.client import connect
 
 from app.models.user import User
 from app.services import bitbrowser_service
+from app.services.cdp_relay import CdpPage, devtools_request
 
 
 def open_onamae_mail_login(
@@ -36,8 +34,8 @@ def open_onamae_mail_login(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
-    page_ws, _page_id = _create_page(http_base, target_url)
-    with CdpPage(page_ws) as page:
+    page_ws, _page_id = _create_page(http_base, target_url, user_id=user.id)
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -73,64 +71,6 @@ def normalize_onamae_login_url(login_url: str | None) -> str:
     return f"https://{raw}"
 
 
-class CdpPage:
-    def __init__(self, ws_url: str):
-        self.ws_url = ws_url
-        self._ids = count(1)
-        self._ws = None
-
-    def __enter__(self) -> "CdpPage":
-        self._ws = connect(self.ws_url, open_timeout=15)
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        if self._ws is not None:
-            self._ws.close()
-
-    def call(
-        self,
-        method: str,
-        params: dict[str, object] | None = None,
-        *,
-        timeout: float = 15,
-    ) -> dict[str, object]:
-        if self._ws is None:
-            raise RuntimeError("CDP 未连接")
-        msg_id = next(self._ids)
-        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"CDP 调用超时: {method}")
-            raw = self._ws.recv(timeout=remaining)
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                continue
-            data: dict[str, object] = parsed
-            if data.get("id") != msg_id:
-                continue
-            if data.get("error"):
-                raise RuntimeError(f"CDP 调用失败 {method}: {data['error']}")
-            result = data.get("result") or {}
-            return result if isinstance(result, dict) else {}
-
-    def evaluate(self, expression: str, *, timeout: float = 15) -> object:
-        result = self.call(
-            "Runtime.evaluate",
-            {
-                "expression": expression,
-                "awaitPromise": True,
-                "returnByValue": True,
-            },
-            timeout=timeout,
-        )
-        remote = result.get("result") or {}
-        if not isinstance(remote, dict):
-            return None
-        return remote.get("value")
-
-
 def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raw_http = str(open_data.get("http") or "").strip()
     if raw_http:
@@ -143,20 +83,20 @@ def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str) -> tuple[str, str]:
-    target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe='')}"
-    with httpx.Client(timeout=15, trust_env=False) as client:
-        response = client.request("PUT", target_url)
-        if response.status_code in (404, 405):
-            response = client.get(target_url)
-        response.raise_for_status()
-        data = response.json()
-        target_id = str(data.get("id") or "")
-        if target_id:
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/activate/{target_id}")
-            except Exception:
-                pass
+def _create_page(http_base: str, url: str, *, user_id: int | None = None) -> tuple[str, str]:
+    path = f"/json/new?{quote(url, safe='')}"
+    try:
+        data = devtools_request(http_base, path, method="PUT", user_id=user_id)
+    except Exception:
+        data = devtools_request(http_base, path, method="GET", user_id=user_id)
+    if not isinstance(data, dict):
+        raise RuntimeError("创建お名前.com Webmail 登录页失败：DevTools 返回格式异常")
+    target_id = str(data.get("id") or "")
+    if target_id:
+        try:
+            devtools_request(http_base, f"/json/activate/{target_id}", user_id=user_id)
+        except Exception:
+            pass
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建お名前.com Webmail 登录页失败：DevTools 未返回页面 WebSocket")

@@ -40,6 +40,25 @@ async function executeLocalBitBrowserRequest(req: Record<string, unknown>): Prom
   const path = req.path as string
   const body = req.body ?? {}
   const reqId = req.id
+  if (path === '__http/request') {
+    try {
+      const payload = body as Record<string, unknown>
+      const resp = await fetch(payload.url as string, {
+        method: (payload.method as string) || 'GET',
+        signal: AbortSignal.timeout(30000)
+      })
+      let respBody: unknown = null
+      try { respBody = await resp.json() } catch { respBody = await resp.text() }
+      return { type: 'res', id: reqId, body: { status: resp.status, body: respBody } }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { type: 'res', id: reqId, error: msg }
+    }
+  }
+  if (path === '__cdp/call') {
+    const payload = body as Record<string, unknown>
+    return executeLocalCdpCall(reqId, payload.ws_url as string, payload.message as Record<string, unknown>)
+  }
   try {
     const resp = await fetch(`${localBbUrl}${path}`, {
       method: (req.method as string) || 'POST',
@@ -54,6 +73,50 @@ async function executeLocalBitBrowserRequest(req: Record<string, unknown>): Prom
     const msg = e instanceof Error ? e.message : String(e)
     return { type: 'res', id: reqId, error: msg }
   }
+}
+
+function executeLocalCdpCall(reqId: unknown, wsUrl: string, message: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    let done = false
+    let socket: WebSocket | null = null
+    const finish = (value: Record<string, unknown>) => {
+      if (done) return
+      done = true
+      try { socket?.close() } catch { /* ignore */ }
+      resolve(value)
+    }
+    const timer = window.setTimeout(() => finish({ type: 'res', id: reqId, error: 'CDP 调用超时' }), 30000)
+    try {
+      socket = new WebSocket(wsUrl)
+    } catch (e: unknown) {
+      window.clearTimeout(timer)
+      const msg = e instanceof Error ? e.message : String(e)
+      finish({ type: 'res', id: reqId, error: msg })
+      return
+    }
+    socket.onopen = () => {
+      socket?.send(JSON.stringify(message))
+    }
+    socket.onerror = () => {
+      window.clearTimeout(timer)
+      finish({ type: 'res', id: reqId, error: 'CDP WebSocket 连接失败' })
+    }
+    socket.onmessage = (event) => {
+      let data: Record<string, unknown>
+      try {
+        data = JSON.parse(event.data as string)
+      } catch {
+        return
+      }
+      if (data.id !== message.id) return
+      window.clearTimeout(timer)
+      finish({ type: 'res', id: reqId, body: data })
+    }
+    socket.onclose = () => {
+      window.clearTimeout(timer)
+      finish({ type: 'res', id: reqId, error: 'CDP WebSocket 已断开' })
+    }
+  })
 }
 
 async function startPollingRelay(): Promise<void> {

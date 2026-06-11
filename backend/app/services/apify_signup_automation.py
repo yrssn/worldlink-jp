@@ -5,16 +5,14 @@ import json
 import time
 from collections.abc import Callable
 from datetime import datetime
-from itertools import count
 from urllib.parse import quote, urljoin, urlparse
 
-import httpx
 from loguru import logger
 from sqlalchemy.orm import Session
-from websockets.sync.client import connect
 
 from app.models.user import User
 from app.services import bitbrowser_service
+from app.services.cdp_relay import CdpPage, devtools_request
 from app.services.zoho_mail_automation import open_latest_apify_verification_link
 
 SIGNUP_URL = "https://console.apify.com/sign-up"
@@ -28,70 +26,6 @@ ProgressCallback = Callable[[str, str], None]
 def _emit_progress(progress_callback: ProgressCallback | None, node: str, message: str) -> None:
     if progress_callback is not None:
         progress_callback(node, message)
-
-
-class CdpPage:
-    def __init__(self, ws_url: str):
-        self.ws_url = ws_url
-        self._ids = count(1)
-        self._ws = None
-
-    def __enter__(self) -> "CdpPage":
-        self._ws = connect(self.ws_url, open_timeout=15)
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        if self._ws is not None:
-            self._ws.close()
-
-    def call(
-        self,
-        method: str,
-        params: dict[str, object] | None = None,
-        *,
-        timeout: float = 15,
-    ) -> dict[str, object]:
-        if self._ws is None:
-            raise RuntimeError("CDP 未连接")
-        msg_id = next(self._ids)
-        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(f"CDP 调用超时: {method}")
-            raw = self._ws.recv(timeout=remaining)
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                continue
-            data: dict[str, object] = parsed
-            if data.get("id") != msg_id:
-                continue
-            if data.get("error"):
-                raise RuntimeError(f"CDP 调用失败 {method}: {data['error']}")
-            result = data.get("result") or {}
-            return result if isinstance(result, dict) else {}
-
-    def evaluate(self, expression: str, *, timeout: float = 15) -> object:
-        result = self.call(
-            "Runtime.evaluate",
-            {
-                "expression": expression,
-                "awaitPromise": True,
-                "returnByValue": True,
-            },
-            timeout=timeout,
-        )
-        remote = result.get("result") or {}
-        if not isinstance(remote, dict):
-            return None
-        return remote.get("value")
-
-    def click(self, x: float, y: float) -> None:
-        params = {"x": x, "y": y, "button": "left", "clickCount": 1}
-        self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, timeout=5)
-        self.call("Input.dispatchMouseEvent", {"type": "mousePressed", **params}, timeout=5)
-        self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **params}, timeout=5)
 
 
 def start_apify_signup(
@@ -129,9 +63,9 @@ def start_apify_signup(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
-    _close_apify_pages(http_base)
-    page_ws = _create_page(http_base, SIGNUP_URL)
-    with CdpPage(page_ws) as page:
+    _close_apify_pages(http_base, user_id=user.id)
+    page_ws = _create_page(http_base, SIGNUP_URL, user_id=user.id)
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Network.enable")
         page.call("Runtime.enable")
@@ -291,8 +225,10 @@ def start_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
-        with CdpPage(refreshed_ws) as page:
+        refreshed_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
+            http_base, SETTINGS_INTEGRATIONS_URL, user_id=user.id
+        )
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Network.enable")
             page.call("Runtime.enable")
@@ -414,7 +350,7 @@ def continue_apify_signup(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_apify_page(http_base) or _create_page(http_base, SIGNUP_URL)
+    page_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(http_base, SIGNUP_URL, user_id=user.id)
     profile_details: dict[str, object] = {
         "submitted": False,
         "full_name": _profile_name_from_email(email),
@@ -425,7 +361,7 @@ def continue_apify_signup(
     apify_login_attempted = False
     apify_logged_in = False
     login_result: dict[str, object] = {}
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Network.enable")
         page.call("Runtime.enable")
@@ -520,8 +456,10 @@ def continue_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] continue collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
-        with CdpPage(refreshed_ws) as page:
+        refreshed_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
+            http_base, SETTINGS_INTEGRATIONS_URL, user_id=user.id
+        )
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Network.enable")
             page.call("Runtime.enable")
@@ -593,29 +531,26 @@ def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str) -> str:
-    target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe=':/?&=%')}"
-    with httpx.Client(timeout=15, trust_env=False) as client:
-        response = client.request("PUT", target_url)
-        if response.status_code in (404, 405):
-            response = client.get(target_url)
-        response.raise_for_status()
-        data = response.json()
+def _create_page(http_base: str, url: str, *, user_id: int | None = None) -> str:
+    path = f"/json/new?{quote(url, safe=':/?&=%')}"
+    try:
+        data = devtools_request(http_base, path, method="PUT", user_id=user_id)
+    except Exception:
+        data = devtools_request(http_base, path, method="GET", user_id=user_id)
+    if not isinstance(data, dict):
+        raise RuntimeError("创建 Apify 注册页失败：DevTools 返回格式异常")
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建 Apify 注册页失败：DevTools 未返回页面 WebSocket")
     return str(ws_url)
 
 
-def _find_apify_page(http_base: str) -> str | None:
-    with httpx.Client(timeout=10, trust_env=False) as client:
-        try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Apify signup] find target skipped: {}", e)
-            return None
+def _find_apify_page(http_base: str, *, user_id: int | None = None) -> str | None:
+    try:
+        targets = devtools_request(http_base, "/json/list", user_id=user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] find target skipped: {}", e)
+        return None
     if not isinstance(targets, list):
         return None
     for target in targets:
@@ -628,30 +563,32 @@ def _find_apify_page(http_base: str) -> str | None:
     return None
 
 
-def _close_apify_pages(http_base: str) -> int:
+def _close_apify_pages(http_base: str, *, user_id: int | None = None) -> int:
     closed = 0
-    with httpx.Client(timeout=10, trust_env=False) as client:
+    try:
+        targets = devtools_request(http_base, "/json/list", user_id=user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] list targets skipped: {}", e)
+        return 0
+    if not isinstance(targets, list):
+        return 0
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        url = str(target.get("url") or "")
+        target_id = str(target.get("id") or "")
+        if "apify.com" not in url or not target_id:
+            continue
         try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
+            devtools_request(
+                http_base,
+                f"/json/close/{quote(target_id, safe='')}",
+                user_id=user_id,
+                timeout=10,
+            )
+            closed += 1
         except Exception as e:  # noqa: BLE001
-            logger.debug("[Apify signup] list targets skipped: {}", e)
-            return 0
-        if not isinstance(targets, list):
-            return 0
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            url = str(target.get("url") or "")
-            target_id = str(target.get("id") or "")
-            if "apify.com" not in url or not target_id:
-                continue
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/close/{quote(target_id, safe='')}")
-                closed += 1
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[Apify signup] close target skipped {}: {}", target_id, e)
+            logger.debug("[Apify signup] close target skipped {}: {}", target_id, e)
     return closed
 
 
