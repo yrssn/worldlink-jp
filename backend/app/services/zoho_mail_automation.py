@@ -44,9 +44,8 @@ def open_zoho_mail_login(
     http_base = _extract_devtools_http(open_data)
     time.sleep(1)
     closed_count = _close_zoho_pages_until_clear(http_base)
-    page_ws, page_id = _create_page(http_base, target_url)
+    page_ws, _page_id = _create_page(http_base, target_url)
     time.sleep(0.5)
-    closed_count += _close_zoho_pages_until_clear(http_base, keep_target_id=page_id)
     final_url = target_url
     email_submitted = False
     password_submitted = False
@@ -329,10 +328,15 @@ def _create_page(http_base: str, url: str) -> tuple[str, str]:
             response = client.get(target_url)
         response.raise_for_status()
         data = response.json()
+        target_id = str(data.get("id") or "")
+        if target_id:
+            try:
+                client.get(f"{http_base.rstrip('/')}/json/activate/{target_id}")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[Zoho mail] activate target {} skipped: {}", target_id, e)
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建 Zoho 邮箱登录页失败：DevTools 未返回页面 WebSocket")
-    target_id = str(data.get("id") or "")
     return str(ws_url), target_id
 
 
