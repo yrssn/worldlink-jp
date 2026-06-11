@@ -45,6 +45,10 @@ from app.services.fb_group_post_filter import (
 
 router = APIRouter(prefix="/scraper/fb-group-scrapes", tags=["scraper-fb-group"])
 
+# 单次拉取的默认/最大条数（不再支持"全部拉取"，防止 Apify 超时烧钱）。
+DEFAULT_RESULTS_LIMIT = 20
+MAX_RESULTS_LIMIT = 500
+
 
 # ─── 工具函数 ───────────────────────────────────────────────────
 
@@ -166,10 +170,21 @@ def _run_pull_task_bg(task_id: int) -> None:
             db.commit()
             return
 
+        # 始终限制抓取条数，禁止"全部拉取"（避免 Apify 超时烧钱）；
+        # 兼容历史任务里 results_limit 为空/0 的情况，统一回退到 DEFAULT_RESULTS_LIMIT。
+        results_limit = params.get("results_limit")
+        try:
+            results_limit = int(results_limit)
+        except (TypeError, ValueError):
+            results_limit = 0
+        if results_limit <= 0:
+            results_limit = DEFAULT_RESULTS_LIMIT
+        results_limit = min(results_limit, MAX_RESULTS_LIMIT)
+
         try:
             result = apify_service.run_fb_groups(
                 group_url,
-                results_limit=params.get("results_limit"),
+                results_limit=results_limit,
                 view_option=params.get("view_option", "CHRONOLOGICAL"),
                 search_group_keyword=params.get("search_group_keyword"),
                 search_group_year=params.get("search_group_year"),
@@ -699,23 +714,47 @@ def pre_contact_from_group_post(
         or user_obj.get("url")
         or user_obj.get("profile_url")
     )
+
+    # 调用 Apify facebook-pages-scraper 抓取该用户主页的完整资料（关注数/邮箱/电话/分类等）。
+    page_profile: dict | None = None
+    scrape_error: str | None = None
+    if profile_url:
+        try:
+            result = apify_service.run_fb_pages([profile_url], max_items=1, db=db)
+            items = result.get("items") or []
+            page_profile = next((it for it in items if isinstance(it, dict)), None)
+        except Exception as e:  # noqa: BLE001
+            scrape_error = str(e)
+            logger.warning(
+                "[FbGroupPreContact] facebook-pages-scraper 失败 url={} err={}",
+                profile_url, e,
+            )
+
+    mapped = influencer_service.map_page_profile(page_profile) if page_profile else {}
+
     existing = influencer_service.find_duplicate_for_platform_user(
         db,
         owner_id=user.id,
         platform_id=platform.id,
-        fb_page_id=post.user_id,
-        fb_page_url=profile_url,
-        display_name=display_name,
+        fb_page_id=mapped.get("fb_page_id") or post.user_id,
+        fb_page_url=mapped.get("fb_page_url") or profile_url,
+        email=mapped.get("email"),
+        display_name=mapped.get("display_name") or display_name,
     )
     if existing:
         return FbGroupPreContactOut(influencer=existing, created=False)
 
     notes = f"来自 Facebook 群组帖子：{post.post_url or post.legacy_id}"
-    influencer = Influencer(
-        display_name=display_name,
-        fb_page_id=post.user_id,
-        fb_page_url=profile_url,
-        fb_page_title=display_name,
+    if scrape_error:
+        notes += f"\n（主页抓取失败，仅保存帖子作者信息：{scrape_error[:200]}）"
+
+    # 以 facebook-pages-scraper 映射结果为主，缺失字段回退到群组帖子里的 user 信息。
+    data = {k: v for k, v in mapped.items() if v is not None and k != "raw_profile"}
+    data["display_name"] = mapped.get("display_name") or display_name
+    data.setdefault("fb_page_id", post.user_id)
+    data.setdefault("fb_page_url", profile_url)
+    data.setdefault("fb_page_title", display_name)
+    data.update(
         status=InfluencerStatus.pre_contact,
         source=InfluencerSource.scrape,
         platform_id=platform.id,
@@ -726,19 +765,23 @@ def pre_contact_from_group_post(
             "group_title": post.group_title,
             "post_id": post.id,
             "post_url": post.post_url,
+            "post_text": post.text,
             "user": user_obj,
+            "page_profile": page_profile,
             "post": raw,
         },
     )
+    influencer = Influencer(**data)
     db.add(influencer)
     db.flush()
-    if post.user_id or profile_url:
+    if influencer.fb_page_id or influencer.fb_page_url:
         db.add(
             InfluencerSocialAccount(
                 influencer_id=influencer.id,
                 platform=SocialPlatform.facebook,
-                handle=post.user_id,
-                url=profile_url,
+                handle=influencer.fb_page_id,
+                url=influencer.fb_page_url,
+                followers=influencer.fb_followers,
             )
         )
     db.commit()

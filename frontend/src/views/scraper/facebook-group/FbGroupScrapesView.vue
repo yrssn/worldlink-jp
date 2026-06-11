@@ -100,7 +100,6 @@ const batchPullForm = reactive({
   search_group_year: '',
   only_posts_newer_than: ''
 })
-const batchPullUnlimited = ref(true)
 
 function openBatchPull() {
   batchPullForm.results_limit = 20
@@ -108,7 +107,6 @@ function openBatchPull() {
   batchPullForm.search_group_keyword = ''
   batchPullForm.search_group_year = ''
   batchPullForm.only_posts_newer_than = ''
-  batchPullUnlimited.value = true
   batchPullVisible.value = true
 }
 
@@ -118,7 +116,7 @@ async function confirmBatchPull() {
   try {
     const tasks = await fbGroupScrapeApi.batchPull({
       config_ids: selectedConfigs.value.map(c => c.id),
-      results_limit: batchPullUnlimited.value ? undefined : batchPullForm.results_limit,
+      results_limit: batchPullForm.results_limit,
       view_option: batchPullForm.view_option,
       search_group_keyword: batchPullForm.search_group_keyword.trim() || undefined,
       search_group_year: batchPullForm.search_group_year.trim() || undefined,
@@ -143,7 +141,6 @@ const pullForm = reactive({
   search_group_year: '',
   only_posts_newer_than: ''
 })
-const pullUnlimited = ref(true)
 
 const taskPanelVisible = ref(false)
 const taskPanelConfig = ref<FbGroupScrape | null>(null)
@@ -158,7 +155,6 @@ function openPull(row: FbGroupScrape) {
   pullForm.search_group_keyword = ''
   pullForm.search_group_year = ''
   pullForm.only_posts_newer_than = ''
-  pullUnlimited.value = true
   pullDialogVisible.value = true
 }
 
@@ -167,7 +163,7 @@ async function confirmPull() {
   pullSubmitting.value = true
   try {
     const task = await fbGroupScrapeApi.pull(pullTarget.value.id, {
-      results_limit: pullUnlimited.value ? undefined : pullForm.results_limit,
+      results_limit: pullForm.results_limit,
       view_option: pullForm.view_option,
       search_group_keyword: pullForm.search_group_keyword.trim() || undefined,
       search_group_year: pullForm.search_group_year.trim() || undefined,
@@ -355,7 +351,7 @@ function truncate(s: string | null | undefined, n = 80) {
 
 function taskLimitLabel(row: FbGroupPullTask) {
   const limit = row.params?.results_limit
-  return typeof limit === 'number' && limit > 0 ? `${limit} 条` : '全部'
+  return typeof limit === 'number' && limit > 0 ? `${limit} 条` : '20 条'
 }
 
 onMounted(refresh)
@@ -466,10 +462,7 @@ onUnmounted(stopPoll)
         title="点击「提交」后任务在后台运行，页面立即返回，可通过「任务」按钮查看进度和结果。" />
       <el-form label-width="120px">
         <el-form-item label="帖子条数">
-          <div style="display:flex;gap:10px;align-items:center">
-            <el-checkbox v-model="pullUnlimited">抓取全部</el-checkbox>
-            <el-input-number v-model="pullForm.results_limit" :min="1" :max="5000" :disabled="pullUnlimited" />
-          </div>
+          <el-input-number v-model="pullForm.results_limit" :min="1" :max="500" />
         </el-form-item>
         <el-form-item label="排序 viewOption">
           <el-select v-model="pullForm.view_option" style="width:100%">
@@ -658,10 +651,7 @@ onUnmounted(stopPoll)
       </el-descriptions>
       <el-form label-width="120px">
         <el-form-item label="帖子条数">
-          <div style="display:flex;gap:10px;align-items:center">
-            <el-checkbox v-model="batchPullUnlimited">抓取全部</el-checkbox>
-            <el-input-number v-model="batchPullForm.results_limit" :min="1" :max="5000" :disabled="batchPullUnlimited" />
-          </div>
+          <el-input-number v-model="batchPullForm.results_limit" :min="1" :max="500" />
         </el-form-item>
         <el-form-item label="排序 viewOption">
           <el-select v-model="batchPullForm.view_option" style="width:100%">
