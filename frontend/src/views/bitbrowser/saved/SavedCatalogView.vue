@@ -32,7 +32,8 @@ const OPEN_RESULT_LABELS: Record<string, string> = {
   http: '调试 HTTP',
   driver: 'ChromeDriver 路径',
   webdriver: 'WebDriver 地址',
-  coreVersion: '内核版本'
+  coreVersion: '内核版本',
+  relay_cdp: 'CDP 中继'
 }
 const openResultVisible = ref(false)
 const openResultTitle = ref('')
@@ -110,7 +111,7 @@ async function removeFromCatalog(row: BitBrowserCatalogRow) {
 }
 
 function buildOpenResultKv(data: Record<string, unknown>) {
-  const priority = ['ws', 'http', 'driver', 'webdriver', 'coreVersion']
+  const priority = ['ws', 'http', 'relay_cdp', 'driver', 'webdriver', 'coreVersion']
   const kv: { key: string; label: string; value: string }[] = []
   for (const k of priority) {
     const v = data[k]

@@ -512,7 +512,9 @@ def open_bitbrowser_window(
         ) from e
     return BitBrowserOpenResponse(
         success=True,
-        data=jsonable_encoder(result.get("data") or {}),
+        data=jsonable_encoder(
+            bitbrowser_service.sanitize_open_data_for_client(result.get("data") or {})
+        ),
         headless=bool(result.get("headless")),
         restarted=bool(result.get("restarted")),
         already_open=bool(result.get("already_open")),

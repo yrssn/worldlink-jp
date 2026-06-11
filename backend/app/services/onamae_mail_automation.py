@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import json
 import time
-from urllib.parse import quote, urlparse
 
 from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.services import bitbrowser_service
-from app.services.cdp_relay import CdpPage, devtools_request
+from app.services.cdp_relay import CdpPage, activate_cdp_target, create_cdp_target
 
 
 def open_onamae_mail_login(
@@ -33,8 +32,8 @@ def open_onamae_mail_login(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
-    http_base = _extract_devtools_http(open_data)
-    page_ws, _page_id = _create_page(http_base, target_url, user_id=user.id)
+    browser_ws = _extract_browser_ws(open_data)
+    page_ws, _page_id = _create_page(browser_ws, target_url, user_id=user.id)
     with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
@@ -71,36 +70,22 @@ def normalize_onamae_login_url(login_url: str | None) -> str:
     return f"https://{raw}"
 
 
-def _extract_devtools_http(open_data: dict[str, object]) -> str:
-    raw_http = str(open_data.get("http") or "").strip()
-    if raw_http:
-        return raw_http if raw_http.startswith(("http://", "https://")) else f"http://{raw_http}"
+def _extract_browser_ws(open_data: dict[str, object]) -> str:
     raw_ws = str(open_data.get("ws") or "").strip()
-    if raw_ws:
-        parsed = urlparse(raw_ws)
-        if parsed.netloc:
-            return f"http://{parsed.netloc}"
-    raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
+    if raw_ws.startswith(("ws://", "wss://")):
+        return raw_ws
+    raise RuntimeError("BitBrowser /browser/open 返回中缺少 ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str, *, user_id: int | None = None) -> tuple[str, str]:
-    path = f"/json/new?{quote(url, safe='')}"
-    try:
-        data = devtools_request(http_base, path, method="PUT", user_id=user_id)
-    except Exception:
-        data = devtools_request(http_base, path, method="GET", user_id=user_id)
-    if not isinstance(data, dict):
-        raise RuntimeError("创建お名前.com Webmail 登录页失败：DevTools 返回格式异常")
-    target_id = str(data.get("id") or "")
+def _create_page(browser_ws: str, url: str, *, user_id: int | None = None) -> tuple[str, str]:
+    page_ws = create_cdp_target(browser_ws, url, user_id=user_id)
+    target_id = page_ws.rsplit("/", 1)[-1]
     if target_id:
         try:
-            devtools_request(http_base, f"/json/activate/{target_id}", user_id=user_id)
+            activate_cdp_target(browser_ws, target_id, user_id=user_id)
         except Exception:
             pass
-    ws_url = data.get("webSocketDebuggerUrl")
-    if not ws_url:
-        raise RuntimeError("创建お名前.com Webmail 登录页失败：DevTools 未返回页面 WebSocket")
-    return str(ws_url), target_id
+    return page_ws, target_id
 
 
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
