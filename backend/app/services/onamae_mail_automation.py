@@ -29,6 +29,7 @@ def open_onamae_mail_login(
         db,
         headless=False,
         restart=False,
+        ignore_default_urls=True,
     )
     open_data = open_result.get("data") or {}
     if not isinstance(open_data, dict) or not open_data:
@@ -150,10 +151,15 @@ def _create_page(http_base: str, url: str) -> tuple[str, str]:
             response = client.get(target_url)
         response.raise_for_status()
         data = response.json()
+        target_id = str(data.get("id") or "")
+        if target_id:
+            try:
+                client.get(f"{http_base.rstrip('/')}/json/activate/{target_id}")
+            except Exception:
+                pass
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建お名前.com Webmail 登录页失败：DevTools 未返回页面 WebSocket")
-    target_id = str(data.get("id") or "")
     return str(ws_url), target_id
 
 
