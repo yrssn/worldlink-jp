@@ -2,7 +2,7 @@
 
 工作流程
 --------
-1. 浏览器前端在登录后自动建立 WebSocket 连接（``/api/v1/bitbrowser/relay/ws``）。
+1. 浏览器前端在登录后自动建立中继连接（优先 WebSocket，失败后 HTTP polling）。
 2. 后端需要调用 BitBrowser Local API 时，若当前用户有中继连接，
    则通过 WebSocket 把请求转发给前端；前端在用户本机上执行 fetch，
    再把结果原路回传。
@@ -17,6 +17,7 @@ WS 协议
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any
 
@@ -26,7 +27,9 @@ from loguru import logger
 class BitBrowserRelayManager:
     def __init__(self) -> None:
         self._connections: dict[int, Any] = {}          # user_id -> WebSocket
-        self._pending: dict[str, asyncio.Future] = {}   # req_id  -> Future
+        self._pending: dict[str, tuple[asyncio.Future, int]] = {}   # req_id -> (Future, user_id)
+        self._poll_queues: dict[int, asyncio.Queue] = {}
+        self._poll_last_seen: dict[int, float] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ── 事件循环引用（在 lifespan / startup 中保存）─────────────────
@@ -35,7 +38,16 @@ class BitBrowserRelayManager:
 
     # ── 连接状态 ────────────────────────────────────────────────────
     def has_relay(self, user_id: int) -> bool:
-        return user_id in self._connections
+        if user_id in self._connections:
+            return True
+        last_seen = self._poll_last_seen.get(user_id)
+        if last_seen is None:
+            return False
+        if time.monotonic() - last_seen <= 45:
+            return True
+        self._poll_last_seen.pop(user_id, None)
+        self._poll_queues.pop(user_id, None)
+        return False
 
     def connected_user_ids(self) -> list[int]:
         return list(self._connections.keys())
@@ -59,22 +71,52 @@ class BitBrowserRelayManager:
                 if data.get("type") != "res":
                     continue
                 req_id = data.get("id")
-                fut = self._pending.pop(req_id, None)
-                if fut is None or fut.done():
-                    continue
-                if "error" in data:
-                    fut.set_exception(RuntimeError(data["error"]))
-                else:
-                    fut.set_result(data.get("body") or {})
+                if isinstance(req_id, str):
+                    self._finish_pending(req_id, data)
         except Exception as e:  # noqa: BLE001
             logger.info("[BitBrowserRelay] user {} relay disconnected: {}", user_id, e)
         finally:
             self._connections.pop(user_id, None)
-            # 让等待中的请求立即失败
-            for fut in list(self._pending.values()):
+            # 让该 WebSocket 上等待中的请求立即失败；polling 兜底会接管后续请求
+            for req_id, (fut, pending_user_id) in list(self._pending.items()):
+                if pending_user_id != user_id:
+                    continue
                 if not fut.done():
                     fut.set_exception(RuntimeError("BitBrowser 中继连接已断开"))
-            self._pending.clear()
+                self._pending.pop(req_id, None)
+
+    # ── HTTP polling 兜底（适配服务器/反代不支持 WebSocket Upgrade 的部署）────
+    async def poll(self, user_id: int, *, timeout: float = 25.0) -> dict[str, Any]:
+        self._poll_last_seen[user_id] = time.monotonic()
+        queue = self._poll_queues.setdefault(user_id, asyncio.Queue())
+        try:
+            req = await asyncio.wait_for(queue.get(), timeout=timeout)
+            self._poll_last_seen[user_id] = time.monotonic()
+            return req
+        except asyncio.TimeoutError:
+            self._poll_last_seen[user_id] = time.monotonic()
+            return {"type": "noop"}
+
+    async def respond(self, user_id: int, data: dict[str, Any]) -> None:
+        req_id = data.get("id")
+        if not isinstance(req_id, str):
+            return
+        entry = self._pending.get(req_id)
+        if entry is None or entry[1] != user_id:
+            return
+        self._finish_pending(req_id, data)
+
+    def _finish_pending(self, req_id: str, data: dict[str, Any]) -> None:
+        entry = self._pending.pop(req_id, None)
+        if entry is None:
+            return
+        fut, _user_id = entry
+        if fut.done():
+            return
+        if "error" in data:
+            fut.set_exception(RuntimeError(str(data["error"])))
+        else:
+            fut.set_result(data.get("body") or {})
 
     # ── 异步调用（供 async 路由使用）───────────────────────────────
     async def call_async(
@@ -86,18 +128,22 @@ class BitBrowserRelayManager:
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         ws = self._connections.get(user_id)
-        if ws is None:
+        polling_connected = self.has_relay(user_id)
+        if ws is None and not polling_connected:
             raise RuntimeError(
                 "BitBrowser 中继未连接——请确保管理端页面已打开且中继已启用"
             )
         req_id = str(uuid.uuid4())
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
-        self._pending[req_id] = fut
+        self._pending[req_id] = (fut, user_id)
+        req = {"type": "req", "id": req_id, "method": "POST", "path": path, "body": body}
         try:
-            await ws.send_json(
-                {"type": "req", "id": req_id, "method": "POST", "path": path, "body": body}
-            )
+            if ws is not None:
+                await ws.send_json(req)
+            else:
+                queue = self._poll_queues.setdefault(user_id, asyncio.Queue())
+                await queue.put(req)
             return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
