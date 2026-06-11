@@ -45,7 +45,7 @@ def open_zoho_mail_login(
     http_base = _extract_devtools_http(open_data)
     time.sleep(1)
     closed_count = _close_zoho_pages_until_clear(http_base)
-    page_ws, _page_id = _create_page(http_base, target_url)
+    page_ws, page_id = _create_page(http_base, target_url)
     time.sleep(0.5)
     final_url = target_url
     email_submitted = False
