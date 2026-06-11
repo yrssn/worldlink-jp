@@ -63,10 +63,9 @@ def start_apify_signup(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     browser_ws = _extract_browser_ws(open_data)
-    relay_only = bitbrowser_service.should_relay_cdp(user)
-    _close_apify_pages(browser_ws, user_id=user.id, relay_only=relay_only)
-    page_ws = _create_page(browser_ws, SIGNUP_URL, user_id=user.id, relay_only=relay_only)
-    with CdpPage(page_ws, user_id=user.id, relay_only=relay_only) as page:
+    _close_apify_pages(browser_ws, user_id=user.id)
+    page_ws = _create_page(browser_ws, SIGNUP_URL, user_id=user.id)
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Network.enable")
         page.call("Runtime.enable")
@@ -226,10 +225,10 @@ def start_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(browser_ws, user_id=user.id, relay_only=relay_only) or _create_page(
-            browser_ws, SETTINGS_INTEGRATIONS_URL, user_id=user.id, relay_only=relay_only
+        refreshed_ws = _find_apify_page(browser_ws, user_id=user.id) or _create_page(
+            browser_ws, SETTINGS_INTEGRATIONS_URL, user_id=user.id
         )
-        with CdpPage(refreshed_ws, user_id=user.id, relay_only=relay_only) as page:
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Network.enable")
             page.call("Runtime.enable")
@@ -351,10 +350,7 @@ def continue_apify_signup(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     browser_ws = _extract_browser_ws(open_data)
-    relay_only = bitbrowser_service.should_relay_cdp(user)
-    page_ws = _find_apify_page(browser_ws, user_id=user.id, relay_only=relay_only) or _create_page(
-        browser_ws, SIGNUP_URL, user_id=user.id, relay_only=relay_only
-    )
+    page_ws = _find_apify_page(browser_ws, user_id=user.id) or _create_page(browser_ws, SIGNUP_URL, user_id=user.id)
     profile_details: dict[str, object] = {
         "submitted": False,
         "full_name": _profile_name_from_email(email),
@@ -365,7 +361,7 @@ def continue_apify_signup(
     apify_login_attempted = False
     apify_logged_in = False
     login_result: dict[str, object] = {}
-    with CdpPage(page_ws, user_id=user.id, relay_only=relay_only) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Network.enable")
         page.call("Runtime.enable")
@@ -460,10 +456,10 @@ def continue_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] continue collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(browser_ws, user_id=user.id, relay_only=relay_only) or _create_page(
-            browser_ws, SETTINGS_INTEGRATIONS_URL, user_id=user.id, relay_only=relay_only
+        refreshed_ws = _find_apify_page(browser_ws, user_id=user.id) or _create_page(
+            browser_ws, SETTINGS_INTEGRATIONS_URL, user_id=user.id
         )
-        with CdpPage(refreshed_ws, user_id=user.id, relay_only=relay_only) as page:
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Network.enable")
             page.call("Runtime.enable")
@@ -530,24 +526,13 @@ def _extract_browser_ws(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 ws CDP 地址")
 
 
-def _create_page(
-    browser_ws: str,
-    url: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> str:
-    return create_cdp_target(browser_ws, url, user_id=user_id, relay_only=relay_only)
+def _create_page(browser_ws: str, url: str, *, user_id: int | None = None) -> str:
+    return create_cdp_target(browser_ws, url, user_id=user_id)
 
 
-def _find_apify_page(
-    browser_ws: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> str | None:
+def _find_apify_page(browser_ws: str, *, user_id: int | None = None) -> str | None:
     try:
-        targets = list_cdp_targets(browser_ws, user_id=user_id, relay_only=relay_only)
+        targets = list_cdp_targets(browser_ws, user_id=user_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("[Apify signup] find target skipped: {}", e)
         return None
@@ -559,15 +544,10 @@ def _find_apify_page(
     return None
 
 
-def _close_apify_pages(
-    browser_ws: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> int:
+def _close_apify_pages(browser_ws: str, *, user_id: int | None = None) -> int:
     closed = 0
     try:
-        targets = list_cdp_targets(browser_ws, user_id=user_id, relay_only=relay_only)
+        targets = list_cdp_targets(browser_ws, user_id=user_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("[Apify signup] list targets skipped: {}", e)
         return 0
@@ -577,7 +557,7 @@ def _close_apify_pages(
         if "apify.com" not in url or not target_id:
             continue
         try:
-            close_cdp_target(browser_ws, target_id, user_id=user_id, relay_only=relay_only)
+            close_cdp_target(browser_ws, target_id, user_id=user_id)
             closed += 1
         except Exception as e:  # noqa: BLE001
             logger.debug("[Apify signup] close target skipped {}: {}", target_id, e)

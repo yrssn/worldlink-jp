@@ -11,22 +11,17 @@ from websockets.sync.client import connect
 
 
 class CdpPage:
-    def __init__(self, ws_url: str, user_id: int | None = None, *, relay_only: bool = False):
+    def __init__(self, ws_url: str, user_id: int | None = None):
         self.ws_url = ws_url
         self.user_id = user_id
-        self.relay_only = relay_only
         self._ids = count(1)
         self._ws = None
 
     def __enter__(self) -> "CdpPage":
-        if self.relay_only:
-            self._ensure_relay()
+        if self._force_relay():
             return self
-        try:
+        if not self._use_relay():
             self._ws = connect(self.ws_url, open_timeout=15)
-        except Exception:
-            if not self._use_relay():
-                raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -40,9 +35,8 @@ class CdpPage:
 
         return relay_manager.has_relay(self.user_id)
 
-    def _ensure_relay(self) -> None:
-        if not self._use_relay():
-            raise RuntimeError("服务器无法直连本机 BitBrowser CDP，请保持管理后台页面打开以建立浏览器中继")
+    def _force_relay(self) -> bool:
+        return _is_loopback_url(self.ws_url) and self._use_relay()
 
     def call(
         self,
@@ -53,13 +47,7 @@ class CdpPage:
     ) -> dict[str, object]:
         msg_id = next(self._ids)
         message = {"id": msg_id, "method": method, "params": params or {}}
-        if self._ws is not None:
-            try:
-                return self._call_direct(message, msg_id, method, timeout)
-            except Exception:
-                if not self._use_relay():
-                    raise
-        if self._use_relay():
+        if self._force_relay() or self._use_relay():
             from app.services.bitbrowser_relay import relay_manager
 
             data = relay_manager.call_sync(
@@ -73,15 +61,6 @@ class CdpPage:
             result = data.get("result") or {}
             return result if isinstance(result, dict) else {}
 
-        raise RuntimeError("CDP 未连接")
-
-    def _call_direct(
-        self,
-        message: dict[str, object],
-        msg_id: int,
-        method: str,
-        timeout: float,
-    ) -> dict[str, object]:
         if self._ws is None:
             raise RuntimeError("CDP 未连接")
         self._ws.send(json.dumps(message))
@@ -170,14 +149,8 @@ def target_ws_url(browser_ws_url: str, target_id: str) -> str:
     return f"{prefix}/devtools/page/{target_id}"
 
 
-def create_cdp_target(
-    browser_ws_url: str,
-    url: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> str:
-    with CdpPage(browser_ws_url, user_id=user_id, relay_only=relay_only) as browser:
+def create_cdp_target(browser_ws_url: str, url: str, *, user_id: int | None = None) -> str:
+    with CdpPage(browser_ws_url, user_id=user_id) as browser:
         result = browser.call("Target.createTarget", {"url": url}, timeout=15)
     target_id = str(result.get("targetId") or "")
     if not target_id:
@@ -185,35 +158,18 @@ def create_cdp_target(
     return target_ws_url(browser_ws_url, target_id)
 
 
-def list_cdp_targets(
-    browser_ws_url: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> list[dict[str, Any]]:
-    with CdpPage(browser_ws_url, user_id=user_id, relay_only=relay_only) as browser:
+def list_cdp_targets(browser_ws_url: str, *, user_id: int | None = None) -> list[dict[str, Any]]:
+    with CdpPage(browser_ws_url, user_id=user_id) as browser:
         result = browser.call("Target.getTargets", timeout=10)
     targets = result.get("targetInfos") or []
     return [t for t in targets if isinstance(t, dict)]
 
 
-def activate_cdp_target(
-    browser_ws_url: str,
-    target_id: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> None:
-    with CdpPage(browser_ws_url, user_id=user_id, relay_only=relay_only) as browser:
+def activate_cdp_target(browser_ws_url: str, target_id: str, *, user_id: int | None = None) -> None:
+    with CdpPage(browser_ws_url, user_id=user_id) as browser:
         browser.call("Target.activateTarget", {"targetId": target_id}, timeout=10)
 
 
-def close_cdp_target(
-    browser_ws_url: str,
-    target_id: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> None:
-    with CdpPage(browser_ws_url, user_id=user_id, relay_only=relay_only) as browser:
+def close_cdp_target(browser_ws_url: str, target_id: str, *, user_id: int | None = None) -> None:
+    with CdpPage(browser_ws_url, user_id=user_id) as browser:
         browser.call("Target.closeTarget", {"targetId": target_id}, timeout=10)

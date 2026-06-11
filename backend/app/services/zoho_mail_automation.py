@@ -47,16 +47,15 @@ def open_zoho_mail_login(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     browser_ws = _extract_browser_ws(open_data)
-    relay_only = bitbrowser_service.should_relay_cdp(user)
     time.sleep(1)
-    closed_count = _close_zoho_pages_until_clear(browser_ws, user_id=user.id, relay_only=relay_only)
-    page_ws, page_id = _create_page(browser_ws, target_url, user_id=user.id, relay_only=relay_only)
+    closed_count = _close_zoho_pages_until_clear(browser_ws, user_id=user.id)
+    page_ws, page_id = _create_page(browser_ws, target_url, user_id=user.id)
     time.sleep(0.5)
     final_url = target_url
     email_submitted = False
     password_submitted = False
     verification_required = False
-    with CdpPage(page_ws, user_id=user.id, relay_only=relay_only) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -66,10 +65,8 @@ def open_zoho_mail_login(
         email_submitted = _submit_zoho_email(page, email)
         final_url = _current_url(page)
     if email_submitted and password:
-        refreshed_ws = _find_zoho_page_ws(
-            browser_ws, preferred_target_id=page_id, user_id=user.id, relay_only=relay_only
-        ) or page_ws
-        with CdpPage(refreshed_ws, user_id=user.id, relay_only=relay_only) as page:
+        refreshed_ws = _find_zoho_page_ws(browser_ws, preferred_target_id=page_id, user_id=user.id) or page_ws
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Runtime.enable")
             page.call("Page.bringToFront")
@@ -109,14 +106,13 @@ def submit_zoho_verification_code(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     browser_ws = _extract_browser_ws(open_data)
-    relay_only = bitbrowser_service.should_relay_cdp(user)
-    page_ws = _find_zoho_page_ws(browser_ws, user_id=user.id, relay_only=relay_only)
+    page_ws = _find_zoho_page_ws(browser_ws, user_id=user.id)
     if not page_ws:
         return {
             "mail_verification_code_submitted": False,
             "mail_verification_submit_hint": "未找到 Zoho 验证页面",
         }
-    with CdpPage(page_ws, user_id=user.id, relay_only=relay_only) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -156,8 +152,7 @@ def open_latest_apify_verification_link(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     browser_ws = _extract_browser_ws(open_data)
-    relay_only = bitbrowser_service.should_relay_cdp(user)
-    page_ws = _find_zoho_page_ws(browser_ws, user_id=user.id, relay_only=relay_only)
+    page_ws = _find_zoho_page_ws(browser_ws, user_id=user.id)
     if not page_ws:
         logger.info("[Apify signup] Zoho page not found for Apify verification browser_id={} email={}", browser_id, email)
         return {
@@ -172,7 +167,7 @@ def open_latest_apify_verification_link(
     mail_opened = False
     link_clicked = False
     final_url = ""
-    with CdpPage(page_ws, user_id=user.id, relay_only=relay_only) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -231,8 +226,7 @@ def wait_current_zoho_inbox_ready(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     browser_ws = _extract_browser_ws(open_data)
-    relay_only = bitbrowser_service.should_relay_cdp(user)
-    page_ws = _find_zoho_page_ws(browser_ws, user_id=user.id, relay_only=relay_only)
+    page_ws = _find_zoho_page_ws(browser_ws, user_id=user.id)
     if not page_ws:
         return {
             "mail_inbox_ready": False,
@@ -240,7 +234,7 @@ def wait_current_zoho_inbox_ready(
         }
     inbox_ready = False
     final_url = ""
-    with CdpPage(page_ws, user_id=user.id, relay_only=relay_only) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -271,18 +265,12 @@ def _extract_browser_ws(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 ws CDP 地址")
 
 
-def _create_page(
-    browser_ws: str,
-    url: str,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> tuple[str, str]:
-    page_ws = create_cdp_target(browser_ws, url, user_id=user_id, relay_only=relay_only)
+def _create_page(browser_ws: str, url: str, *, user_id: int | None = None) -> tuple[str, str]:
+    page_ws = create_cdp_target(browser_ws, url, user_id=user_id)
     target_id = page_ws.rsplit("/", 1)[-1]
     if target_id:
         try:
-            activate_cdp_target(browser_ws, target_id, user_id=user_id, relay_only=relay_only)
+            activate_cdp_target(browser_ws, target_id, user_id=user_id)
         except Exception as e:  # noqa: BLE001
             logger.debug("[Zoho mail] activate target {} skipped: {}", target_id, e)
     return page_ws, target_id
@@ -293,13 +281,10 @@ def _close_zoho_pages_until_clear(
     keep_target_id: str | None = None,
     attempts: int = 3,
     user_id: int | None = None,
-    relay_only: bool = False,
 ) -> int:
     closed = 0
     for _ in range(attempts):
-        closed_now = _close_zoho_pages(
-            browser_ws, keep_target_id=keep_target_id, user_id=user_id, relay_only=relay_only
-        )
+        closed_now = _close_zoho_pages(browser_ws, keep_target_id=keep_target_id, user_id=user_id)
         closed += closed_now
         if closed_now == 0:
             return closed
@@ -307,16 +292,10 @@ def _close_zoho_pages_until_clear(
     return closed
 
 
-def _close_zoho_pages(
-    browser_ws: str,
-    keep_target_id: str | None = None,
-    *,
-    user_id: int | None = None,
-    relay_only: bool = False,
-) -> int:
+def _close_zoho_pages(browser_ws: str, keep_target_id: str | None = None, *, user_id: int | None = None) -> int:
     closed = 0
     try:
-        targets = list_cdp_targets(browser_ws, user_id=user_id, relay_only=relay_only)
+        targets = list_cdp_targets(browser_ws, user_id=user_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("[Zoho mail] list targets skipped: {}", e)
         return 0
@@ -326,7 +305,7 @@ def _close_zoho_pages(
         if not target_id or target_id == keep_target_id or "zoho.com" not in target_url:
             continue
         try:
-            close_cdp_target(browser_ws, target_id, user_id=user_id, relay_only=relay_only)
+            close_cdp_target(browser_ws, target_id, user_id=user_id)
             closed += 1
         except Exception as e:  # noqa: BLE001
             logger.debug("[Zoho mail] close target {} skipped: {}", target_id, e)
@@ -338,10 +317,9 @@ def _find_zoho_page_ws(
     preferred_target_id: str | None = None,
     *,
     user_id: int | None = None,
-    relay_only: bool = False,
 ) -> str | None:
     try:
-        targets = list_cdp_targets(browser_ws, user_id=user_id, relay_only=relay_only)
+        targets = list_cdp_targets(browser_ws, user_id=user_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("[Zoho mail] find target skipped: {}", e)
         return None

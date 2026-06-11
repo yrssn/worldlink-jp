@@ -76,11 +76,6 @@ def _is_loopback_connection(value: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
-def should_relay_cdp(user: User) -> bool:
-    raw = (getattr(user, "bitbrowser_local_url", None) or "").strip()
-    return bool(raw) and not _is_loopback_connection(raw)
-
-
 def _post_local(
     ctx: BitBrowserClientContext,
     path: str,
@@ -90,8 +85,7 @@ def _post_local(
 ) -> dict[str, Any]:
     """调用 BitBrowser 本地服务。若有浏览器中继则通过 WebSocket 转发，否则直连。"""
     # ── 优先走浏览器中继（公网部署 + 本地 BitBrowser 场景）──────────
-    prefer_relay = not _is_loopback_connection(ctx.base_url)
-    if prefer_relay and ctx.user_id is not None:
+    if ctx.user_id is not None:
         from app.services.bitbrowser_relay import relay_manager  # 延迟导入避免循环
         if relay_manager.has_relay(ctx.user_id):
             t = float(timeout_sec) if timeout_sec is not None else ctx.http_timeout_sec
