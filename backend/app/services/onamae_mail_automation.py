@@ -33,8 +33,9 @@ def open_onamae_mail_login(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     browser_ws = _extract_browser_ws(open_data)
-    page_ws, _page_id = _create_page(browser_ws, target_url, user_id=user.id)
-    with CdpPage(page_ws, user_id=user.id) as page:
+    relay_only = bitbrowser_service.should_relay_cdp(user)
+    page_ws, _page_id = _create_page(browser_ws, target_url, user_id=user.id, relay_only=relay_only)
+    with CdpPage(page_ws, user_id=user.id, relay_only=relay_only) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -77,12 +78,18 @@ def _extract_browser_ws(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 ws CDP 地址")
 
 
-def _create_page(browser_ws: str, url: str, *, user_id: int | None = None) -> tuple[str, str]:
-    page_ws = create_cdp_target(browser_ws, url, user_id=user_id)
+def _create_page(
+    browser_ws: str,
+    url: str,
+    *,
+    user_id: int | None = None,
+    relay_only: bool = False,
+) -> tuple[str, str]:
+    page_ws = create_cdp_target(browser_ws, url, user_id=user_id, relay_only=relay_only)
     target_id = page_ws.rsplit("/", 1)[-1]
     if target_id:
         try:
-            activate_cdp_target(browser_ws, target_id, user_id=user_id)
+            activate_cdp_target(browser_ws, target_id, user_id=user_id, relay_only=relay_only)
         except Exception:
             pass
     return page_ws, target_id
