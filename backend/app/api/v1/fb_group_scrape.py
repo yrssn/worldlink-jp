@@ -20,6 +20,7 @@ from app.models.fb_group_scrape import (
     FbGroupScheduleTask,
     FbGroupScheduleTaskStatus,
 )
+from app.models.influencer import Influencer
 from app.models.user import User
 from app.schemas.fb_group_scrape import (
     FbGroupBatchPullBody,
@@ -233,6 +234,21 @@ def _run_pre_contact_bg(post_id: int, owner_id: int) -> None:
         post.analysis = fb_group_analysis.analyze_post(db, owner_id, post)
         post.analyzed_at = datetime.utcnow()
         db.commit()
+
+        # 按作者 user.id 去重：把同一作者（owner 名下）尚未关联的帖子统一标记为已建联
+        if post.user_id and inf and inf.id:
+            db.query(FbGroupPost).filter(
+                FbGroupPost.user_id == post.user_id,
+                FbGroupPost.influencer_id.is_(None),
+                FbGroupPost.config_id.in_(
+                    db.query(FbGroupScrapeConfig.id).filter(
+                        FbGroupScrapeConfig.created_by_id == owner_id
+                    )
+                ),
+            ).update(
+                {FbGroupPost.influencer_id: inf.id}, synchronize_session=False
+            )
+            db.commit()
         logger.info(
             "[FbGroupPreContact post#{}] {} influencer #{}",
             post_id, "created" if created else "matched existing", inf.id,
@@ -646,6 +662,60 @@ def fail_pull_task(
 
 # ─── 帖子查询 ───────────────────────────────────────────────────
 
+def _build_posts_page(
+    db: Session,
+    base,
+    *,
+    exclude_contacted: bool,
+    page: int,
+    page_size: int,
+) -> FbGroupPostPage:
+    """统一构造帖子分页响应：标记每条帖子关联达人是否已被删除，并统计计数。
+
+    - ``filtered_count``：已关联达人的帖子数（已建联 + 已删除），即默认隐藏的总数；
+    - ``deleted_count``：其中关联达人已被软删除的帖子数；
+    - 每条帖子的 ``influencer_deleted`` 标记其关联达人是否已删除。
+    """
+    filtered_count = base.filter(FbGroupPost.influencer_id.isnot(None)).count()
+    deleted_count = (
+        base.join(Influencer, FbGroupPost.influencer_id == Influencer.id)
+        .filter(Influencer.deleted_at.isnot(None))
+        .count()
+    )
+    q = base
+    if exclude_contacted:
+        q = q.filter(FbGroupPost.influencer_id.is_(None))
+    total = q.count()
+    items = (
+        q.order_by(FbGroupPost.post_time.desc(), FbGroupPost.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    inf_ids = {p.influencer_id for p in items if p.influencer_id}
+    deleted_ids: set[int] = set()
+    if inf_ids:
+        deleted_ids = {
+            i
+            for (i,) in db.query(Influencer.id)
+            .filter(Influencer.id.in_(inf_ids), Influencer.deleted_at.isnot(None))
+            .all()
+        }
+    outs: list[FbGroupPostOut] = []
+    for p in items:
+        out = FbGroupPostOut.model_validate(p)
+        out.influencer_deleted = p.influencer_id in deleted_ids
+        outs.append(out)
+    return FbGroupPostPage(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=outs,
+        filtered_count=filtered_count,
+        deleted_count=deleted_count,
+    )
+
+
 @router.get("/tasks/{task_id}/posts", response_model=FbGroupPostPage)
 def list_task_posts(
     task_id: int,
@@ -672,23 +742,8 @@ def list_task_posts(
         base = base.filter(
             (FbGroupPost.text.like(like)) | (FbGroupPost.user_name.like(like))
         )
-    filtered_count = base.filter(FbGroupPost.influencer_id.isnot(None)).count()
-    q = base
-    if exclude_contacted:
-        q = q.filter(FbGroupPost.influencer_id.is_(None))
-    total = q.count()
-    items = (
-        q.order_by(FbGroupPost.post_time.desc(), FbGroupPost.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    return FbGroupPostPage(
-        total=total,
-        page=page,
-        page_size=page_size,
-        items=[FbGroupPostOut.model_validate(p) for p in items],
-        filtered_count=filtered_count,
+    return _build_posts_page(
+        db, base, exclude_contacted=exclude_contacted, page=page, page_size=page_size
     )
 
 
@@ -713,23 +768,8 @@ def list_config_posts(
         base = base.filter(
             (FbGroupPost.text.like(like)) | (FbGroupPost.user_name.like(like))
         )
-    filtered_count = base.filter(FbGroupPost.influencer_id.isnot(None)).count()
-    q = base
-    if exclude_contacted:
-        q = q.filter(FbGroupPost.influencer_id.is_(None))
-    total = q.count()
-    items = (
-        q.order_by(FbGroupPost.post_time.desc(), FbGroupPost.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    return FbGroupPostPage(
-        total=total,
-        page=page,
-        page_size=page_size,
-        items=[FbGroupPostOut.model_validate(p) for p in items],
-        filtered_count=filtered_count,
+    return _build_posts_page(
+        db, base, exclude_contacted=exclude_contacted, page=page, page_size=page_size
     )
 
 

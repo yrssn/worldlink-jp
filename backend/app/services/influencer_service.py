@@ -26,13 +26,22 @@ from app.models.social_account import InfluencerSocialAccount, SocialPlatform
 def find_duplicate(
     db: Session,
     owner_id: int,
+    fb_author_id: Optional[str] = None,
     fb_page_id: Optional[str] = None,
     fb_page_url: Optional[str] = None,
     email: Optional[str] = None,
 ) -> Optional[Influencer]:
-    """根据 fb_page_id / fb_page_url / email 查重。"""
-    q = db.query(Influencer).filter(Influencer.owner_id == owner_id)
+    """根据 fb_author_id（群组帖子作者 user.id）/ fb_page_id / fb_page_url / email 查重。
+
+    已软删除（``deleted_at`` 有值）的达人不参与查重，便于删除后重新建联。
+    """
+    q = db.query(Influencer).filter(
+        Influencer.owner_id == owner_id,
+        Influencer.deleted_at.is_(None),
+    )
     conds = []
+    if fb_author_id:
+        conds.append(Influencer.fb_author_id == fb_author_id)
     if fb_page_id:
         conds.append(Influencer.fb_page_id == fb_page_id)
     if fb_page_url:
@@ -249,6 +258,8 @@ def create_from_group_post(
         profile_data.setdefault("fb_page_url", profile_url)
     if post.user_id:
         profile_data.setdefault("fb_page_id", str(post.user_id))
+        # 记录帖子作者 user.id，后续按作者去重 / 命中已建联
+        profile_data["fb_author_id"] = str(post.user_id)
     profile_data.setdefault("display_name", "Unknown")
 
     profile_data["source"] = InfluencerSource.scrape
@@ -259,6 +270,7 @@ def create_from_group_post(
     existing = find_duplicate(
         db,
         owner_id=owner_id,
+        fb_author_id=str(post.user_id) if post.user_id else None,
         fb_page_id=profile_data.get("fb_page_id"),
         fb_page_url=profile_data.get("fb_page_url"),
         email=profile_data.get("email"),

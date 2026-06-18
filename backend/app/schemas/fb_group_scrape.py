@@ -5,8 +5,6 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.influencer import InfluencerOut
-
 FbGroupViewOption = Literal[
     "CHRONOLOGICAL",
     "RECENT_ACTIVITY",
@@ -147,6 +145,7 @@ class FbGroupPostOut(BaseModel):
 
     # 建联 / 分析
     influencer_id: Optional[int] = None
+    influencer_deleted: bool = False
     pre_contact_status: Optional[str] = None
     pre_contact_error: Optional[str] = None
     analysis: Optional[dict[str, Any]] = None
@@ -161,7 +160,10 @@ class FbGroupPostPage(BaseModel):
     page_size: int
     items: list[FbGroupPostOut]
     filtered_count: int = Field(
-        0, description="命中分析过滤（已建联）的帖子数（当前过滤条件下）"
+        0, description="命中分析过滤（已建联 + 已删除）的帖子数（当前过滤条件下）"
+    )
+    deleted_count: int = Field(
+        0, description="其中关联达人已被删除的帖子数"
     )
 
 
@@ -173,11 +175,6 @@ class FbGroupPreContactOut(BaseModel):
     created: bool = False
     status: str
     message: str
-
-
-class FbGroupPreContactOut(BaseModel):
-    influencer: InfluencerOut
-    created: bool = False
 
 
 # ─── 定时任务 ──────────────────────────────────────────────────────

@@ -70,6 +70,7 @@ export interface FbGroupPost {
   created_at: string
   // 建联 / 分析
   influencer_id?: number | null
+  influencer_deleted?: boolean
   pre_contact_status?: 'pending' | 'running' | 'done' | 'failed' | null
   pre_contact_error?: string | null
   analysis?: Record<string, { hit?: boolean; filter?: boolean; influencer_id?: number; matched_by?: string }> | null
@@ -82,6 +83,7 @@ export interface FbGroupPostPage {
   page_size: number
   items: FbGroupPost[]
   filtered_count: number
+  deleted_count: number
 }
 
 export interface FbGroupPreContactResult {

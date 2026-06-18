@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
@@ -80,7 +82,9 @@ def list_influencers(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = db.query(Influencer).options(joinedload(Influencer.platform))
+    q = db.query(Influencer).options(joinedload(Influencer.platform)).filter(
+        Influencer.deleted_at.is_(None)
+    )
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
     if keyword:
@@ -111,7 +115,9 @@ def export_influencers(
     user: User = Depends(get_current_user),
 ):
     """按当前过滤条件导出达人列表（CSV）。"""
-    q = db.query(Influencer).options(joinedload(Influencer.platform))
+    q = db.query(Influencer).options(joinedload(Influencer.platform)).filter(
+        Influencer.deleted_at.is_(None)
+    )
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
     if keyword:
@@ -235,7 +241,8 @@ def delete_influencer(
     inf = db.get(Influencer, iid)
     if not inf or (inf.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="influencer not found")
-    db.delete(inf)
+    # 软删除：保留记录，关联帖子据此显示「已删除」；列表/查重不再展示
+    inf.deleted_at = datetime.utcnow()
     db.commit()
     return Msg()
 

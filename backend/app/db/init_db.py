@@ -158,18 +158,29 @@ def _ensure_influencer_platform_column() -> None:
     if "influencers" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("influencers")}
+    statements: list[str] = []
     if "platform_id" not in cols:
-        statements = [
+        statements += [
             "ALTER TABLE influencers ADD COLUMN platform_id INT NULL",
             "CREATE INDEX ix_influencers_platform_id ON influencers (platform_id)",
         ]
-        for sql in statements:
-            try:
-                logger.info("[schema-patch] {}", sql)
-                with engine.begin() as conn:
-                    conn.execute(text(sql))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+    if "fb_author_id" not in cols:
+        statements += [
+            "ALTER TABLE influencers ADD COLUMN fb_author_id VARCHAR(255) NULL",
+            "CREATE INDEX ix_influencers_fb_author_id ON influencers (fb_author_id)",
+        ]
+    if "deleted_at" not in cols:
+        statements += [
+            "ALTER TABLE influencers ADD COLUMN deleted_at DATETIME NULL",
+            "CREATE INDEX ix_influencers_deleted_at ON influencers (deleted_at)",
+        ]
+    for sql in statements:
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
 
 
 def _ensure_apify_keys_columns() -> None:

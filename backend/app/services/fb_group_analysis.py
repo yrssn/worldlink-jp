@@ -84,16 +84,21 @@ class AlreadyInfluencerAnalyzer:
                 "matched_by": "linked",
             }
         profile_url = build_fb_profile_url(post)
+        author_id = str(post.user_id) if post.user_id else None
         existing = influencer_service.find_duplicate(
             db,
             owner_id=owner_id,
-            fb_page_id=str(post.user_id) if post.user_id else None,
+            fb_author_id=author_id,
+            fb_page_id=author_id,
             fb_page_url=profile_url,
         )
         if existing:
-            matched_by = "fb_page_id" if (
-                post.user_id and existing.fb_page_id == str(post.user_id)
-            ) else "fb_page_url"
+            if author_id and existing.fb_author_id == author_id:
+                matched_by = "fb_author_id"
+            elif author_id and existing.fb_page_id == author_id:
+                matched_by = "fb_page_id"
+            else:
+                matched_by = "fb_page_url"
             return {
                 "hit": True,
                 "filter": True,
