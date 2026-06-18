@@ -167,3 +167,34 @@ class VerificationMailLoginOut(BaseModel):
     verification_mail_code_extracted: bool = False
     verification_code: Optional[str] = None
     verification_mail_open_hint: Optional[str] = None
+
+
+class EmailImportField(BaseModel):
+    """可被导入映射的目标字段。"""
+
+    key: str
+    label: str
+    required: bool = False
+
+
+class EmailImportColumn(BaseModel):
+    """上传文件里识别到的表头列。"""
+
+    index: int
+    name: str
+
+
+class EmailImportPreviewOut(BaseModel):
+    columns: list[EmailImportColumn]
+    sample_rows: list[list[str]]
+    total_rows: int
+    fields: list[EmailImportField]
+    suggested_mapping: dict[str, int] = Field(default_factory=dict)
+
+
+class EmailImportResultOut(BaseModel):
+    total: int
+    created: int
+    skipped: int
+    failed: int
+    errors: list[str] = Field(default_factory=list)

@@ -143,6 +143,33 @@ export interface VerificationMailLoginResult {
   verification_mail_open_hint?: string | null
 }
 
+export interface EmailImportField {
+  key: string
+  label: string
+  required: boolean
+}
+
+export interface EmailImportColumn {
+  index: number
+  name: string
+}
+
+export interface EmailImportPreview {
+  columns: EmailImportColumn[]
+  sample_rows: string[][]
+  total_rows: number
+  fields: EmailImportField[]
+  suggested_mapping: Record<string, number>
+}
+
+export interface EmailImportResult {
+  total: number
+  created: number
+  skipped: number
+  failed: number
+  errors: string[]
+}
+
 export const emailAccountApi = {
   list: (params?: { q?: string; purpose?: string; status?: string }) =>
     http.get<unknown, EmailAccount[]>('/email/accounts', { params }),
@@ -179,5 +206,23 @@ export const emailAccountApi = {
       `/email/accounts/${id}/mail-login/verification`,
       {},
       { timeout: 60000 }
+    ),
+  importPreview: (file: File, sampleSize = 5) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return http.post<unknown, EmailImportPreview>(
+      `/email/accounts/import/preview?sample_size=${sampleSize}`,
+      formData,
+      { timeout: 60000 }
     )
+  },
+  importAccounts: (file: File, mapping: Record<string, number>, skipDuplicates = true) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('mapping', JSON.stringify(mapping))
+    formData.append('skip_duplicates', String(skipDuplicates))
+    return http.post<unknown, EmailImportResult>('/email/accounts/import', formData, {
+      timeout: 120000
+    })
+  }
 }
