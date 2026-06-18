@@ -57,6 +57,8 @@ class Influencer(Base, TimestampMixin):
     website: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Facebook Page 专属字段（参考 facebook-pages-scraper 输出）
+    # 来源群组帖子作者的 FB user.id（用于按作者去重 / 命中已建联）
+    fb_author_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     fb_page_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     fb_page_url: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     fb_page_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -91,6 +93,10 @@ class Influencer(Base, TimestampMixin):
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+
+    # 软删除：删除达人时只置时间戳，列表不再展示；关联帖子据此显示「已删除」
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
     platform = relationship("BitBrowserPlatform")
 
     @property

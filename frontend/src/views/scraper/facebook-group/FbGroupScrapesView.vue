@@ -254,6 +254,7 @@ const postsDetailRow = ref<FbGroupPost | null>(null)
 const postsDetailVisible = ref(false)
 const postsExcludeContacted = ref(true)
 const postsFilteredCount = ref(0)
+const postsDeletedCount = ref(0)
 const preContactingIds = ref<Set<number>>(new Set())
 
 // ─── 定时任务 ────────────────────────────────────────────────────
@@ -301,6 +302,7 @@ async function loadPosts() {
     posts.value = r.items
     postsTotal.value = r.total
     postsFilteredCount.value = r.filtered_count ?? 0
+    postsDeletedCount.value = r.deleted_count ?? 0
   } catch { /* 拦截器 */ } finally {
     postsLoading.value = false
   }
@@ -323,7 +325,11 @@ function showPostDetail(row: FbGroupPost) {
 
 // ─── 预建联 ───────────────────────────────────────────────────────
 function preContactStatusInfo(row: FbGroupPost): { label: string; type: '' | 'success' | 'warning' | 'info' | 'danger' } | null {
-  if (row.influencer_id) return { label: '已建联', type: 'success' }
+  if (row.influencer_id) {
+    return row.influencer_deleted
+      ? { label: '已删除', type: 'info' }
+      : { label: '已建联', type: 'success' }
+  }
   switch (row.pre_contact_status) {
     case 'pending':
     case 'running':
@@ -599,8 +605,11 @@ onUnmounted(stopPoll)
           active-text="隐藏已建联"
           @change="onPostsFilterChange"
         />
-        <el-tag v-if="postsFilteredCount" type="info" size="small" style="margin-left:8px">
-          已建联 {{ postsFilteredCount }} 条
+        <el-tag v-if="postsFilteredCount - postsDeletedCount > 0" type="success" size="small" style="margin-left:8px">
+          已建联 {{ postsFilteredCount - postsDeletedCount }} 条
+        </el-tag>
+        <el-tag v-if="postsDeletedCount" type="info" size="small" style="margin-left:8px">
+          已删除 {{ postsDeletedCount }} 条
         </el-tag>
       </div>
       <el-table v-loading="postsLoading" :data="posts" border stripe row-key="id" size="small">
@@ -652,7 +661,7 @@ onUnmounted(stopPoll)
               :disabled="!!row.influencer_id"
               @click="preContact(row)"
             >
-              {{ row.influencer_id ? '已建联' : '预建联' }}
+              {{ row.influencer_id ? (row.influencer_deleted ? '已删除' : '已建联') : '预建联' }}
             </el-button>
           </template>
         </el-table-column>
