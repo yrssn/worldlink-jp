@@ -25,7 +25,6 @@ from app.schemas.fb_group_scrape import (
     FbGroupBatchPullBody,
     FbGroupPostOut,
     FbGroupPostPage,
-    FbGroupPreContactOut,
     FbGroupPullTaskCreate,
     FbGroupPullTaskOut,
     FbGroupScrapeCreate,
@@ -744,7 +743,7 @@ def _get_post_or_404(db: Session, user: User, post_id: int) -> FbGroupPost:
     return post
 
 
-@router.post("/posts/{post_id}/pre-contact", response_model=FbGroupPreContactOut)
+@router.post("/posts/{post_id}/pre-contact")
 def pre_contact_post_author(
     post_id: int,
     db: Session = Depends(get_db),
@@ -758,13 +757,13 @@ def pre_contact_post_author(
     if post.pre_contact_status in ("pending", "running"):
         raise HTTPException(status_code=400, detail="该帖子正在预建联中，请稍候")
     if post.influencer_id:
-        return FbGroupPreContactOut(
-            post_id=post.id,
-            influencer_id=post.influencer_id,
-            created=False,
-            status="done",
-            message="该作者已在建联达人中，已关联",
-        )
+        return {
+            "post_id": post.id,
+            "influencer_id": post.influencer_id,
+            "created": False,
+            "status": "done",
+            "message": "该作者已在建联达人中，已关联",
+        }
 
     post.pre_contact_status = "pending"
     post.pre_contact_error = None
@@ -774,13 +773,13 @@ def pre_contact_post_author(
         target=_run_pre_contact_bg, args=(post.id, user.id), daemon=True
     )
     t.start()
-    return FbGroupPreContactOut(
-        post_id=post.id,
-        influencer_id=None,
-        created=False,
-        status="pending",
-        message="已提交预建联，正在抓取主页资料并入库（稍后在「建联达人」查看）",
-    )
+    return {
+        "post_id": post.id,
+        "influencer_id": None,
+        "created": False,
+        "status": "pending",
+        "message": "已提交预建联，正在抓取主页资料并入库（稍后在「建联达人」查看）",
+    }
 
 
 @router.post("/tasks/{task_id}/analyze")

@@ -116,6 +116,7 @@ export interface ZohoMailLoginResult {
   mail_email_submitted: boolean
   mail_password_submitted: boolean
   mail_verification_required: boolean
+  mail_refreshed: boolean
   verification_mail_opened: boolean
   verification_mail_login_url?: string | null
   verification_mail_final_url?: string | null
@@ -124,6 +125,7 @@ export interface ZohoMailLoginResult {
   verification_mail_code_extracted: boolean
   verification_code?: string | null
   mail_verification_code_submitted: boolean
+  mail_verification_refreshed: boolean
   mail_verification_final_url?: string | null
   mail_verification_submit_hint?: string | null
   mail_open_hint?: string | null
@@ -172,7 +174,7 @@ export const emailAccountApi = {
     http.post<unknown, ZohoMailLoginResult>(
       `/email/accounts/${id}/mail-login/zoho`,
       {},
-      { timeout: 60000 }
+      { timeout: 180000 }
     ),
   startVerificationMailLogin: (id: number) =>
     http.post<unknown, VerificationMailLoginResult>(
