@@ -27,6 +27,23 @@ const socialForm = reactive<{
   url: ''
 })
 
+const STATUS_LABELS: Record<string, string> = {
+  pre_contact: '预建联',
+  contacting: '建联中',
+  signed: '已签约',
+  dropped: '已放弃'
+}
+const STATUS_TAG_TYPE: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
+  pre_contact: 'info',
+  contacting: 'warning',
+  signed: 'success',
+  dropped: 'danger'
+}
+const SOURCE_LABELS: Record<string, string> = {
+  scrape: '抓取',
+  manual: '手工'
+}
+
 const PLATFORMS: { label: string; value: SocialPlatform }[] = [
   { label: 'Facebook', value: 'facebook' },
   { label: 'Instagram', value: 'instagram' },
@@ -67,11 +84,13 @@ onMounted(refresh)
     <el-descriptions :column="3" border style="margin-top: 16px">
       <el-descriptions-item label="昵称">{{ detail.display_name }}</el-descriptions-item>
       <el-descriptions-item label="状态">
-        <el-tag>{{ detail.status }}</el-tag>
+        <el-tag :type="STATUS_TAG_TYPE[detail.status] || 'info'">
+          {{ STATUS_LABELS[detail.status] || detail.status }}
+        </el-tag>
       </el-descriptions-item>
       <el-descriptions-item label="来源">
         <el-tag size="small" :type="detail.source === 'scrape' ? 'warning' : 'info'">
-          {{ detail.source }}
+          {{ SOURCE_LABELS[detail.source] || detail.source }}
         </el-tag>
       </el-descriptions-item>
       <el-descriptions-item label="类型">{{ detail.platform_name || '—' }}</el-descriptions-item>
