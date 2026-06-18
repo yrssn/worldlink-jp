@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import {
   emailAccountApi,
   type ApifySignupStartResult,
   type ApifySignupTask,
   type EmailAccount,
-  type EmailAccountPayload
+  type EmailAccountPayload,
+  type EmailImportPreview,
+  type EmailImportResult
 } from '@/api/emailAccount'
 import { bitbrowserApi, type BitBrowserCatalogRow } from '@/api/bitbrowser'
 import { apifyKeyApi, type ApifyKey } from '@/api/apifyKey'
@@ -33,6 +35,33 @@ const defaultZohoLoginUrl = 'https://accounts.zoho.com/signin?service_language=j
 const filters = reactive({
   q: ''
 })
+
+// ===== 导入相关状态 =====
+const importDialogVisible = ref(false)
+const importFile = ref<File | null>(null)
+const importPreview = ref<EmailImportPreview | null>(null)
+const importPreviewLoading = ref(false)
+const importing = ref(false)
+const importResult = ref<EmailImportResult | null>(null)
+const skipDuplicates = ref(true)
+// 列索引 -> 目标字段 key（'' 表示不导入该列）
+const columnFieldMap = ref<Record<number, string>>({})
+
+const importFieldOptions = computed(() => importPreview.value?.fields ?? [])
+
+function fieldLabel(key: string) {
+  return importFieldOptions.value.find((f) => f.key === key)?.label || key
+}
+
+const mappedFieldKeys = computed(() => {
+  const used = new Set<string>()
+  Object.values(columnFieldMap.value).forEach((key) => {
+    if (key) used.add(key)
+  })
+  return used
+})
+
+const emailMapped = computed(() => mappedFieldKeys.value.has('email'))
 
 const form = reactive({
   email: '',
@@ -482,6 +511,87 @@ function toDatePickerValue(value?: string | null) {
   )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
+function resetImportState() {
+  importFile.value = null
+  importPreview.value = null
+  importResult.value = null
+  columnFieldMap.value = {}
+  skipDuplicates.value = true
+  importPreviewLoading.value = false
+  importing.value = false
+}
+
+function openImport() {
+  resetImportState()
+  importDialogVisible.value = true
+}
+
+async function handleImportFileChange(uploadFile: UploadFile) {
+  const raw = uploadFile.raw
+  if (!raw) return
+  const name = raw.name.toLowerCase()
+  if (!/\.(csv|txt|xlsx|xlsm)$/.test(name)) {
+    ElMessage.warning('仅支持 CSV 或 XLSX 文件')
+    return
+  }
+  importFile.value = raw
+  importResult.value = null
+  await previewImport()
+}
+
+async function previewImport() {
+  if (!importFile.value) return
+  importPreviewLoading.value = true
+  try {
+    const preview = await emailAccountApi.importPreview(importFile.value)
+    importPreview.value = preview
+    // 由后端的 字段->列 建议反推为 列->字段
+    const map: Record<number, string> = {}
+    Object.entries(preview.suggested_mapping).forEach(([fieldKey, colIndex]) => {
+      map[colIndex] = fieldKey
+    })
+    columnFieldMap.value = map
+  } catch {
+    importPreview.value = null
+  } finally {
+    importPreviewLoading.value = false
+  }
+}
+
+function buildMapping(): Record<string, number> {
+  const mapping: Record<string, number> = {}
+  Object.entries(columnFieldMap.value).forEach(([colIndex, fieldKey]) => {
+    if (fieldKey) mapping[fieldKey] = Number(colIndex)
+  })
+  return mapping
+}
+
+async function submitImport() {
+  if (!importFile.value || !importPreview.value) {
+    ElMessage.warning('请先选择要导入的文件')
+    return
+  }
+  if (!emailMapped.value) {
+    ElMessage.warning('请将「注册邮箱」字段映射到某一列')
+    return
+  }
+  importing.value = true
+  try {
+    const result = await emailAccountApi.importAccounts(
+      importFile.value,
+      buildMapping(),
+      skipDuplicates.value
+    )
+    importResult.value = result
+    ElMessage.success(`导入完成：新增 ${result.created} 条，跳过 ${result.skipped} 条，失败 ${result.failed} 条`)
+    await Promise.all([load(), loadApifyKeys()])
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    importing.value = false
+  }
+}
+
 onMounted(() => {
   load()
   loadBrowserOptions()
@@ -496,7 +606,10 @@ onMounted(() => {
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center">
           <span>邮箱管理</span>
-          <el-button type="primary" @click="openCreate">+ 新增邮箱</el-button>
+          <el-space>
+            <el-button @click="openImport">导入</el-button>
+            <el-button type="primary" @click="openCreate">+ 新增邮箱</el-button>
+          </el-space>
         </div>
       </template>
       <el-alert
@@ -799,6 +912,119 @@ onMounted(() => {
         <el-button type="primary" :loading="submitting" @click="handleSubmit">
           {{ editingId !== null ? '保存' : '创建' }}
         </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="importDialogVisible"
+      title="导入邮箱账号"
+      width="860px"
+      :close-on-click-modal="false"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        style="margin-bottom: 12px"
+        title="支持 CSV / XLSX。上传后会自动识别表头，请为每一列选择对应的字段；「注册邮箱」为必选项，未选择字段的列将被忽略。"
+      />
+
+      <el-upload
+        drag
+        :auto-upload="false"
+        :show-file-list="false"
+        :limit="1"
+        accept=".csv,.txt,.xlsx,.xlsm"
+        :on-change="handleImportFileChange"
+      >
+        <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+        <div class="el-upload__text">将文件拖到此处，或<em>点击选择文件</em></div>
+        <template #tip>
+          <div class="el-upload__tip">
+            {{ importFile ? `已选择：${importFile.name}` : '仅支持 CSV / XLSX，最大 5MB' }}
+          </div>
+        </template>
+      </el-upload>
+
+      <div v-loading="importPreviewLoading" style="margin-top: 12px">
+        <template v-if="importPreview">
+          <el-divider content-position="left">
+            表头映射（共识别 {{ importPreview.columns.length }} 列 / {{ importPreview.total_rows }} 行数据）
+          </el-divider>
+          <el-table :data="importPreview.columns" border size="small" max-height="320">
+            <el-table-column label="文件表头" min-width="160">
+              <template #default="{ row }">
+                <el-text style="font-weight: 600">{{ row.name }}</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="样例数据" min-width="200">
+              <template #default="{ row }">
+                <div
+                  v-for="(sample, idx) in importPreview.sample_rows"
+                  :key="idx"
+                  style="font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6"
+                >
+                  {{ sample[row.index] || '—' }}
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="对应字段" width="220">
+              <template #default="{ row }">
+                <el-select
+                  v-model="columnFieldMap[row.index]"
+                  clearable
+                  placeholder="不导入此列"
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-for="field in importFieldOptions"
+                    :key="field.key"
+                    :label="field.required ? `${field.label}（必选）` : field.label"
+                    :value="field.key"
+                    :disabled="mappedFieldKeys.has(field.key) && columnFieldMap[row.index] !== field.key"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div style="margin-top: 12px; display: flex; align-items: center; gap: 16px">
+            <el-switch v-model="skipDuplicates" active-text="跳过已存在的邮箱" />
+            <el-text v-if="!emailMapped" type="danger" size="small">请将「注册邮箱」映射到某一列</el-text>
+          </div>
+
+          <template v-if="importResult">
+            <el-divider content-position="left">导入结果</el-divider>
+            <el-space wrap>
+              <el-tag type="info">总计 {{ importResult.total }}</el-tag>
+              <el-tag type="success">新增 {{ importResult.created }}</el-tag>
+              <el-tag type="warning">跳过 {{ importResult.skipped }}</el-tag>
+              <el-tag type="danger">失败 {{ importResult.failed }}</el-tag>
+            </el-space>
+            <div
+              v-if="importResult.errors.length"
+              style="margin-top: 8px; max-height: 160px; overflow: auto"
+            >
+              <div
+                v-for="(msg, idx) in importResult.errors"
+                :key="idx"
+                style="font-size: 12px; color: var(--el-color-warning); line-height: 1.8"
+              >
+                {{ msg }}
+              </div>
+            </div>
+          </template>
+        </template>
+        <el-empty v-else-if="!importPreviewLoading" description="请选择文件以识别表头" :image-size="60" />
+      </div>
+
+      <template #footer>
+        <el-button @click="importDialogVisible = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :loading="importing"
+          :disabled="!importPreview || !emailMapped"
+          @click="submitImport"
+        >开始导入</el-button>
       </template>
     </el-dialog>
   </div>

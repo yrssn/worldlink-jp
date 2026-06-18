@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,10 @@ from app.schemas.email_account import (
     EmailAccountCreate,
     EmailAccountOut,
     EmailAccountUpdate,
+    EmailImportColumn,
+    EmailImportField,
+    EmailImportPreviewOut,
+    EmailImportResultOut,
     VerificationMailLoginOut,
     ZohoMailLoginOut,
 )
@@ -34,8 +38,58 @@ from app.services.zoho_mail_automation import (
     submit_zoho_verification_code,
     wait_current_zoho_inbox_ready,
 )
+from app.utils.spreadsheet import SpreadsheetParseError, parse_table
 
 router = APIRouter(prefix="/email/accounts", tags=["email-accounts"])
+
+# 导入功能支持的目标字段及其用于自动匹配表头的别名关键字（小写）。
+_IMPORT_FIELDS: list[tuple[str, str, bool, tuple[str, ...]]] = [
+    ("email", "注册邮箱", True, ("email", "邮箱", "注册邮箱", "mail", "account", "账号", "帐号")),
+    ("email_password", "邮箱密码", False, ("password", "密码", "pwd", "邮箱密码", "pass")),
+    ("provider", "邮箱服务商", False, ("provider", "服务商", "厂商", "类型")),
+    ("mail_login_url", "邮箱登录地址", False, ("login_url", "登录地址", "登录链接", "邮箱地址", "url")),
+    ("verification_email", "验证码邮箱", False, ("verification_email", "验证邮箱", "验证码邮箱", "备用邮箱")),
+    ("verification_password", "验证邮箱密码", False, ("verification_password", "验证邮箱密码", "验证密码", "备用密码")),
+    ("verification_login_url", "验证邮箱入口", False, ("verification_login_url", "验证邮箱入口", "验证邮箱地址", "webmail")),
+    ("purpose", "用途", False, ("purpose", "用途", "目的")),
+    ("status", "状态", False, ("status", "状态")),
+    ("note", "备注", False, ("note", "备注", "remark", "说明")),
+]
+
+_MAX_IMPORT_BYTES = 5 * 1024 * 1024
+_SECRET_IMPORT_FIELDS = {"email_password", "verification_password"}
+_EMAIL_IMPORT_FIELDS = {"email", "verification_email"}
+
+
+def _import_fields_schema() -> list[EmailImportField]:
+    return [
+        EmailImportField(key=key, label=label, required=required)
+        for key, label, required, _ in _IMPORT_FIELDS
+    ]
+
+
+def _suggest_mapping(headers: list[str]) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    used: set[int] = set()
+    normalized = [h.strip().lower() for h in headers]
+    for key, _, _, aliases in _IMPORT_FIELDS:
+        for col_index, header in enumerate(normalized):
+            if col_index in used or not header:
+                continue
+            if any(alias in header or header in alias for alias in aliases):
+                mapping[key] = col_index
+                used.add(col_index)
+                break
+    return mapping
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    if len(raw) > _MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=400, detail="导入文件不能超过 5MB")
+    return raw
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -429,6 +483,148 @@ def create_email_account(
     db.commit()
     db.refresh(row)
     return _to_out(row)
+
+
+@router.post("/import/preview", response_model=EmailImportPreviewOut)
+async def preview_email_import(
+    file: UploadFile = File(...),
+    sample_size: int = Query(5, ge=1, le=20),
+    user: User = Depends(get_current_user),
+):
+    """解析上传的 CSV/XLSX，返回识别到的表头、样例数据与可映射字段。"""
+    raw = await _read_upload(file)
+    try:
+        headers, rows = parse_table(file.filename, raw)
+    except SpreadsheetParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not headers:
+        raise HTTPException(status_code=400, detail="未识别到表头，请检查文件内容")
+    return EmailImportPreviewOut(
+        columns=[EmailImportColumn(index=i, name=name) for i, name in enumerate(headers)],
+        sample_rows=rows[:sample_size],
+        total_rows=len(rows),
+        fields=_import_fields_schema(),
+        suggested_mapping=_suggest_mapping(headers),
+    )
+
+
+@router.post("/import", response_model=EmailImportResultOut)
+async def import_email_accounts(
+    file: UploadFile = File(...),
+    mapping: str = Form(..., description="字段到列索引的 JSON，例如 {\"email\": 0}"),
+    skip_duplicates: bool = Form(True),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按表头映射导入邮箱账号。
+
+    mapping 形如 ``{"email": 0, "email_password": 1}``，值为预览返回的列索引。
+    """
+    raw = await _read_upload(file)
+    try:
+        column_map = json.loads(mapping)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="字段映射格式错误")
+    if not isinstance(column_map, dict):
+        raise HTTPException(status_code=400, detail="字段映射格式错误")
+
+    valid_keys = {key for key, _, _, _ in _IMPORT_FIELDS}
+    normalized_map: dict[str, int] = {}
+    for key, col in column_map.items():
+        if key not in valid_keys or col is None or col == "":
+            continue
+        try:
+            normalized_map[key] = int(col)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"字段「{key}」的列索引无效")
+    if "email" not in normalized_map:
+        raise HTTPException(status_code=400, detail="请将「注册邮箱」字段映射到某一列")
+
+    try:
+        headers, rows = parse_table(file.filename, raw)
+    except SpreadsheetParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not headers:
+        raise HTTPException(status_code=400, detail="未识别到表头，请检查文件内容")
+
+    width = len(headers)
+    for key, col in normalized_map.items():
+        if col < 0 or col >= width:
+            raise HTTPException(status_code=400, detail=f"字段「{key}」映射的列超出范围")
+
+    existing = {
+        row[0]
+        for row in db.query(EmailAccount.email)
+        .filter(EmailAccount.owner_id == user.id)
+        .all()
+    }
+    created = 0
+    skipped = 0
+    failed = 0
+    errors: list[str] = []
+    seen_in_file: set[str] = set()
+
+    for offset, row in enumerate(rows):
+        line_no = offset + 2  # 含表头，便于用户对照行号
+        values: dict[str, str | None] = {}
+        for key, col in normalized_map.items():
+            cell = row[col] if col < len(row) else ""
+            if key in _EMAIL_IMPORT_FIELDS:
+                values[key] = _clean_email(cell)
+            else:
+                values[key] = _clean_text(cell)
+
+        email = values.get("email")
+        if not email:
+            failed += 1
+            errors.append(f"第 {line_no} 行：缺少注册邮箱，已跳过")
+            continue
+        if email in seen_in_file:
+            skipped += 1
+            errors.append(f"第 {line_no} 行：文件内重复邮箱 {email}，已跳过")
+            continue
+        if email in existing:
+            if skip_duplicates:
+                skipped += 1
+                errors.append(f"第 {line_no} 行：邮箱 {email} 已存在，已跳过")
+                continue
+            failed += 1
+            errors.append(f"第 {line_no} 行：邮箱 {email} 已存在")
+            continue
+
+        try:
+            account = EmailAccount(
+                owner_id=user.id,
+                email=email,
+                email_password=encrypt_secret(values.get("email_password")),
+                provider=values.get("provider"),
+                mail_login_url=normalize_zoho_login_url(values.get("mail_login_url")),
+                verification_email=values.get("verification_email"),
+                verification_password=encrypt_secret(values.get("verification_password")),
+                verification_login_url=values.get("verification_login_url"),
+                purpose=values.get("purpose") or "registration",
+                status=values.get("status") or "available",
+                note=values.get("note"),
+            )
+            db.add(account)
+            db.flush()
+        except Exception as exc:  # 单行失败不影响整体导入
+            db.rollback()
+            failed += 1
+            errors.append(f"第 {line_no} 行：写入失败 {exc}")
+            continue
+        existing.add(email)
+        seen_in_file.add(email)
+        created += 1
+
+    db.commit()
+    return EmailImportResultOut(
+        total=len(rows),
+        created=created,
+        skipped=skipped,
+        failed=failed,
+        errors=errors[:100],
+    )
 
 
 @router.post("/{account_id}/apify-signup/start", response_model=ApifySignupTaskOut)
