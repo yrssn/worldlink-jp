@@ -5,8 +5,6 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.influencer import InfluencerOut
-
 FbGroupViewOption = Literal[
     "CHRONOLOGICAL",
     "RECENT_ACTIVITY",
@@ -173,11 +171,6 @@ class FbGroupPreContactOut(BaseModel):
     created: bool = False
     status: str
     message: str
-
-
-class FbGroupPreContactOut(BaseModel):
-    influencer: InfluencerOut
-    created: bool = False
 
 
 # ─── 定时任务 ──────────────────────────────────────────────────────
