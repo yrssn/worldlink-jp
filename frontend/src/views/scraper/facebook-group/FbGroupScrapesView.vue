@@ -372,12 +372,41 @@ function truncate(s: string | null | undefined, n = 80) {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
 
+function fallbackCopy(text: string): boolean {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.top = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  document.body.removeChild(textarea)
+  return ok
+}
+
 async function copyPostUrl(url: string | null | undefined) {
   if (!url) return
-  try {
-    await navigator.clipboard.writeText(url)
+  // navigator.clipboard 仅在 HTTPS / localhost 等安全上下文可用，
+  // 非安全上下文（如局域网 http 访问）退回 execCommand 方案。
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(url)
+      ElMessage.success('已复制链接')
+      return
+    } catch {
+      /* 继续走兜底方案 */
+    }
+  }
+  if (fallbackCopy(url)) {
     ElMessage.success('已复制链接')
-  } catch {
+  } else {
     ElMessage.warning('复制失败，请手动复制')
   }
 }
