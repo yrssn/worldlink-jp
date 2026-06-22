@@ -30,6 +30,12 @@ const apifyTaskLoading = ref(false)
 const apifyTaskTotal = ref(0)
 const apifyTaskPage = ref(1)
 const apifyTaskPageSize = ref(5)
+const showApifyTasks = ref(false)
+const apifyTasksLoaded = ref(false)
+
+// 邮箱列表分页（前端分页）
+const emailPage = ref(1)
+const emailPageSize = ref(10)
 const defaultZohoLoginUrl = 'https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice&signupurl=https://www.zoho.com/jp/mail/zohomail-pricing.html&serviceurl=https://mail.zoho.com'
 
 const filters = reactive({
@@ -62,6 +68,28 @@ const mappedFieldKeys = computed(() => {
 })
 
 const emailMapped = computed(() => mappedFieldKeys.value.has('email'))
+
+const pagedList = computed(() => {
+  const start = (emailPage.value - 1) * emailPageSize.value
+  return list.value.slice(start, start + emailPageSize.value)
+})
+
+function toggleApifyTasks() {
+  showApifyTasks.value = !showApifyTasks.value
+  if (showApifyTasks.value && !apifyTasksLoaded.value) {
+    apifyTasksLoaded.value = true
+    loadApifyTasks()
+  }
+}
+
+function handleEmailPageChange(page: number) {
+  emailPage.value = page
+}
+
+function handleEmailSizeChange(size: number) {
+  emailPageSize.value = size
+  emailPage.value = 1
+}
 
 const form = reactive({
   email: '',
@@ -136,6 +164,7 @@ async function load() {
     list.value = await emailAccountApi.list({
       q: filters.q.trim() || undefined
     })
+    emailPage.value = 1
   } catch {
     ElMessage.error('加载邮箱账号失败')
   } finally {
@@ -596,7 +625,6 @@ onMounted(() => {
   load()
   loadBrowserOptions()
   loadApifyKeys()
-  loadApifyTasks()
 })
 </script>
 
@@ -635,7 +663,13 @@ onMounted(() => {
       </el-form>
     </el-card>
 
-    <el-card shadow="never" style="margin-bottom: 16px">
+    <div style="margin-bottom: 16px">
+      <el-button @click="toggleApifyTasks">
+        {{ showApifyTasks ? '收起 Apify 注册任务' : '展开 Apify 注册任务' }}
+      </el-button>
+    </div>
+
+    <el-card v-show="showApifyTasks" shadow="never" style="margin-bottom: 16px">
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center">
           <span>Apify 注册任务</span>
@@ -700,7 +734,7 @@ onMounted(() => {
       </div>
     </el-card>
 
-    <el-table :data="list" v-loading="loading" border stripe>
+    <el-table :data="pagedList" v-loading="loading" border stripe>
       <el-table-column label="注册邮箱" min-width="220" fixed>
         <template #default="{ row }">
           <div>
@@ -827,6 +861,18 @@ onMounted(() => {
         </template>
       </el-table-column>
     </el-table>
+
+    <div style="display: flex; justify-content: flex-end; margin-top: 12px">
+      <el-pagination
+        v-model:current-page="emailPage"
+        v-model:page-size="emailPageSize"
+        :total="list.length"
+        :page-sizes="[10, 20, 50, 100]"
+        layout="total, sizes, prev, pager, next, jumper"
+        @current-change="handleEmailPageChange"
+        @size-change="handleEmailSizeChange"
+      />
+    </div>
 
     <el-dialog
       v-model="dialogVisible"
