@@ -372,6 +372,16 @@ function truncate(s: string | null | undefined, n = 80) {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
 
+async function copyPostUrl(url: string | null | undefined) {
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    ElMessage.success('已复制链接')
+  } catch {
+    ElMessage.warning('复制失败，请手动复制')
+  }
+}
+
 onMounted(refresh)
 onUnmounted(stopPoll)
 </script>
@@ -639,7 +649,13 @@ onUnmounted(stopPoll)
         </el-table-column>
         <el-table-column label="链接" width="80" align="center">
           <template #default="{ row }">
-            <a v-if="row.post_url" :href="row.post_url" target="_blank" rel="noopener noreferrer" class="fb-link" style="font-size:12px">原文</a>
+            <el-link
+              v-if="row.post_url"
+              type="primary"
+              :underline="false"
+              style="font-size:12px"
+              @click="copyPostUrl(row.post_url)"
+            >复制链接</el-link>
             <span v-else class="fb-muted">—</span>
           </template>
         </el-table-column>
