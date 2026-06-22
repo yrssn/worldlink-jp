@@ -9,6 +9,7 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const activeMenu = computed(() => route.path)
+const defaultOpeneds = ['llm', 'bitbrowser', 'automation', 'scraper', 'dm']
 const { connect: relayConnect, disconnect: relayDisconnect, relayConnected } = useBitBrowserRelay()
 
 onMounted(() => relayConnect())
@@ -37,6 +38,7 @@ async function handleLogout() {
       </div>
       <el-menu
         :default-active="activeMenu"
+        :default-openeds="defaultOpeneds"
         background-color="#001529"
         text-color="#cfd8dc"
         active-text-color="#ffffff"
