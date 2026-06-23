@@ -85,6 +85,7 @@ export interface InfluencerScrapeTask {
   result?: Partial<Influencer> | null
   created_at: string
   finished_at?: string | null
+  influencer_id?: number | null
 }
 
 export const influencerApi = {
@@ -107,6 +108,10 @@ export const influencerApi = {
     http.post<unknown, InfluencerScrapeTask>('/influencers/scrape-profile', { url }),
   getScrapeProfile: (taskId: number) =>
     http.get<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}`),
+  listScrapeProfiles: (limit = 50) =>
+    http.get<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile', { params: { limit } }),
+  saveScrapeProfile: (taskId: number, notes?: string) =>
+    http.post<unknown, Influencer>(`/influencers/scrape-profile/${taskId}/save`, { notes }),
   listPosts: (id: number) =>
     http.get<unknown, InfluencerSourcePost[]>(`/influencers/${id}/posts`),
   addSocial: (id: number, data: SocialAccount) =>

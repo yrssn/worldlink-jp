@@ -200,6 +200,73 @@ def page_profile_to_form(profile: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in mapped.items() if v not in (None, "")}
 
 
+_FORM_INFLUENCER_FIELDS = (
+    "display_name", "real_name", "bio", "avatar_url", "cover_url",
+    "country", "region", "city", "language", "address",
+    "email", "phone", "messenger", "website",
+    "fb_page_id", "fb_page_url", "fb_page_title", "fb_categories",
+    "fb_followers", "fb_likes", "fb_rating", "fb_rating_count",
+    "fb_checkins_mentions", "fb_ad_library_id", "fb_ad_status",
+    "tags", "notes",
+)
+
+
+def create_influencer_from_form(
+    db: Session,
+    owner_id: int,
+    form: dict[str, Any],
+    notes: Optional[str] = None,
+) -> tuple[Influencer, bool]:
+    """把「自动抓取任务」的可填充表单结果入库为建联达人。
+
+    - 只取白名单字段，避免脏字段；fb_page_created_at(ISO 字符串)单独解析；
+    - 按 fb_page_id / fb_page_url / email 去重，命中则复用已有，不重复创建；
+    返回 (influencer, created)。
+    """
+    data: dict[str, Any] = {
+        k: form.get(k) for k in _FORM_INFLUENCER_FIELDS if form.get(k) not in (None, "")
+    }
+    created_raw = form.get("fb_page_created_at")
+    if isinstance(created_raw, str) and created_raw:
+        try:
+            data["fb_page_created_at"] = datetime.fromisoformat(created_raw)
+        except ValueError:
+            pass
+
+    data.setdefault("display_name", "Unknown")
+    data["owner_id"] = owner_id
+    data["source"] = InfluencerSource.scrape
+    if notes:
+        data["notes"] = notes
+
+    existing = find_duplicate(
+        db,
+        owner_id=owner_id,
+        fb_page_id=data.get("fb_page_id"),
+        fb_page_url=data.get("fb_page_url"),
+        email=data.get("email"),
+    )
+    if existing:
+        return existing, False
+
+    inf = Influencer(**data)
+    db.add(inf)
+    db.flush()
+    if inf.fb_page_url or inf.fb_page_id:
+        db.add(
+            InfluencerSocialAccount(
+                influencer_id=inf.id,
+                platform=SocialPlatform.facebook,
+                handle=inf.fb_page_id,
+                url=inf.fb_page_url,
+                followers=inf.fb_followers,
+            )
+        )
+    db.commit()
+    db.refresh(inf)
+    return inf, True
+
+
 def create_from_scrape(
     db: Session,
     owner_id: int,

@@ -23,6 +23,7 @@ from app.schemas.influencer import (
     InfluencerOut,
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
+    InfluencerScrapeTaskSaveRequest,
     InfluencerUpdate,
     SocialAccountCreate,
     SocialAccountOut,
@@ -43,6 +44,22 @@ def _ensure_platform_access(db: Session, owner_id: int, platform_id: int | None)
     )
     if not exists:
         raise HTTPException(status_code=400, detail="达人类型不存在或无权使用")
+
+
+def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrapeTaskOut:
+    """把任务序列化为输出，并补上「该主页是否已入库达人」的 influencer_id。"""
+    out = InfluencerScrapeTaskOut.model_validate(task)
+    result = task.result if isinstance(task.result, dict) else None
+    if result:
+        existing = influencer_service.find_duplicate(
+            db,
+            owner_id=task.owner_id,
+            fb_page_id=result.get("fb_page_id"),
+            fb_page_url=result.get("fb_page_url"),
+            email=result.get("email"),
+        )
+        out.influencer_id = existing.id if existing else None
+    return out
 
 
 def _run_scrape_profile_bg(task_id: int) -> None:
@@ -223,7 +240,21 @@ def start_scrape_profile(
     threading.Thread(
         target=_run_scrape_profile_bg, args=(task.id,), daemon=True
     ).start()
-    return task
+    return _scrape_task_out(db, task)
+
+
+@router.get("/scrape-profile", response_model=list[InfluencerScrapeTaskOut])
+def list_scrape_profiles(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """抓取任务列表：按创建时间倒序返回当前用户最近的自动抓取任务。"""
+    q = db.query(InfluencerScrapeTask)
+    if not is_admin(user):
+        q = q.filter(InfluencerScrapeTask.owner_id == user.id)
+    tasks = q.order_by(InfluencerScrapeTask.id.desc()).limit(limit).all()
+    return [_scrape_task_out(db, t) for t in tasks]
 
 
 @router.get("/scrape-profile/{task_id}", response_model=InfluencerScrapeTaskOut)
@@ -236,7 +267,29 @@ def get_scrape_profile(
     task = db.get(InfluencerScrapeTask, task_id)
     if not task or (task.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="task not found")
-    return task
+    return _scrape_task_out(db, task)
+
+
+@router.post("/scrape-profile/{task_id}/save", response_model=InfluencerOut)
+def save_scrape_profile(
+    task_id: int,
+    payload: InfluencerScrapeTaskSaveRequest | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把某个已完成的抓取任务结果存入建联达人库（按主页ID/邮箱去重）。"""
+    task = db.get(InfluencerScrapeTask, task_id)
+    if not task or (task.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.status != "done" or not isinstance(task.result, dict) or not task.result:
+        raise HTTPException(status_code=400, detail="该任务尚未抓取完成，无法存入")
+    inf, _created = influencer_service.create_influencer_from_form(
+        db,
+        owner_id=task.owner_id,
+        form=task.result,
+        notes=(payload.notes if payload else None),
+    )
+    return inf
 
 
 @router.get("/{iid}", response_model=InfluencerDetailOut)
