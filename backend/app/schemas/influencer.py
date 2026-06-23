@@ -125,6 +125,14 @@ class InfluencerScrapeTaskOut(BaseModel):
     result: Optional[dict[str, Any]] = None
     created_at: datetime
     finished_at: Optional[datetime] = None
+    # 该任务抓到的主页是否已入库建联达人（命中则为达人 id，便于前端展示「已存入」）
+    influencer_id: Optional[int] = None
+
+
+class InfluencerScrapeTaskSaveRequest(BaseModel):
+    """把某个抓取任务的结果存入建联达人库时的可选备注。"""
+
+    notes: Optional[str] = None
 
 
 class InfluencerFromScrapeRequest(BaseModel):

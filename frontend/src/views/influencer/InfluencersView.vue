@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { influencerApi, type Influencer } from '@/api/influencer'
+import { influencerApi, type Influencer, type InfluencerScrapeTask } from '@/api/influencer'
 
 const router = useRouter()
 const list = ref<Influencer[]>([])
@@ -114,6 +114,120 @@ async function startScrape() {
   }
 }
 
+// ─── 抓取任务列表（独立面板：发起抓取 → 看资料 → 存入达人库） ────────
+const taskDialogVisible = ref(false)
+const taskScrapeUrl = ref('')
+const taskStarting = ref(false)
+const tasks = ref<InfluencerScrapeTask[]>([])
+const tasksLoading = ref(false)
+const savingTaskId = ref<number | null>(null)
+let taskListTimer: ReturnType<typeof setTimeout> | null = null
+
+const detailVisible = ref(false)
+const detailTask = ref<InfluencerScrapeTask | null>(null)
+
+const DETAIL_FIELDS: { label: string; key: keyof Influencer }[] = [
+  { label: '昵称', key: 'display_name' },
+  { label: 'FB 主页标题', key: 'fb_page_title' },
+  { label: '简介', key: 'bio' },
+  { label: '邮箱', key: 'email' },
+  { label: '电话', key: 'phone' },
+  { label: '网站', key: 'website' },
+  { label: 'Messenger', key: 'messenger' },
+  { label: '地址', key: 'address' },
+  { label: 'FB 粉丝', key: 'fb_followers' },
+  { label: 'FB 点赞', key: 'fb_likes' },
+  { label: 'FB 评分', key: 'fb_rating' },
+  { label: 'FB 主页', key: 'fb_page_url' },
+  { label: 'FB 主页ID', key: 'fb_page_id' }
+]
+
+function detailRows(task: InfluencerScrapeTask | null) {
+  const r = task?.result
+  if (!r) return [] as { label: string; value: string }[]
+  const rows: { label: string; value: string }[] = []
+  for (const f of DETAIL_FIELDS) {
+    const v = r[f.key]
+    if (v !== null && v !== undefined && v !== '') {
+      rows.push({ label: f.label, value: Array.isArray(v) ? v.join('、') : String(v) })
+    }
+  }
+  return rows
+}
+
+function stopTaskPolling() {
+  if (taskListTimer) {
+    clearTimeout(taskListTimer)
+    taskListTimer = null
+  }
+}
+
+function scheduleTaskPolling() {
+  stopTaskPolling()
+  const hasActive = tasks.value.some((t) => t.status === 'pending' || t.status === 'running')
+  if (taskDialogVisible.value && hasActive) {
+    taskListTimer = setTimeout(loadTasks, 3000)
+  }
+}
+
+async function loadTasks() {
+  tasksLoading.value = true
+  try {
+    tasks.value = await influencerApi.listScrapeProfiles(50)
+  } finally {
+    tasksLoading.value = false
+  }
+  scheduleTaskPolling()
+}
+
+function openTaskDialog() {
+  taskDialogVisible.value = true
+  taskScrapeUrl.value = ''
+  loadTasks()
+}
+
+function closeTaskDialog() {
+  stopTaskPolling()
+}
+
+async function startTaskScrape() {
+  const url = taskScrapeUrl.value.trim()
+  if (!url) {
+    ElMessage.warning('请粘贴 Facebook 主页链接')
+    return
+  }
+  taskStarting.value = true
+  try {
+    await influencerApi.startScrapeProfile(url)
+    taskScrapeUrl.value = ''
+    ElMessage.success('已发起抓取任务，完成后可查看并存入达人库')
+    await loadTasks()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    taskStarting.value = false
+  }
+}
+
+function viewTask(task: InfluencerScrapeTask) {
+  detailTask.value = task
+  detailVisible.value = true
+}
+
+async function saveTask(task: InfluencerScrapeTask) {
+  savingTaskId.value = task.id
+  try {
+    const inf = await influencerApi.saveScrapeProfile(task.id)
+    ElMessage.success(`已存入达人库：${inf.display_name}`)
+    await loadTasks()
+    refresh()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    savingTaskId.value = null
+  }
+}
+
 const STATUS_OPTIONS = [
   { label: '预建联', value: 'pre_contact' },
   { label: '建联中', value: 'contacting' },
@@ -214,7 +328,10 @@ async function remove(row: Influencer) {
 }
 
 onMounted(refresh)
-onUnmounted(stopScrapePolling)
+onUnmounted(() => {
+  stopScrapePolling()
+  stopTaskPolling()
+})
 </script>
 
 <template>
@@ -225,6 +342,7 @@ onUnmounted(stopScrapePolling)
         <el-button type="success" :icon="'Download'" @click="exportList">
           导出（CSV）
         </el-button>
+        <el-button @click="openTaskDialog">抓取任务</el-button>
         <el-button type="primary" @click="openCreate">手工新增</el-button>
       </div>
     </div>
@@ -356,6 +474,92 @@ onUnmounted(stopScrapePolling)
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="submit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="taskDialogVisible"
+      title="自动抓取任务"
+      width="860px"
+      @closed="closeTaskDialog"
+    >
+      <div style="display: flex; gap: 8px; margin-bottom: 12px">
+        <el-input
+          v-model="taskScrapeUrl"
+          placeholder="粘贴 Facebook 主页链接，发起后台抓取任务"
+          clearable
+          @keyup.enter="startTaskScrape"
+        />
+        <el-button type="primary" :loading="taskStarting" @click="startTaskScrape">发起抓取</el-button>
+        <el-button :loading="tasksLoading" @click="loadTasks">刷新</el-button>
+      </div>
+      <el-table v-loading="tasksLoading" :data="tasks" border max-height="420">
+        <el-table-column prop="id" label="ID" width="64" />
+        <el-table-column label="主页链接" min-width="220">
+          <template #default="{ row }">
+            <a :href="row.url" target="_blank" style="word-break: break-all">{{ row.url }}</a>
+          </template>
+        </el-table-column>
+        <el-table-column label="抓到的昵称" min-width="140">
+          <template #default="{ row }">{{ row.result?.display_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="粉丝" width="90">
+          <template #default="{ row }">{{ row.result?.fb_followers ?? '—' }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="SCRAPE_STATUS_TAG[row.status] || 'info'">
+              {{ SCRAPE_STATUS_TEXT[row.status] || row.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="230">
+          <template #default="{ row }">
+            <template v-if="row.status === 'done'">
+              <el-button size="small" @click="viewTask(row)">查看资料</el-button>
+              <el-button
+                v-if="row.influencer_id"
+                size="small"
+                type="success"
+                @click="router.push(`/influencers/${row.influencer_id}`)"
+              >
+                已入库
+              </el-button>
+              <el-button
+                v-else
+                size="small"
+                type="primary"
+                :loading="savingTaskId === row.id"
+                @click="saveTask(row)"
+              >
+                存入达人库
+              </el-button>
+            </template>
+            <span v-else-if="row.status === 'failed'" style="color: #f56c6c; font-size: 12px">
+              {{ row.error || '抓取失败' }}
+            </span>
+            <span v-else style="color: #909399; font-size: 12px">抓取中…</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="detailVisible" title="抓取资料" width="560px">
+      <el-descriptions :column="1" border>
+        <el-descriptions-item v-for="r in detailRows(detailTask)" :key="r.label" :label="r.label">
+          {{ r.value }}
+        </el-descriptions-item>
+      </el-descriptions>
+      <template #footer>
+        <el-button @click="detailVisible = false">关闭</el-button>
+        <el-button
+          v-if="detailTask && !detailTask.influencer_id"
+          type="primary"
+          :loading="savingTaskId === detailTask?.id"
+          @click="detailTask && saveTask(detailTask).then(() => (detailVisible = false))"
+        >
+          存入达人库
+        </el-button>
       </template>
     </el-dialog>
   </div>
