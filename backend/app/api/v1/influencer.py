@@ -66,7 +66,12 @@ def _run_scrape_profile_bg(task_id: int) -> None:
             db.commit()
             return
 
-        task.result = influencer_service.page_profile_to_form(items[0])
+        form = influencer_service.page_profile_to_form(items[0])
+        # 表单回填的主页链接统一用规整后的标准链接，避免回填群组上下文链接
+        form["fb_page_url"] = influencer_service.normalize_fb_profile_url(
+            form.get("fb_page_url") or scrape_url
+        )
+        task.result = form
         task.status = "done"
         task.finished_at = datetime.utcnow()
         db.commit()
