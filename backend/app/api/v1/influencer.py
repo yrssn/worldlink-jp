@@ -56,7 +56,8 @@ def _run_scrape_profile_bg(task_id: int) -> None:
         task.started_at = datetime.utcnow()
         db.commit()
 
-        result = apify_service.run_fb_pages([task.url], max_items=1, db=db)
+        scrape_url = influencer_service.normalize_fb_profile_url(task.url)
+        result = apify_service.run_fb_pages([scrape_url], max_items=1, db=db)
         items = result.get("items") or []
         if not items or not isinstance(items[0], dict):
             task.status = "failed"

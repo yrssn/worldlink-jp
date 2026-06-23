@@ -11,8 +11,10 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -104,6 +106,49 @@ def _first(v: Any) -> Optional[str]:
     if isinstance(v, list):
         return v[0] if v else None
     return v
+
+
+_FB_GROUP_USER_RE = re.compile(r"/groups/\d+/user/(\d+)", re.IGNORECASE)
+_FB_USER_PATH_RE = re.compile(r"/user/(\d+)", re.IGNORECASE)
+
+
+def normalize_fb_profile_url(url: str | None) -> str:
+    """把各种 Facebook 个人主页链接规整成 facebook-pages-scraper 能识别的标准格式。
+
+    facebook-pages-scraper 只认主页/Page 链接，不认群组上下文链接
+    （如 /groups/{群组ID}/user/{用户ID}）。这里统一抽取出数字用户 ID，
+    转成 https://www.facebook.com/profile.php?id={uid}。无法识别时原样返回。
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return raw
+    if "://" not in raw:
+        raw = "https://" + raw
+
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return (url or "").strip()
+
+    host = (parts.netloc or "").lower()
+    if "facebook.com" not in host:
+        return (url or "").strip()
+
+    path = parts.path or ""
+
+    # 群组内成员入口：/groups/{gid}/user/{uid}
+    m = _FB_GROUP_USER_RE.search(path) or _FB_USER_PATH_RE.search(path)
+    if m:
+        return f"https://www.facebook.com/profile.php?id={m.group(1)}"
+
+    # 已是 profile.php?id=数字：只保留 id 参数，去掉群组/会话等多余参数
+    if path.rstrip("/").endswith("/profile.php"):
+        qs = parse_qs(parts.query)
+        uid = (qs.get("id") or [None])[0]
+        if uid and uid.isdigit():
+            return f"https://www.facebook.com/profile.php?id={uid}"
+
+    return (url or "").strip()
 
 
 def _map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
