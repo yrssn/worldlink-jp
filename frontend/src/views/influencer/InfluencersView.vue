@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { influencerApi, type Influencer } from '@/api/influencer'
@@ -19,6 +19,100 @@ const form = reactive<Partial<Influencer>>({
   country: 'JP',
   status: 'pre_contact'
 })
+
+// ─── 自动抓取（手工新增时按主页 URL 异步抓资料填表） ──────────────
+const scrapeUrl = ref('')
+const scrapeTaskId = ref<number | null>(null)
+const scrapeStatus = ref<'' | 'pending' | 'running' | 'done' | 'failed'>('')
+const scrapeError = ref('')
+let scrapeTimer: ReturnType<typeof setTimeout> | null = null
+
+const SCRAPE_STATUS_TEXT: Record<string, string> = {
+  pending: '排队中…',
+  running: '抓取中…',
+  done: '抓取完成',
+  failed: '抓取失败'
+}
+const SCRAPE_STATUS_TAG: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
+  pending: 'info',
+  running: 'warning',
+  done: 'success',
+  failed: 'danger'
+}
+
+function stopScrapePolling() {
+  if (scrapeTimer) {
+    clearTimeout(scrapeTimer)
+    scrapeTimer = null
+  }
+}
+
+function resetScrape() {
+  stopScrapePolling()
+  scrapeUrl.value = ''
+  scrapeTaskId.value = null
+  scrapeStatus.value = ''
+  scrapeError.value = ''
+}
+
+const SCRAPE_FILL_KEYS: (keyof Influencer)[] = [
+  'display_name', 'bio', 'address', 'phone', 'email', 'website', 'messenger',
+  'fb_page_id', 'fb_page_url', 'fb_page_title', 'fb_categories', 'fb_followers',
+  'fb_likes', 'fb_rating', 'fb_rating_count', 'avatar_url', 'cover_url'
+]
+
+function applyScrapeResult(result: Partial<Influencer> | null | undefined) {
+  if (!result) return
+  for (const key of SCRAPE_FILL_KEYS) {
+    const v = result[key]
+    if (v !== null && v !== undefined && v !== '') {
+      // 抓取结果覆盖对应字段
+      ;(form as Record<string, unknown>)[key] = v
+    }
+  }
+}
+
+async function pollScrape() {
+  if (scrapeTaskId.value == null) return
+  try {
+    const t = await influencerApi.getScrapeProfile(scrapeTaskId.value)
+    scrapeStatus.value = t.status
+    if (t.status === 'done') {
+      stopScrapePolling()
+      applyScrapeResult(t.result)
+      ElMessage.success('抓取完成，已自动填充')
+    } else if (t.status === 'failed') {
+      stopScrapePolling()
+      scrapeError.value = t.error || '抓取失败'
+      ElMessage.warning(scrapeError.value)
+    } else {
+      scrapeTimer = setTimeout(pollScrape, 3000)
+    }
+  } catch {
+    stopScrapePolling()
+    scrapeStatus.value = 'failed'
+    scrapeError.value = '查询任务失败，请重试'
+  }
+}
+
+async function startScrape() {
+  const url = scrapeUrl.value.trim()
+  if (!url) {
+    ElMessage.warning('请粘贴 Facebook 主页链接')
+    return
+  }
+  stopScrapePolling()
+  scrapeError.value = ''
+  try {
+    const t = await influencerApi.startScrapeProfile(url)
+    scrapeTaskId.value = t.id
+    scrapeStatus.value = t.status
+    ElMessage.success('已发起抓取任务，完成后自动填充')
+    scrapeTimer = setTimeout(pollScrape, 2000)
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
 
 const STATUS_OPTIONS = [
   { label: '预建联', value: 'pre_contact' },
@@ -73,13 +167,24 @@ function openCreate() {
     email: '',
     phone: '',
     website: '',
+    messenger: '',
     country: 'JP',
     region: '',
     city: '',
+    address: '',
     bio: '',
     notes: '',
-    status: 'pre_contact'
+    status: 'pre_contact',
+    fb_page_url: '',
+    fb_page_id: '',
+    fb_page_title: '',
+    fb_followers: undefined,
+    fb_likes: undefined,
+    fb_categories: undefined,
+    avatar_url: '',
+    cover_url: ''
   })
+  resetScrape()
   dialogVisible.value = true
 }
 
@@ -109,6 +214,7 @@ async function remove(row: Influencer) {
 }
 
 onMounted(refresh)
+onUnmounted(stopScrapePolling)
 </script>
 
 <template>
@@ -179,6 +285,35 @@ onMounted(refresh)
 
     <el-dialog v-model="dialogVisible" title="手工新增达人" width="640px">
       <el-form :model="form" label-width="100px">
+        <el-form-item label="自动抓取">
+          <div style="width: 100%">
+            <div style="display: flex; gap: 8px">
+              <el-input
+                v-model="scrapeUrl"
+                placeholder="粘贴 Facebook 主页链接，自动识别并填充资料"
+                clearable
+                @keyup.enter="startScrape"
+              />
+              <el-button
+                type="primary"
+                :loading="scrapeStatus === 'pending' || scrapeStatus === 'running'"
+                @click="startScrape"
+              >
+                {{ scrapeStatus === 'pending' || scrapeStatus === 'running' ? '抓取中…' : '自动抓取' }}
+              </el-button>
+            </div>
+            <div v-if="scrapeStatus" style="margin-top: 6px; display: flex; align-items: center; gap: 8px">
+              <el-tag size="small" :type="SCRAPE_STATUS_TAG[scrapeStatus] || 'info'">
+                {{ SCRAPE_STATUS_TEXT[scrapeStatus] || scrapeStatus }}
+              </el-tag>
+              <span v-if="scrapeStatus === 'pending' || scrapeStatus === 'running'" style="color: #909399; font-size: 12px">
+                抓取作为后台任务执行，完成后自动填充，期间可继续编辑其它字段
+              </span>
+              <span v-if="scrapeError" style="color: #f56c6c; font-size: 12px">{{ scrapeError }}</span>
+            </div>
+          </div>
+        </el-form-item>
+        <el-divider style="margin: 4px 0 16px" />
         <el-form-item label="昵称">
           <el-input v-model="form.display_name" />
         </el-form-item>
@@ -199,6 +334,12 @@ onMounted(refresh)
         </el-form-item>
         <el-form-item label="城市">
           <el-input v-model="form.city" />
+        </el-form-item>
+        <el-form-item label="FB 主页">
+          <el-input v-model="form.fb_page_url" placeholder="自动抓取后回填，可手动修改" />
+        </el-form-item>
+        <el-form-item label="FB 粉丝">
+          <el-input-number v-model="form.fb_followers" :min="0" :controls="false" style="width: 160px" />
         </el-form-item>
         <el-form-item label="简介">
           <el-input v-model="form.bio" type="textarea" :rows="3" />

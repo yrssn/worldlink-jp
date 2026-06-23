@@ -28,6 +28,8 @@ export interface Influencer {
   display_name: string
   real_name?: string | null
   bio?: string | null
+  avatar_url?: string | null
+  cover_url?: string | null
   email?: string | null
   phone?: string | null
   website?: string | null
@@ -35,8 +37,12 @@ export interface Influencer {
   country?: string | null
   region?: string | null
   city?: string | null
+  language?: string | null
+  address?: string | null
   fb_page_id?: string | null
   fb_page_url?: string | null
+  fb_page_title?: string | null
+  fb_categories?: string[] | null
   fb_followers?: number | null
   fb_likes?: number | null
   fb_rating?: number | null
@@ -71,6 +77,16 @@ export interface InfluencerSourcePost {
   published_at: string | null
 }
 
+export interface InfluencerScrapeTask {
+  id: number
+  url: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  error?: string | null
+  result?: Partial<Influencer> | null
+  created_at: string
+  finished_at?: string | null
+}
+
 export const influencerApi = {
   list: (params?: { page?: number; page_size?: number; keyword?: string; status?: string }) =>
     http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
@@ -87,6 +103,10 @@ export const influencerApi = {
     source_post_ids?: number[]
     notes?: string
   }) => http.post<unknown, Influencer>('/influencers/from-scrape', data),
+  startScrapeProfile: (url: string) =>
+    http.post<unknown, InfluencerScrapeTask>('/influencers/scrape-profile', { url }),
+  getScrapeProfile: (taskId: number) =>
+    http.get<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}`),
   listPosts: (id: number) =>
     http.get<unknown, InfluencerSourcePost[]>(`/influencers/${id}/posts`),
   addSocial: (id: number, data: SocialAccount) =>

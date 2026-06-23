@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import get_current_user, get_db, is_admin
+from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform
 from app.models.influencer import Influencer
+from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount
 from app.models.user import User
@@ -17,11 +21,13 @@ from app.schemas.influencer import (
     InfluencerDetailOut,
     InfluencerFromScrapeRequest,
     InfluencerOut,
+    InfluencerScrapeTaskCreate,
+    InfluencerScrapeTaskOut,
     InfluencerUpdate,
     SocialAccountCreate,
     SocialAccountOut,
 )
-from app.services import influencer_service
+from app.services import apify_service, influencer_service
 from app.utils.csv_export import build_csv, csv_response
 
 router = APIRouter(prefix="/influencers", tags=["influencer"])
@@ -37,6 +43,46 @@ def _ensure_platform_access(db: Session, owner_id: int, platform_id: int | None)
     )
     if not exists:
         raise HTTPException(status_code=400, detail="达人类型不存在或无权使用")
+
+
+def _run_scrape_profile_bg(task_id: int) -> None:
+    """后台线程：按主页 URL 跑 facebook-pages-scraper 抓资料，映射成可填充表单字段。"""
+    db = SessionLocal()
+    try:
+        task: InfluencerScrapeTask | None = db.get(InfluencerScrapeTask, task_id)
+        if not task:
+            return
+        task.status = "running"
+        task.started_at = datetime.utcnow()
+        db.commit()
+
+        result = apify_service.run_fb_pages([task.url], max_items=1, db=db)
+        items = result.get("items") or []
+        if not items or not isinstance(items[0], dict):
+            task.status = "failed"
+            task.error = "未抓取到主页资料，请确认链接是否为有效的 Facebook 主页"
+            task.finished_at = datetime.utcnow()
+            db.commit()
+            return
+
+        task.result = influencer_service.page_profile_to_form(items[0])
+        task.status = "done"
+        task.finished_at = datetime.utcnow()
+        db.commit()
+        logger.info("[InfluencerScrape task#{}] done for {}", task_id, task.url)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[InfluencerScrape task#{}] failed: {}", task_id, e)
+        try:
+            task = db.get(InfluencerScrapeTask, task_id)
+            if task:
+                task.status = "failed"
+                task.error = str(e)[:2000]
+                task.finished_at = datetime.utcnow()
+                db.commit()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db.close()
 
 
 INFLUENCER_CSV_COLUMNS = [
@@ -82,9 +128,7 @@ def list_influencers(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = db.query(Influencer).options(joinedload(Influencer.platform)).filter(
-        Influencer.deleted_at.is_(None)
-    )
+    q = db.query(Influencer).options(joinedload(Influencer.platform))
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
     if keyword:
@@ -115,9 +159,7 @@ def export_influencers(
     user: User = Depends(get_current_user),
 ):
     """按当前过滤条件导出达人列表（CSV）。"""
-    q = db.query(Influencer).options(joinedload(Influencer.platform)).filter(
-        Influencer.deleted_at.is_(None)
-    )
+    q = db.query(Influencer).options(joinedload(Influencer.platform))
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
     if keyword:
@@ -153,6 +195,42 @@ def create_influencer(
     db.commit()
     db.refresh(inf)
     return inf
+
+
+@router.post("/scrape-profile", response_model=InfluencerScrapeTaskOut)
+def start_scrape_profile(
+    payload: InfluencerScrapeTaskCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """手工新增达人时「自动抓取」：按主页 URL 异步跑 facebook-pages-scraper。
+
+    主页抓取较慢，放后台线程执行；前端轮询任务状态，done 后用 result 自动填充表单。
+    """
+    url = (payload.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="请填写主页链接")
+    task = InfluencerScrapeTask(owner_id=user.id, url=url, status="pending")
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    threading.Thread(
+        target=_run_scrape_profile_bg, args=(task.id,), daemon=True
+    ).start()
+    return task
+
+
+@router.get("/scrape-profile/{task_id}", response_model=InfluencerScrapeTaskOut)
+def get_scrape_profile(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """轮询自动抓取任务状态/结果。"""
+    task = db.get(InfluencerScrapeTask, task_id)
+    if not task or (task.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="task not found")
+    return task
 
 
 @router.get("/{iid}", response_model=InfluencerDetailOut)
@@ -241,8 +319,7 @@ def delete_influencer(
     inf = db.get(Influencer, iid)
     if not inf or (inf.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="influencer not found")
-    # 软删除：保留记录，关联帖子据此显示「已删除」；列表/查重不再展示
-    inf.deleted_at = datetime.utcnow()
+    db.delete(inf)
     db.commit()
     return Msg()
 

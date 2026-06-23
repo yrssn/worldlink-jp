@@ -107,6 +107,26 @@ class InfluencerDetailOut(InfluencerOut):
     source_post_ids: list[int] = []
 
 
+class InfluencerScrapeTaskCreate(BaseModel):
+    """手工新增达人时发起「自动抓取」：传入主页 URL。"""
+
+    url: str = Field(..., max_length=512)
+
+
+class InfluencerScrapeTaskOut(BaseModel):
+    """自动抓取任务状态，done 后 result 为可填充表单的达人字段。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    url: str
+    status: str
+    error: Optional[str] = None
+    result: Optional[dict[str, Any]] = None
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+
+
 class InfluencerFromScrapeRequest(BaseModel):
     """从抓取"待审核博主"列表点击【建联】时使用。
     传入 post_id 或 author_url，其中任一即可定位。
