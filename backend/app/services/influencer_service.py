@@ -141,6 +141,20 @@ def _map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def page_profile_to_form(profile: dict[str, Any]) -> dict[str, Any]:
+    """把 facebook-pages-scraper 抓回来的主页资料映射成「可填充表单」的达人字段。
+
+    返回 JSON 友好（datetime → isoformat）、且只含表单需要的字段；去掉体积较大的 raw_profile。
+    """
+    mapped = _map_page_profile(profile)
+    mapped.pop("raw_profile", None)
+    created = mapped.get("fb_page_created_at")
+    if isinstance(created, datetime):
+        mapped["fb_page_created_at"] = created.isoformat()
+    # 丢弃空值，避免覆盖用户已填内容
+    return {k: v for k, v in mapped.items() if v not in (None, "")}
+
+
 def create_from_scrape(
     db: Session,
     owner_id: int,
