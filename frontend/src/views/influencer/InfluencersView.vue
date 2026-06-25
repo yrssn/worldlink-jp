@@ -1,8 +1,26 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { influencerApi, type Influencer, type InfluencerScrapeTask } from '@/api/influencer'
+import {
+  influencerApi,
+  type Influencer,
+  type InfluencerScrapeTask,
+  type ScrapePlatform,
+} from '@/api/influencer'
+
+// 抓取平台（为以后更多平台预留，只需在此追加一项）
+const SCRAPE_PLATFORMS: { value: ScrapePlatform; label: string; placeholder: string }[] = [
+  { value: 'facebook', label: 'Facebook', placeholder: '粘贴 Facebook 主页链接，发起后台抓取任务' },
+  {
+    value: 'instagram',
+    label: 'Instagram',
+    placeholder: '输入 Instagram 用户名或主页链接，如 nasa 或 https://www.instagram.com/nasa/',
+  },
+]
+const PLATFORM_LABEL: Record<string, string> = Object.fromEntries(
+  SCRAPE_PLATFORMS.map((p) => [p.value, p.label]),
+)
 
 const router = useRouter()
 const list = ref<Influencer[]>([])
@@ -117,6 +135,10 @@ async function startScrape() {
 // ─── 抓取任务列表（独立面板：发起抓取 → 看资料 → 存入达人库） ────────
 const taskDialogVisible = ref(false)
 const taskScrapeUrl = ref('')
+const taskPlatform = ref<ScrapePlatform>('facebook')
+const taskPlaceholder = computed(
+  () => SCRAPE_PLATFORMS.find((p) => p.value === taskPlatform.value)?.placeholder || '',
+)
 const taskStarting = ref(false)
 const tasks = ref<InfluencerScrapeTask[]>([])
 const tasksLoading = ref(false)
@@ -126,7 +148,7 @@ let taskListTimer: ReturnType<typeof setTimeout> | null = null
 const detailVisible = ref(false)
 const detailTask = ref<InfluencerScrapeTask | null>(null)
 
-const DETAIL_FIELDS: { label: string; key: keyof Influencer }[] = [
+const DETAIL_FIELDS: { label: string; key: string }[] = [
   { label: '昵称', key: 'display_name' },
   { label: 'FB 主页标题', key: 'fb_page_title' },
   { label: '简介', key: 'bio' },
@@ -142,11 +164,22 @@ const DETAIL_FIELDS: { label: string; key: keyof Influencer }[] = [
   { label: 'FB 主页ID', key: 'fb_page_id' }
 ]
 
+const IG_DETAIL_FIELDS: { label: string; key: string }[] = [
+  { label: '昵称', key: 'display_name' },
+  { label: '真实姓名', key: 'real_name' },
+  { label: '简介', key: 'bio' },
+  { label: 'IG 用户名', key: 'ig_username' },
+  { label: '粉丝', key: 'followers' },
+  { label: '网站', key: 'website' },
+  { label: 'IG 主页', key: 'ig_url' }
+]
+
 function detailRows(task: InfluencerScrapeTask | null) {
-  const r = task?.result
+  const r = task?.result as Record<string, unknown> | null | undefined
   if (!r) return [] as { label: string; value: string }[]
+  const fields = task?.platform === 'instagram' ? IG_DETAIL_FIELDS : DETAIL_FIELDS
   const rows: { label: string; value: string }[] = []
-  for (const f of DETAIL_FIELDS) {
+  for (const f of fields) {
     const v = r[f.key]
     if (v !== null && v !== undefined && v !== '') {
       rows.push({ label: f.label, value: Array.isArray(v) ? v.join('、') : String(v) })
@@ -183,6 +216,7 @@ async function loadTasks() {
 function openTaskDialog() {
   taskDialogVisible.value = true
   taskScrapeUrl.value = ''
+  taskPlatform.value = 'facebook'
   loadTasks()
 }
 
@@ -193,12 +227,16 @@ function closeTaskDialog() {
 async function startTaskScrape() {
   const url = taskScrapeUrl.value.trim()
   if (!url) {
-    ElMessage.warning('请粘贴 Facebook 主页链接')
+    ElMessage.warning(
+      taskPlatform.value === 'instagram'
+        ? '请输入 Instagram 用户名或主页链接'
+        : '请粘贴 Facebook 主页链接',
+    )
     return
   }
   taskStarting.value = true
   try {
-    await influencerApi.startScrapeProfile(url)
+    await influencerApi.startScrapeProfile(url, taskPlatform.value)
     taskScrapeUrl.value = ''
     ElMessage.success('已发起抓取任务，完成后可查看并存入达人库')
     await loadTasks()
@@ -484,9 +522,17 @@ onUnmounted(() => {
       @closed="closeTaskDialog"
     >
       <div style="display: flex; gap: 8px; margin-bottom: 12px">
+        <el-select v-model="taskPlatform" style="width: 140px">
+          <el-option
+            v-for="p in SCRAPE_PLATFORMS"
+            :key="p.value"
+            :label="p.label"
+            :value="p.value"
+          />
+        </el-select>
         <el-input
           v-model="taskScrapeUrl"
-          placeholder="粘贴 Facebook 主页链接，发起后台抓取任务"
+          :placeholder="taskPlaceholder"
           clearable
           @keyup.enter="startTaskScrape"
         />
@@ -495,7 +541,14 @@ onUnmounted(() => {
       </div>
       <el-table v-loading="tasksLoading" :data="tasks" border max-height="420">
         <el-table-column prop="id" label="ID" width="64" />
-        <el-table-column label="主页链接" min-width="220">
+        <el-table-column label="平台" width="96">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.platform === 'instagram' ? 'danger' : 'primary'" effect="plain">
+              {{ PLATFORM_LABEL[row.platform] || row.platform }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="主页链接 / 用户名" min-width="220">
           <template #default="{ row }">
             <a :href="row.url" target="_blank" style="word-break: break-all">{{ row.url }}</a>
           </template>
@@ -504,7 +557,7 @@ onUnmounted(() => {
           <template #default="{ row }">{{ row.result?.display_name || '—' }}</template>
         </el-table-column>
         <el-table-column label="粉丝" width="90">
-          <template #default="{ row }">{{ row.result?.fb_followers ?? '—' }}</template>
+          <template #default="{ row }">{{ row.result?.fb_followers ?? row.result?.followers ?? '—' }}</template>
         </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">

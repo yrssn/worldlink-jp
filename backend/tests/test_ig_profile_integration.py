@@ -131,5 +131,54 @@ class IgEvalInputTests(unittest.TestCase):
         self.assertTrue(ev["is_business"])
 
 
+class IgProfileToFormTests(unittest.TestCase):
+    """内联「自动抓取任务」弹窗选 Instagram 时的结果映射（纯函数）。"""
+
+    def test_form_fields(self):
+        form = influencer_service.ig_profile_to_form(IG_PROFILE_SAMPLE)
+        self.assertEqual(form["platform"], "instagram")
+        self.assertEqual(form["display_name"], "NASA")
+        self.assertEqual(form["ig_username"], "nasa")
+        self.assertEqual(form["ig_url"], "https://www.instagram.com/nasa")
+        self.assertEqual(form["followers"], 96323377)
+        self.assertEqual(form["website"], "https://www.nasa.gov/")
+        # 原始资料精简保留，供存库按 IG 用户名/主页 URL 去重
+        self.assertEqual(form["_ig_profile"]["username"], "nasa")
+        # 不应混入 Facebook 专属字段
+        self.assertNotIn("fb_page_id", form)
+        self.assertNotIn("fb_page_url", form)
+
+    def test_form_drops_empty(self):
+        form = influencer_service.ig_profile_to_form({"username": "natgeo"})
+        self.assertEqual(form["display_name"], "natgeo")
+        self.assertEqual(form["ig_username"], "natgeo")
+        self.assertNotIn("website", form)
+
+
+class FbFormHelpersRestoredTests(unittest.TestCase):
+    """回归保护：合并 PR #15 时曾丢失这些函数，导致内联自动抓取弹窗存库崩溃。"""
+
+    def test_normalize_group_user_url(self):
+        self.assertEqual(
+            influencer_service.normalize_fb_profile_url(
+                "https://www.facebook.com/groups/123/user/456/"
+            ),
+            "https://www.facebook.com/profile.php?id=456",
+        )
+
+    def test_normalize_passthrough_non_fb(self):
+        self.assertEqual(
+            influencer_service.normalize_fb_profile_url("https://example.com/x"),
+            "https://example.com/x",
+        )
+
+    def test_page_profile_to_form(self):
+        form = influencer_service.page_profile_to_form(FB_PAGE_SAMPLE)
+        self.assertEqual(form["display_name"], "Humans of New York")
+        self.assertEqual(form["fb_page_id"], "10643211755")
+        self.assertEqual(form["email"], "hi@example.com")
+        self.assertNotIn("raw_profile", form)
+
+
 if __name__ == "__main__":
     unittest.main()

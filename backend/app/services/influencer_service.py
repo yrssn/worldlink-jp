@@ -11,8 +11,10 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -106,6 +108,49 @@ def _first(v: Any) -> Optional[str]:
     return v
 
 
+_FB_GROUP_USER_RE = re.compile(r"/groups/\d+/user/(\d+)", re.IGNORECASE)
+_FB_USER_PATH_RE = re.compile(r"/user/(\d+)", re.IGNORECASE)
+
+
+def normalize_fb_profile_url(url: str | None) -> str:
+    """把各种 Facebook 个人主页链接规整成 facebook-pages-scraper 能识别的标准格式。
+
+    facebook-pages-scraper 只认主页/Page 链接，不认群组上下文链接
+    （如 /groups/{群组ID}/user/{用户ID}）。这里统一抽取出数字用户 ID，
+    转成 https://www.facebook.com/profile.php?id={uid}。无法识别时原样返回。
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return raw
+    if "://" not in raw:
+        raw = "https://" + raw
+
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return (url or "").strip()
+
+    host = (parts.netloc or "").lower()
+    if "facebook.com" not in host:
+        return (url or "").strip()
+
+    path = parts.path or ""
+
+    # 群组内成员入口：/groups/{gid}/user/{uid}
+    m = _FB_GROUP_USER_RE.search(path) or _FB_USER_PATH_RE.search(path)
+    if m:
+        return f"https://www.facebook.com/profile.php?id={m.group(1)}"
+
+    # 已是 profile.php?id=数字：只保留 id 参数，去掉群组/会话等多余参数
+    if path.rstrip("/").endswith("/profile.php"):
+        qs = parse_qs(parts.query)
+        uid = (qs.get("id") or [None])[0]
+        if uid and uid.isdigit():
+            return f"https://www.facebook.com/profile.php?id={uid}"
+
+    return (url or "").strip()
+
+
 def _map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
     """把 apify facebook-pages-scraper / facebook-search-scraper 的字段映射到 Influencer 字段。"""
     about_me = profile.get("about_me") if isinstance(profile.get("about_me"), dict) else {}
@@ -148,6 +193,87 @@ def _map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
         "cover_url": profile.get("coverPhotoUrl") or profile.get("coverImage"),
         "raw_profile": profile,
     }
+
+
+def page_profile_to_form(profile: dict[str, Any]) -> dict[str, Any]:
+    """把 facebook-pages-scraper 抓回来的主页资料映射成「可填充表单」的达人字段。
+
+    返回 JSON 友好（datetime → isoformat）、且只含表单需要的字段；去掉体积较大的 raw_profile。
+    """
+    mapped = _map_page_profile(profile)
+    mapped.pop("raw_profile", None)
+    created = mapped.get("fb_page_created_at")
+    if isinstance(created, datetime):
+        mapped["fb_page_created_at"] = created.isoformat()
+    # 丢弃空值，避免覆盖用户已填内容
+    return {k: v for k, v in mapped.items() if v not in (None, "")}
+
+
+_FORM_INFLUENCER_FIELDS = (
+    "display_name", "real_name", "bio", "avatar_url", "cover_url",
+    "country", "region", "city", "language", "address",
+    "email", "phone", "messenger", "website",
+    "fb_page_id", "fb_page_url", "fb_page_title", "fb_categories",
+    "fb_followers", "fb_likes", "fb_rating", "fb_rating_count",
+    "fb_checkins_mentions", "fb_ad_library_id", "fb_ad_status",
+    "tags", "notes",
+)
+
+
+def create_influencer_from_form(
+    db: Session,
+    owner_id: int,
+    form: dict[str, Any],
+    notes: Optional[str] = None,
+) -> tuple[Influencer, bool]:
+    """把「自动抓取任务」的可填充表单结果入库为建联达人。
+
+    - 只取白名单字段，避免脏字段；fb_page_created_at(ISO 字符串)单独解析；
+    - 按 fb_page_id / fb_page_url / email 去重，命中则复用已有，不重复创建；
+    返回 (influencer, created)。
+    """
+    data: dict[str, Any] = {
+        k: form.get(k) for k in _FORM_INFLUENCER_FIELDS if form.get(k) not in (None, "")
+    }
+    created_raw = form.get("fb_page_created_at")
+    if isinstance(created_raw, str) and created_raw:
+        try:
+            data["fb_page_created_at"] = datetime.fromisoformat(created_raw)
+        except ValueError:
+            pass
+
+    data.setdefault("display_name", "Unknown")
+    data["owner_id"] = owner_id
+    data["source"] = InfluencerSource.scrape
+    if notes:
+        data["notes"] = notes
+
+    existing = find_duplicate(
+        db,
+        owner_id=owner_id,
+        fb_page_id=data.get("fb_page_id"),
+        fb_page_url=data.get("fb_page_url"),
+        email=data.get("email"),
+    )
+    if existing:
+        return existing, False
+
+    inf = Influencer(**data)
+    db.add(inf)
+    db.flush()
+    if inf.fb_page_url or inf.fb_page_id:
+        db.add(
+            InfluencerSocialAccount(
+                influencer_id=inf.id,
+                platform=SocialPlatform.facebook,
+                handle=inf.fb_page_id,
+                url=inf.fb_page_url,
+                followers=inf.fb_followers,
+            )
+        )
+    db.commit()
+    db.refresh(inf)
+    return inf, True
 
 
 def _looks_like_instagram(profile: dict[str, Any]) -> bool:
@@ -277,6 +403,70 @@ def _create_from_ig_profile(
     _attach_posts(db, inf.id, post, source_post_ids)
     db.refresh(inf)
     return inf
+
+
+_IG_PROFILE_KEEP = (
+    "id", "username", "url", "inputUrl", "fullName", "biography",
+    "followersCount", "followsCount", "postsCount",
+    "profilePicUrl", "profilePicUrlHD", "externalUrl", "externalUrls",
+    "about", "isBusinessAccount", "verified",
+)
+
+
+def ig_profile_to_form(profile: dict[str, Any]) -> dict[str, Any]:
+    """把 instagram-profile-scraper 的一条主页资料映射成「可填充表单」+ 存库所需信息。
+
+    顶层放展示用字段（display_name / bio / followers / website / ig_username / ig_url），
+    并在 _ig_profile 内保留精简后的原始资料，供存库时按 IG 用户名/主页 URL 去重。
+    """
+    handle, url = _ig_handle_url(profile)
+    mapped = _map_ig_profile(profile)
+    raw = {k: profile.get(k) for k in _IG_PROFILE_KEEP if profile.get(k) is not None}
+    form = {
+        "platform": "instagram",
+        "display_name": mapped.get("display_name"),
+        "real_name": mapped.get("real_name"),
+        "bio": mapped.get("bio"),
+        "avatar_url": mapped.get("avatar_url"),
+        "website": mapped.get("website"),
+        "country": mapped.get("country"),
+        "ig_username": handle,
+        "ig_url": url,
+        "followers": _to_int(profile.get("followersCount")),
+        "_ig_profile": raw,
+    }
+    return {k: v for k, v in form.items() if v not in (None, "")}
+
+
+def create_influencer_from_ig_form(
+    db: Session,
+    owner_id: int,
+    form: dict[str, Any],
+    notes: Optional[str] = None,
+) -> tuple[Influencer, bool]:
+    """把 IG「自动抓取任务」结果入库为建联达人（按 IG 用户名/主页 URL 去重）。
+
+    返回 (influencer, created)。
+    """
+    raw = form.get("_ig_profile")
+    profile: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+    # 兜底：原始资料缺失时用顶层字段补齐识别所需信息
+    if not profile.get("username") and form.get("ig_username"):
+        profile["username"] = form.get("ig_username")
+    if not profile.get("url") and form.get("ig_url"):
+        profile["url"] = form.get("ig_url")
+
+    handle, url = _ig_handle_url(profile)
+    existing = find_duplicate_social(
+        db, owner_id, SocialPlatform.instagram, handle=handle, url=url
+    )
+    created = existing is None
+    inf = _create_from_ig_profile(
+        db, owner_id, profile, post=None, notes=notes, source_post_ids=None
+    )
+    db.commit()
+    db.refresh(inf)
+    return inf, created
 
 
 def create_from_scrape(

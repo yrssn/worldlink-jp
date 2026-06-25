@@ -77,12 +77,22 @@ export interface InfluencerSourcePost {
   published_at: string | null
 }
 
+export type ScrapePlatform = 'facebook' | 'instagram'
+
+export type ScrapeTaskResult = Partial<Influencer> & {
+  platform?: string
+  ig_username?: string
+  ig_url?: string
+  followers?: number
+}
+
 export interface InfluencerScrapeTask {
   id: number
+  platform: ScrapePlatform
   url: string
   status: 'pending' | 'running' | 'done' | 'failed'
   error?: string | null
-  result?: Partial<Influencer> | null
+  result?: ScrapeTaskResult | null
   created_at: string
   finished_at?: string | null
   influencer_id?: number | null
@@ -104,8 +114,8 @@ export const influencerApi = {
     source_post_ids?: number[]
     notes?: string
   }) => http.post<unknown, Influencer>('/influencers/from-scrape', data),
-  startScrapeProfile: (url: string) =>
-    http.post<unknown, InfluencerScrapeTask>('/influencers/scrape-profile', { url }),
+  startScrapeProfile: (url: string, platform: ScrapePlatform = 'facebook') =>
+    http.post<unknown, InfluencerScrapeTask>('/influencers/scrape-profile', { url, platform }),
   getScrapeProfile: (taskId: number) =>
     http.get<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}`),
   listScrapeProfiles: (limit = 50) =>

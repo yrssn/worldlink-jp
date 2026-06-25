@@ -13,7 +13,7 @@ from app.models.bitbrowser import BitBrowserPlatform
 from app.models.influencer import Influencer
 from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.post import Post
-from app.models.social_account import InfluencerSocialAccount
+from app.models.social_account import InfluencerSocialAccount, SocialPlatform
 from app.models.user import User
 from app.schemas.common import Msg, Page
 from app.schemas.influencer import (
@@ -51,19 +51,38 @@ def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrap
     out = InfluencerScrapeTaskOut.model_validate(task)
     result = task.result if isinstance(task.result, dict) else None
     if result:
-        existing = influencer_service.find_duplicate(
-            db,
-            owner_id=task.owner_id,
-            fb_page_id=result.get("fb_page_id"),
-            fb_page_url=result.get("fb_page_url"),
-            email=result.get("email"),
-        )
+        if (task.platform or "facebook") == "instagram":
+            existing = influencer_service.find_duplicate_social(
+                db,
+                owner_id=task.owner_id,
+                platform=SocialPlatform.instagram,
+                handle=result.get("ig_username"),
+                url=result.get("ig_url"),
+            )
+        else:
+            existing = influencer_service.find_duplicate(
+                db,
+                owner_id=task.owner_id,
+                fb_page_id=result.get("fb_page_id"),
+                fb_page_url=result.get("fb_page_url"),
+                email=result.get("email"),
+            )
         out.influencer_id = existing.id if existing else None
     return out
 
 
+def _fail_task(db: Session, task: InfluencerScrapeTask, msg: str) -> None:
+    task.status = "failed"
+    task.error = msg
+    task.finished_at = datetime.utcnow()
+    db.commit()
+
+
 def _run_scrape_profile_bg(task_id: int) -> None:
-    """后台线程：按主页 URL 跑 facebook-pages-scraper 抓资料，映射成可填充表单字段。"""
+    """后台线程：按平台跑对应 Apify actor 抓主页资料，映射成可填充表单字段。
+
+    facebook：facebook-pages-scraper；instagram：instagram-profile-scraper。
+    """
     db = SessionLocal()
     try:
         task: InfluencerScrapeTask | None = db.get(InfluencerScrapeTask, task_id)
@@ -73,14 +92,29 @@ def _run_scrape_profile_bg(task_id: int) -> None:
         task.started_at = datetime.utcnow()
         db.commit()
 
+        platform = (task.platform or "facebook").lower()
+        if platform == "instagram":
+            username = apify_service.normalize_ig_username(task.url)
+            if not username:
+                _fail_task(db, task, "未识别到有效的 Instagram 用户名或主页链接")
+                return
+            result = apify_service.run_ig_profile([username], db=db)
+            items = result.get("items") or []
+            if not items or not isinstance(items[0], dict):
+                _fail_task(db, task, "未抓取到 Instagram 主页资料，请确认用户名/链接是否有效")
+                return
+            task.result = influencer_service.ig_profile_to_form(items[0])
+            task.status = "done"
+            task.finished_at = datetime.utcnow()
+            db.commit()
+            logger.info("[InfluencerScrape task#{}] IG done for {}", task_id, task.url)
+            return
+
         scrape_url = influencer_service.normalize_fb_profile_url(task.url)
         result = apify_service.run_fb_pages([scrape_url], max_items=1, db=db)
         items = result.get("items") or []
         if not items or not isinstance(items[0], dict):
-            task.status = "failed"
-            task.error = "未抓取到主页资料，请确认链接是否为有效的 Facebook 主页"
-            task.finished_at = datetime.utcnow()
-            db.commit()
+            _fail_task(db, task, "未抓取到主页资料，请确认链接是否为有效的 Facebook 主页")
             return
 
         form = influencer_service.page_profile_to_form(items[0])
@@ -226,14 +260,19 @@ def start_scrape_profile(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """手工新增达人时「自动抓取」：按主页 URL 异步跑 facebook-pages-scraper。
+    """「自动抓取」：按平台异步跑对应 actor（FB 主页 / IG 主页资料）。
 
     主页抓取较慢，放后台线程执行；前端轮询任务状态，done 后用 result 自动填充表单。
     """
     url = (payload.url or "").strip()
     if not url:
-        raise HTTPException(status_code=400, detail="请填写主页链接")
-    task = InfluencerScrapeTask(owner_id=user.id, url=url, status="pending")
+        raise HTTPException(status_code=400, detail="请填写主页链接或用户名")
+    platform = (payload.platform or "facebook").strip().lower()
+    if platform not in ("facebook", "instagram"):
+        raise HTTPException(status_code=400, detail="不支持的抓取平台")
+    task = InfluencerScrapeTask(
+        owner_id=user.id, platform=platform, url=url, status="pending"
+    )
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -283,12 +322,15 @@ def save_scrape_profile(
         raise HTTPException(status_code=404, detail="task not found")
     if task.status != "done" or not isinstance(task.result, dict) or not task.result:
         raise HTTPException(status_code=400, detail="该任务尚未抓取完成，无法存入")
-    inf, _created = influencer_service.create_influencer_from_form(
-        db,
-        owner_id=task.owner_id,
-        form=task.result,
-        notes=(payload.notes if payload else None),
-    )
+    notes = payload.notes if payload else None
+    if (task.platform or "facebook") == "instagram":
+        inf, _created = influencer_service.create_influencer_from_ig_form(
+            db, owner_id=task.owner_id, form=task.result, notes=notes
+        )
+    else:
+        inf, _created = influencer_service.create_influencer_from_form(
+            db, owner_id=task.owner_id, form=task.result, notes=notes
+        )
     return inf
 
 

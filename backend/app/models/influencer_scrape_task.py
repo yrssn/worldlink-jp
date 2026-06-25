@@ -22,6 +22,10 @@ class InfluencerScrapeTask(Base, TimestampMixin):
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # 抓取平台：facebook / instagram（为以后更多平台预留）
+    platform: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="facebook", server_default="facebook"
+    )
     url: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", index=True

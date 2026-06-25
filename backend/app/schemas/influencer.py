@@ -108,9 +108,11 @@ class InfluencerDetailOut(InfluencerOut):
 
 
 class InfluencerScrapeTaskCreate(BaseModel):
-    """手工新增达人时发起「自动抓取」：传入主页 URL。"""
+    """发起「自动抓取」：传入主页 URL（FB 主页链接 / IG 用户名或主页链接）与平台。"""
 
     url: str = Field(..., max_length=512)
+    # facebook（默认）/ instagram，为以后更多平台预留
+    platform: str = Field(default="facebook", max_length=32)
 
 
 class InfluencerScrapeTaskOut(BaseModel):
@@ -119,6 +121,7 @@ class InfluencerScrapeTaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    platform: str = "facebook"
     url: str
     status: str
     error: Optional[str] = None
