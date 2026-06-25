@@ -518,7 +518,7 @@ onUnmounted(() => {
     <el-dialog
       v-model="taskDialogVisible"
       title="自动抓取任务"
-      width="860px"
+      width="1080px"
       @closed="closeTaskDialog"
     >
       <div style="display: flex; gap: 8px; margin-bottom: 12px">

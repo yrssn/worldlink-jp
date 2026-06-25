@@ -56,6 +56,19 @@ const PLATFORMS: { label: string; value: SocialPlatform }[] = [
   { label: '其他', value: 'other' }
 ]
 
+const hasFb = computed(() => {
+  const d = detail.value
+  if (!d) return false
+  return !!(
+    d.fb_page_url ||
+    d.fb_page_id ||
+    d.fb_followers ||
+    d.fb_likes ||
+    d.fb_rating ||
+    d.fb_rating_count
+  )
+})
+
 async function refresh() {
   detail.value = await influencerApi.detail(id.value)
   sourcePosts.value = await influencerApi.listPosts(id.value).catch(() => [])
@@ -102,15 +115,15 @@ onMounted(refresh)
         <a v-if="detail.website" :href="detail.website" target="_blank">{{ detail.website }}</a>
       </el-descriptions-item>
       <el-descriptions-item label="Messenger">{{ detail.messenger }}</el-descriptions-item>
-      <el-descriptions-item label="FB 主页" :span="3">
+      <el-descriptions-item v-if="hasFb" label="FB 主页" :span="3">
         <a v-if="detail.fb_page_url" :href="detail.fb_page_url" target="_blank">
           {{ detail.fb_page_url }}
         </a>
       </el-descriptions-item>
-      <el-descriptions-item label="FB 粉丝">{{ detail.fb_followers }}</el-descriptions-item>
-      <el-descriptions-item label="FB 点赞">{{ detail.fb_likes }}</el-descriptions-item>
-      <el-descriptions-item label="FB 评分">
-        {{ detail.fb_rating }}（{{ detail.fb_rating_count }}）
+      <el-descriptions-item v-if="hasFb" label="FB 粉丝">{{ detail.fb_followers }}</el-descriptions-item>
+      <el-descriptions-item v-if="hasFb" label="FB 点赞">{{ detail.fb_likes }}</el-descriptions-item>
+      <el-descriptions-item v-if="hasFb" label="FB 评分">
+        {{ detail.fb_rating ?? '—' }}<span v-if="detail.fb_rating_count">（{{ detail.fb_rating_count }}）</span>
       </el-descriptions-item>
       <el-descriptions-item label="简介" :span="3">{{ detail.bio }}</el-descriptions-item>
       <el-descriptions-item label="备注" :span="3">{{ detail.notes }}</el-descriptions-item>
