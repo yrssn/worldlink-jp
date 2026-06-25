@@ -59,7 +59,7 @@ const statusType: Record<string, string> = {
 }
 
 function pageKey(p: PageItem): string {
-  return (p.pageUrl || p.facebookUrl || p.pageId || p.facebookId || '') as string
+  return (p.pageUrl || p.facebookUrl || p.url || p.pageId || p.facebookId || p.username || '') as string
 }
 
 async function loadTask() {
@@ -108,7 +108,7 @@ async function exportPages() {
 
 async function contactPage(p: PageItem) {
   await influencerApi.fromScrape({
-    author_url: (p.pageUrl || p.facebookUrl) as string,
+    author_url: (p.pageUrl || p.facebookUrl || p.url) as string,
     page_profile: p as unknown as Record<string, unknown>,
     source_post_ids: (p._source_post_ids as number[]) || undefined
   })
@@ -328,22 +328,23 @@ onMounted(refresh)
         <el-table :data="pages" border>
           <el-table-column label="名称" min-width="180">
             <template #default="{ row }">
-              <div style="font-weight: 500">{{ row.title || row.pageName }}</div>
+              <div style="font-weight: 500">{{ row.title || row.pageName || row.fullName || row.username }}</div>
               <div style="font-size: 12px; color: #999">
-                {{ (row.categories || []).join(' / ') }}
+                <span v-if="row.username">@{{ row.username }}</span>
+                <span v-else>{{ (row.categories || []).join(' / ') }}</span>
               </div>
             </template>
           </el-table-column>
           <el-table-column label="简介" min-width="220">
             <template #default="{ row }">
               <div style="max-width: 320px; white-space: pre-wrap">
-                {{ (row.intro || row.about_me?.text || '').slice(0, 140) }}
-                {{ (row.intro || row.about_me?.text || '').length > 140 ? '…' : '' }}
+                {{ (row.intro || row.about_me?.text || row.biography || '').slice(0, 140) }}
+                {{ (row.intro || row.about_me?.text || row.biography || '').length > 140 ? '…' : '' }}
               </div>
             </template>
           </el-table-column>
           <el-table-column label="粉丝" width="90">
-            <template #default="{ row }">{{ row.followers }}</template>
+            <template #default="{ row }">{{ row.followers ?? row.followersCount }}</template>
           </el-table-column>
           <el-table-column label="点赞" width="90">
             <template #default="{ row }">{{ row.likes }}</template>
@@ -360,13 +361,13 @@ onMounted(refresh)
             <template #default="{ row }">
               <div v-if="row.email" style="font-size: 12px">📧 {{ row.email }}</div>
               <div v-if="row.phone" style="font-size: 12px">📞 {{ row.phone }}</div>
-              <div v-if="row.website" style="font-size: 12px">
+              <div v-if="row.website || row.externalUrl" style="font-size: 12px">
                 🌐
                 <a
-                  :href="row.website.startsWith('http') ? row.website : `https://${row.website}`"
+                  :href="(row.website || row.externalUrl).startsWith('http') ? (row.website || row.externalUrl) : `https://${row.website || row.externalUrl}`"
                   target="_blank"
                 >
-                  {{ row.website }}
+                  {{ row.website || row.externalUrl }}
                 </a>
               </div>
             </template>
@@ -403,7 +404,7 @@ onMounted(refresh)
               <el-button
                 size="small"
                 tag="a"
-                :href="row.pageUrl || row.facebookUrl"
+                :href="row.pageUrl || row.facebookUrl || row.url"
                 target="_blank"
               >
                 主页

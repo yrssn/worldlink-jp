@@ -8,6 +8,7 @@ export type ScrapeTaskType =
   | 'fb_posts_by_search'
   | 'fb_posts_scraper'
   | 'fb_search_cb'
+  | 'ig_profile'
 
 export type ScrapeTaskStatus =
   | 'pending'
@@ -90,6 +91,19 @@ export interface PageItem {
   creation_date?: string
   ad_status?: string
   pageAdLibrary?: { id?: string; is_business_page_active?: boolean }
+  // Instagram Profile Scraper 字段（与 FB 共用一张「待审核博主」表）
+  username?: string
+  fullName?: string
+  biography?: string
+  followersCount?: number
+  followsCount?: number
+  postsCount?: number
+  profilePicUrl?: string
+  profilePicUrlHD?: string
+  externalUrl?: string
+  url?: string
+  verified?: boolean
+  isBusinessAccount?: boolean
   _ai_passed?: boolean
   _ai_score?: number
   _ai_reason?: string
@@ -154,6 +168,10 @@ export interface TaskTypeMeta {
     profilePostsOptions?: boolean
     /** fb_search_cb：crawlerbros actor 的搜索类型选择 */
     cbSearchOptions?: boolean
+    /** ig_profile：Instagram 用户名 / 主页 URL 输入 */
+    igUsernames?: boolean
+    /** ig_profile：是否抓 about 段（付费功能） */
+    igProfileOptions?: boolean
   }
 }
 
@@ -198,5 +216,13 @@ export const TASK_TYPES: TaskTypeMeta[] = [
       '使用 apify/facebook-posts-scraper：给定 Facebook 主页/主页 URL 列表，直接抓公开帖子。支持每个主页单独限制条数（每目标帖子数）和全局上限。抓到帖子后可选 AI 评估作者 → 自动抓主页详情。',
     pricing: '约 $2 / 1000 posts + pages $6.6/1000 + LLM（可选）',
     needs: { startUrls: true, postsPerPage: true }
+  },
+  {
+    value: 'ig_profile',
+    label: 'Instagram 用户名 → 抓主页资料 → 建联',
+    summary:
+      '使用 apify/instagram-profile-scraper：给定一批 Instagram 用户名或主页 URL，直接抓取公开主页资料（昵称 / 简介 / 粉丝数 / 头像 / 外链等）。一步到位，[可选 AI 过滤] → 待审核博主 → 点【建联】入库（Instagram 平台账号）。',
+    pricing: '见 actor 定价页',
+    needs: { igUsernames: true, igProfileOptions: true }
   }
 ]

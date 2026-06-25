@@ -150,6 +150,135 @@ def _map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _looks_like_instagram(profile: dict[str, Any]) -> bool:
+    """判断一条 page_profile 是否来自 instagram-profile-scraper。
+
+    Facebook Pages/Search Scraper 输出含 pageUrl / facebookUrl / pageName；
+    Instagram Profile Scraper 输出以 username + followersCount 为特征。
+    """
+    if not isinstance(profile, dict):
+        return False
+    if any(profile.get(k) for k in ("pageUrl", "facebookUrl", "pageName", "pageId")):
+        return False
+    for key in ("inputUrl", "url"):
+        v = profile.get(key)
+        if isinstance(v, str) and "instagram.com" in v.lower():
+            return True
+    if profile.get("username") and (
+        "followersCount" in profile
+        or "profilePicUrl" in profile
+        or "igtvVideoCount" in profile
+        or "isBusinessAccount" in profile
+    ):
+        return True
+    return False
+
+
+def _ig_handle_url(profile: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    username = profile.get("username")
+    handle = str(username).strip() if username else None
+    url = profile.get("url") or profile.get("inputUrl")
+    if not url and handle:
+        url = f"https://www.instagram.com/{handle}"
+    return handle, url
+
+
+def _map_ig_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    """把 apify/instagram-profile-scraper 的字段映射到 Influencer 通用字段。
+
+    IG 没有 Facebook Page 概念，故只填写跨平台通用字段，
+    IG 身份（用户名 / 主页 URL / 粉丝数）单独记到 InfluencerSocialAccount。
+    """
+    about = profile.get("about") if isinstance(profile.get("about"), dict) else {}
+    display_name = profile.get("fullName") or profile.get("username") or "Unknown"
+    return {
+        "display_name": display_name,
+        "real_name": profile.get("fullName"),
+        "bio": profile.get("biography"),
+        "avatar_url": profile.get("profilePicUrlHD") or profile.get("profilePicUrl"),
+        "website": profile.get("externalUrl") or _first(profile.get("externalUrls")),
+        "country": about.get("country") if about else None,
+        "raw_profile": profile,
+    }
+
+
+def find_duplicate_social(
+    db: Session,
+    owner_id: int,
+    platform: SocialPlatform,
+    handle: Optional[str] = None,
+    url: Optional[str] = None,
+) -> Optional[Influencer]:
+    """按某社交平台的 handle / url 查重（用于 Instagram 等非 FB 平台）。
+
+    已软删除的达人不参与查重。
+    """
+    conds = []
+    if handle:
+        conds.append(InfluencerSocialAccount.handle == handle)
+    if url:
+        conds.append(InfluencerSocialAccount.url == url)
+    if not conds:
+        return None
+    return (
+        db.query(Influencer)
+        .join(InfluencerSocialAccount, InfluencerSocialAccount.influencer_id == Influencer.id)
+        .filter(
+            Influencer.owner_id == owner_id,
+            Influencer.deleted_at.is_(None),
+            InfluencerSocialAccount.platform == platform,
+            or_(*conds),
+        )
+        .first()
+    )
+
+
+def _create_from_ig_profile(
+    db: Session,
+    owner_id: int,
+    profile: dict[str, Any],
+    post: Optional[Post],
+    notes: Optional[str],
+    source_post_ids: Optional[list[int]],
+) -> Influencer:
+    """从 Instagram 主页资料【建联】入库，按 IG 用户名 / 主页 URL 去重。"""
+    handle, url = _ig_handle_url(profile)
+    followers = _to_int(profile.get("followersCount"))
+
+    existing = find_duplicate_social(
+        db, owner_id, SocialPlatform.instagram, handle=handle, url=url
+    )
+    if existing:
+        _attach_posts(db, existing.id, post, source_post_ids)
+        return existing
+
+    profile_data = _map_ig_profile(profile)
+    profile_data.setdefault("display_name", "Unknown")
+    profile_data["source"] = InfluencerSource.scrape
+    profile_data["owner_id"] = owner_id
+    if notes:
+        profile_data["notes"] = notes
+
+    inf = Influencer(**profile_data)
+    db.add(inf)
+    db.flush()
+
+    if handle or url:
+        db.add(
+            InfluencerSocialAccount(
+                influencer_id=inf.id,
+                platform=SocialPlatform.instagram,
+                handle=handle,
+                url=url,
+                followers=followers,
+            )
+        )
+
+    _attach_posts(db, inf.id, post, source_post_ids)
+    db.refresh(inf)
+    return inf
+
+
 def create_from_scrape(
     db: Session,
     owner_id: int,
@@ -159,10 +288,15 @@ def create_from_scrape(
     source_post_ids: Optional[list[int]] = None,
 ) -> Influencer:
     """从抓取的【待审核博主】点击【建联】入库。
-    - 优先用 page_profile（Pages Scraper / Search Scraper 抓回来的）做映射；
+    - 优先用 page_profile（Pages Scraper / Search Scraper / IG Profile Scraper 抓回来的）做映射；
     - 若没有 profile，则尝试用 post.author_* 兜底；
     - 入库前去重，存在则把 post 关联过去，并返回已有记录。
     """
+    if page_profile and _looks_like_instagram(page_profile):
+        return _create_from_ig_profile(
+            db, owner_id, page_profile, post, notes, source_post_ids
+        )
+
     profile_data: dict[str, Any] = {}
     if page_profile:
         profile_data.update(_map_page_profile(page_profile))

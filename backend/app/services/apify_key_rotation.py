@@ -1,124 +1,107 @@
 """Apify Key 自动轮转与可用性管理。
 
-当某个 Key 额度不足或出错时，自动切换到下一个可用的 Key。
+当某个 Key 额度不足 / 认证失败时，自动标记为已用尽（``exhausted_at``）并切换到
+下一个可用 Key。被 :func:`app.services.apify_service._run_actor` 调用，对所有抓取
+（Facebook + Instagram）统一生效。
+
+可用性以 ``ApifyKey.exhausted_at`` 为准：``NULL`` 表示可用，非空表示本月已用尽
+（与「Apify Key 管理」里手动标记 / 解除的逻辑一致）。
 """
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
 
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
 from app.models.apify_key import ApifyKey
+
+# 触发 Key 轮转的错误特征（额度耗尽 / 认证失败）。
+# 注意：内存超限（memory limit）是单次运行配置问题，不代表 Key 不可用，故不在此列。
+_EXHAUSTED_PATTERNS = (
+    "usage hard limit",
+    "monthly usage",
+    "usage limit",
+    "out of credit",
+    "insufficient credit",
+    "not enough",
+    "quota",
+    "payment required",
+    "platform usage",
+    "free plan",
+    "trial",
+    "402",
+)
+_AUTH_PATTERNS = (
+    "unauthorized",
+    "authentication",
+    "invalid token",
+    "invalid api",
+    "user was not found",
+    "token is not valid",
+    "401",
+)
 
 
 class ApifyKeyRotation:
-    """Apify Key 轮转管理器。"""
+    """Apify Key 轮转管理器（基于 ``exhausted_at``）。"""
 
-    def __init__(self) -> None:
-        self._current_key_id: int | None = None
+    @staticmethod
+    def classify_error(error: str) -> str:
+        """把错误信息归类为 ``exhausted`` / ``auth`` / ``other``。
 
-    def get_available_key(self, db: Session | None = None) -> Optional[ApifyKey]:
-        """获取当前可用的 Apify Key。
-
-        优先返回标记为 is_default=True 的可用 Key；
-        若无则返回第一个 is_available=True 的 Key。
+        只有 ``exhausted`` 与 ``auth`` 会触发标记不可用 + 轮转下一个 Key；
+        其余（输入错误、内存超限、超时、限流等）一律不轮转，原样抛出。
         """
-        close_db = False
-        if db is None:
-            db = SessionLocal()
-            close_db = True
+        if not error:
+            return "other"
+        low = error.lower()
+        # 内存超限是运行配置问题，明确排除
+        if "memory" in low and ("limit" in low or "exceeded" in low):
+            return "other"
+        if any(p in low for p in _AUTH_PATTERNS):
+            return "auth"
+        if any(p in low for p in _EXHAUSTED_PATTERNS):
+            return "exhausted"
+        return "other"
 
-        try:
-            # 优先返回默认 Key（若可用）
-            default_key = (
-                db.query(ApifyKey)
-                .filter(ApifyKey.is_default.is_(True), ApifyKey.is_available.is_(True))
-                .first()
-            )
-            if default_key:
-                return default_key
+    @staticmethod
+    def get_candidate_keys(db: Session) -> list[ApifyKey]:
+        """返回所有 Key，可用（未用尽）的排前面，默认 Key 再优先。
 
-            # 否则返回第一个可用的 Key
-            available_key = (
-                db.query(ApifyKey)
-                .filter(ApifyKey.is_available.is_(True))
-                .order_by(ApifyKey.id)
-                .first()
-            )
-            return available_key
-        finally:
-            if close_db:
-                db.close()
-
-    def mark_key_unavailable(self, key_id: int, reason: str = "") -> None:
-        """标记某个 Key 为不可用。
-
-        Args:
-            key_id: Apify Key ID
-            reason: 不可用原因（如 "额度不足" 或 "认证失败"）
+        排序键：(已用尽?, 非默认?, id)，因此顺序为：
+        未用尽+默认 → 未用尽+其它 → 已用尽+默认 → 已用尽+其它。
+        即便全部已用尽，也会作为「最后兜底」返回，避免误标记导致彻底无法抓取。
         """
-        db = SessionLocal()
         try:
-            key = db.query(ApifyKey).filter(ApifyKey.id == key_id).first()
+            rows = db.query(ApifyKey).filter(ApifyKey.token.isnot(None)).all()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[ApifyKeyRotation] 读取 Key 列表失败: {}", e)
+            return []
+        rows = [r for r in rows if r.token]
+        rows.sort(key=lambda k: (k.exhausted_at is not None, not k.is_default, k.id))
+        return rows
+
+    @staticmethod
+    def mark_exhausted(db: Session, key_id: int, reason: str = "") -> None:
+        """标记某个 Key 已用尽（``exhausted_at`` = now），并把原因追加到备注。"""
+        try:
+            key = db.get(ApifyKey, key_id)
             if not key:
                 return
-
-            key.is_available = False
+            key.exhausted_at = datetime.utcnow()
             if reason:
-                key.remark = f"{key.remark or ''}\n[不可用] {reason}".strip()
+                tag = f"[自动标记不可用] {reason}"
+                key.remark = f"{(key.remark or '').strip()}\n{tag}".strip()
             db.commit()
-            logger.warning("[ApifyKeyRotation] Key#{} marked unavailable: {}", key_id, reason)
-        except Exception as e:
-            logger.exception("[ApifyKeyRotation] Error marking key#{} unavailable: {}", key_id, e)
-        finally:
-            db.close()
-
-    def mark_key_available(self, key_id: int) -> None:
-        """标记某个 Key 为可用（恢复）。"""
-        db = SessionLocal()
-        try:
-            key = db.query(ApifyKey).filter(ApifyKey.id == key_id).first()
-            if not key:
-                return
-
-            key.is_available = True
-            db.commit()
-            logger.info("[ApifyKeyRotation] Key#{} marked available", key_id)
-        except Exception as e:
-            logger.exception("[ApifyKeyRotation] Error marking key#{} available: {}", key_id, e)
-        finally:
-            db.close()
-
-    def handle_key_error(self, key_id: int, error: str) -> Optional[ApifyKey]:
-        """处理 Key 错误，尝试轮转到下一个可用 Key。
-
-        Args:
-            key_id: 出错的 Key ID
-            error: 错误信息
-
-        Returns:
-            下一个可用的 Key，若无则返回 None
-        """
-        # 判断错误类型，决定是否标记为不可用
-        if "memory limit" in error.lower() or "exceeded" in error.lower():
-            self.mark_key_unavailable(key_id, f"额度不足: {error[:100]}")
-        elif "unauthorized" in error.lower() or "invalid" in error.lower():
-            self.mark_key_unavailable(key_id, f"认证失败: {error[:100]}")
-        elif "rate limit" in error.lower():
-            # 速率限制通常是临时的，不标记为不可用
-            logger.warning("[ApifyKeyRotation] Key#{} hit rate limit: {}", key_id, error)
-        else:
-            logger.warning("[ApifyKeyRotation] Key#{} error: {}", key_id, error)
-
-        # 尝试获取下一个可用的 Key
-        next_key = self.get_available_key()
-        if next_key and next_key.id != key_id:
-            logger.info("[ApifyKeyRotation] Switched from Key#{} to Key#{}", key_id, next_key.id)
-            return next_key
-
-        return None
+            logger.warning(
+                "[ApifyKeyRotation] Key#{} 标记为已用尽: {}", key_id, reason
+            )
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            logger.exception(
+                "[ApifyKeyRotation] 标记 Key#{} 已用尽失败: {}", key_id, e
+            )
 
 
 # 全局 Key 轮转管理器
