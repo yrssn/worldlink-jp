@@ -45,7 +45,11 @@ const form = reactive({
   /** fb_posts_*：先只抓帖 vs 自动抓主页流水线 */
   post_pipeline: 'manual_review' as 'manual_review' | 'auto_full',
   /** fb_search_cb：crawlerbros 搜索类型 */
-  cb_search_type: 'pages' as 'pages' | 'people'
+  cb_search_type: 'pages' as 'pages' | 'people',
+  /** ig_profile：用户名 / 主页 URL 列表 */
+  ig_usernames_text: '',
+  /** ig_profile：是否抓 about 段（actor 付费功能） */
+  ig_include_about: false
 })
 
 const currentMeta = computed(() =>
@@ -99,8 +103,14 @@ async function submit() {
     .map((s) => s.trim())
     .filter(Boolean)
 
+  const ig_usernames = splitMulti(form.ig_usernames_text)
+
   const n = needs.value
-  if (form.task_type === 'fb_posts_by_page') {
+  if (form.task_type === 'ig_profile') {
+    if (ig_usernames.length === 0) {
+      return ElMessage.warning('请填写至少一个 Instagram 用户名或主页 URL')
+    }
+  } else if (form.task_type === 'fb_posts_by_page') {
     if (form.profile_endpoint === 'profile_posts_by_url' && start_urls.length === 0) {
       return ElMessage.warning('请填写至少一个主页 URL')
     }
@@ -142,6 +152,9 @@ async function submit() {
   if (needs.value.cbSearchOptions) {
     extra_input.cb_search_type = form.cb_search_type
   }
+  if (needs.value.igProfileOptions && form.ig_include_about) {
+    extra_input.include_about = true
+  }
   if (needs.value.profilePostsOptions) {
     extra_input.fb_profile_endpoint = form.profile_endpoint
     if (form.profile_endpoint === 'profile_posts') {
@@ -157,7 +170,7 @@ async function submit() {
   const payload: Partial<ScrapeTask> = {
     name: form.name,
     task_type: form.task_type,
-    keywords,
+    keywords: form.task_type === 'ig_profile' ? ig_usernames : keywords,
     hashtags,
     start_urls,
     max_items: form.max_items,
@@ -336,6 +349,21 @@ onMounted(refresh)
           />
         </el-form-item>
 
+        <el-form-item v-if="needs.igUsernames" label="IG 用户名 / URL">
+          <el-input
+            v-model="form.ig_usernames_text"
+            type="textarea"
+            :rows="4"
+            placeholder="每行/逗号分隔一个 Instagram 用户名或主页 URL，如：nasa, humansofny, https://www.instagram.com/natgeo/"
+          />
+        </el-form-item>
+        <el-form-item v-if="needs.igProfileOptions" label="抓 about 信息">
+          <el-switch v-model="form.ig_include_about" />
+          <span style="margin-left: 8px; font-size: 12px; color: #999">
+            额外抓取账号 about（注册时间 / 国家等）；为 actor 付费功能，免费 Key 可能无效
+          </span>
+        </el-form-item>
+
         <template v-if="needs.profilePostsOptions">
           <el-form-item label="抓帖模式">
             <el-radio-group v-model="form.profile_endpoint">
@@ -427,7 +455,7 @@ onMounted(refresh)
           </el-form-item>
         </template>
 
-        <el-form-item label="最大条数">
+        <el-form-item v-if="!needs.igUsernames" label="最大条数">
           <el-input-number v-model="form.max_items" :min="1" :max="1000" />
           <span style="margin-left: 6px; font-size: 12px; color: #999">
             <template v-if="needs.profilePostsOptions">

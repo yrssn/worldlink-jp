@@ -469,6 +469,8 @@ def run_scrape_task(db_factory, task_id: int) -> None:
             _run_fb_posts_scraper(db, task)
         elif tt == ScrapeTaskType.fb_search_cb:
             _run_fb_search_cb(db, task)
+        elif tt == ScrapeTaskType.ig_profile:
+            _run_ig_profile(db, task)
         else:
             raise ValueError(f"Unsupported task_type: {tt}")
 
@@ -495,8 +497,15 @@ def _persist_page_results(
     items: list[dict[str, Any]],
     run_id: str | None,
     dataset_id: str | None,
+    eval_mapper=None,
 ) -> None:
-    """把抓到的 Page items 和 AI 过滤结果存到 task.extra_input。"""
+    """把抓到的 Page items 和 AI 过滤结果存到 task.extra_input。
+
+    ``eval_mapper`` 把单条原始资料映射成 AI 评估输入；默认按 Facebook Page 字段，
+    Instagram 等其它平台可传入对应的映射函数。
+    """
+    if eval_mapper is None:
+        eval_mapper = _page_to_eval_input
     task.apify_run_id = run_id
     task.apify_dataset_id = dataset_id
     task.result_count = len(items)
@@ -508,7 +517,7 @@ def _persist_page_results(
         template = db.get(PromptTemplate, task.prompt_template_id)
         if provider and template:
             for item in items:
-                r = ai_filter_service.evaluate_page(provider, template, _page_to_eval_input(item))
+                r = ai_filter_service.evaluate_page(provider, template, eval_mapper(item))
                 item["_ai_passed"] = bool(r.get("passed"))
                 item["_ai_score"] = r.get("score")
                 item["_ai_reason"] = r.get("reason")
@@ -541,6 +550,58 @@ def _page_to_eval_input(item: dict[str, Any]) -> dict[str, Any]:
         "ad_status": item.get("ad_status"),
         "creation_date": item.get("creation_date"),
     }
+
+
+def _ig_to_eval_input(item: dict[str, Any]) -> dict[str, Any]:
+    """把 instagram-profile-scraper 的一条主页资料映射为 AI 评估输入。"""
+    return {
+        "platform": "instagram",
+        "title": item.get("fullName") or item.get("username"),
+        "username": item.get("username"),
+        "url": item.get("url") or item.get("inputUrl"),
+        "intro": item.get("biography"),
+        "followers": item.get("followersCount"),
+        "following": item.get("followsCount"),
+        "posts": item.get("postsCount"),
+        "is_verified": item.get("verified"),
+        "is_business": item.get("isBusinessAccount"),
+        "business_category": item.get("businessCategoryName"),
+        "website": item.get("externalUrl"),
+    }
+
+
+def _run_ig_profile(db: Session, task: ScrapeTask) -> None:
+    """apify/instagram-profile-scraper：用户名 / 主页 URL → 主页资料（Page 类任务）。
+
+    输入来源：
+      - ``keywords``：每行 / 逗号分隔的用户名或主页 URL
+      - ``start_urls``：Instagram 主页 URL（与 keywords 合并去重）
+    extra_input 可选键：
+      - ``include_about``：bool，是否抓 about 信息（actor 付费功能）
+    """
+    raw_inputs = list(task.keywords or []) + list(task.start_urls or [])
+    usernames = [str(x) for x in raw_inputs if x and str(x).strip()]
+    if not usernames:
+        raise ValueError("ig_profile 任务需要至少一个 Instagram 用户名或主页 URL（keywords / start_urls）")
+
+    extra_in = dict(task.extra_input or {})
+    include_about = bool(extra_in.pop("include_about", False))
+    extra_in.pop("page_results", None)
+    extra_in.pop("locations", None)
+
+    result = apify_service.run_ig_profile(
+        usernames=usernames,
+        include_about=include_about,
+        extra=extra_in or None,
+        db=db,
+    )
+    _persist_page_results(
+        db, task,
+        result.get("items") or [],
+        result.get("run_id"),
+        result.get("dataset_id"),
+        eval_mapper=_ig_to_eval_input,
+    )
 
 
 def _run_fb_search(db: Session, task: ScrapeTask) -> None:

@@ -50,6 +50,14 @@ class ScrapeTaskType(str, enum.Enum):
               → 提取作者 Page URL → 抓主页详情 → 建联
         费用 ≈ posts ~$10-15/1000 + pages $6.6/1000 + LLM
         适用 = 不想被 hashtag 限制，关键词最灵活；但第三方稳定性弱一些
+
+    - ``ig_profile``：
+        Actor = apify/instagram-profile-scraper
+        机制 = 给定 Instagram 用户名（或主页 URL）→ 抓取公开主页资料
+              （fullName / biography / followersCount / 头像 / 外链 / 最新帖子等）
+        流程 = 一步到位，[可选 AI 过滤主页资料] → 待审核博主 → 建联（Instagram 平台账号）
+        费用 ≈ 见 actor 定价页
+        适用 = 已有一批 IG 用户名 / 主页链接，想直接拉资料进建联模块
     """
 
     fb_search = "fb_search"
@@ -59,6 +67,7 @@ class ScrapeTaskType(str, enum.Enum):
     fb_posts_by_search = "fb_posts_by_search"
     fb_posts_scraper = "fb_posts_scraper"
     fb_search_cb = "fb_search_cb"
+    ig_profile = "ig_profile"
 
 
 class ScrapeTaskStatus(str, enum.Enum):

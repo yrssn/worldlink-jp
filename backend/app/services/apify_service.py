@@ -52,6 +52,7 @@
 """
 from __future__ import annotations
 
+import re
 import threading
 from typing import Any, Optional
 
@@ -59,32 +60,105 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.apify_key_rotation import apify_key_rotation
 
 # 全局排队锁：所有 Apify Actor 调用共用此信号量，同时最多运行 1 个（防止超出免费计划 8192 MB 总内存限额）
 _apify_semaphore = threading.Semaphore(1)
 
 
 # ---------- 内部工具 ----------
-def _resolve_token(db: Session | None = None) -> str:
-    """优先从 DB 中取 is_default=True 的 Key，否则回退到 settings.apify_token。"""
+def _candidate_tokens(db: Session | None = None) -> list[tuple[str, int | None]]:
+    """构造本次调用要尝试的 (token, key_id) 列表。
+
+    - 有数据库 Key 时：按「未用尽优先、默认优先」排序，依次尝试，支持自动轮转。
+    - 没有数据库 Key 时：回退到 ``settings.apify_token``（key_id=None，不参与轮转）。
+    """
+    tokens: list[tuple[str, int | None]] = []
     if db is not None:
-        try:
-            from app.models.apify_key import ApifyKey
-            row = db.query(ApifyKey).filter(ApifyKey.is_default.is_(True)).first()
-            if row and row.token:
-                return row.token
-        except Exception:  # noqa: BLE001
-            pass
+        for key in apify_key_rotation.get_candidate_keys(db):
+            if key.token:
+                tokens.append((key.token, key.id))
+    if tokens:
+        return tokens
     if settings.apify_token:
-        return settings.apify_token
-    raise RuntimeError("未配置可用的 Apify Token（请在「Apify Key 管理」中添加并设置默认 Key）")
+        return [(settings.apify_token, None)]
+    raise RuntimeError(
+        "未配置可用的 Apify Token（请在「Apify Key 管理」中添加并设置默认 Key）"
+    )
 
 
-def _get_client(db: Session | None = None):
-    token = _resolve_token(db)
+def _make_client(token: str):
     from apify_client import ApifyClient
 
     return ApifyClient(token)
+
+
+def _resolve_token(db: Session | None = None) -> str:
+    """返回首选 Apify Token（默认 / 未用尽优先），无可用时回退 settings。
+
+    保留此函数仅为兼容旧调用；实际抓取走 :func:`_run_actor` 的轮转逻辑。
+    """
+    return _candidate_tokens(db)[0][0]
+
+
+def _get_client(db: Session | None = None):
+    return _make_client(_resolve_token(db))
+
+
+def _call_actor_once(
+    token: str,
+    actor_id: str,
+    run_input: dict[str, Any],
+    timeout_secs: int,
+    memory_mbytes: int,
+) -> dict[str, Any]:
+    """用指定 token 跑一次 Actor 并把 dataset 全部拉回来。失败抛 RuntimeError。"""
+    client = _make_client(token)
+    logger.info(
+        "[Apify] Start {} timeout={}s memory={}MB input={}",
+        actor_id, timeout_secs, memory_mbytes, run_input,
+    )
+    try:
+        # wait_secs：客户端最长等待时间；timeout_secs：Actor 单次运行上限
+        # memory_mbytes：限制单次 Actor 内存占用，避免超出免费计划总额（8192 MB）
+        run = client.actor(actor_id).call(
+            run_input=run_input,
+            wait_secs=timeout_secs,
+            timeout_secs=timeout_secs,
+            memory_mbytes=memory_mbytes,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Apify 调用超时或失败 ({actor_id}): {e}") from e
+    if not run:
+        raise RuntimeError(f"Apify run {actor_id} returned empty")
+
+    status = str(run.get("status") or "").upper()
+    run_id = run.get("id")
+    if status and status != "SUCCEEDED":
+        msg = (
+            run.get("statusMessage")
+            or (run.get("meta") or {}).get("errorMessage")
+            or status
+        )
+        raise RuntimeError(
+            f"Apify run 未成功 (id={run_id}, status={status}): {msg}"
+        )
+
+    dataset_id = run.get("defaultDatasetId")
+    items: list[dict[str, Any]] = []
+    if dataset_id:
+        items = list(client.dataset(dataset_id).iterate_items())
+
+    logger.info(
+        "[Apify] Run {} finished run_id={} status={} items={}",
+        actor_id, run_id, status or "SUCCEEDED", len(items),
+    )
+    return {
+        "run_id": run_id,
+        "dataset_id": dataset_id,
+        "items": items,
+        "status": status or "SUCCEEDED",
+    }
 
 
 def _run_actor(
@@ -95,12 +169,16 @@ def _run_actor(
     memory_mbytes: int = 1024,
     db: Session | None = None,
 ) -> dict[str, Any]:
-    """统一调用 Actor 并把 dataset 全部拉回来（全局排队，一次只跑一个）。"""
-    client = _get_client(db)
+    """统一调用 Actor（全局排队，一次只跑一个）。
+
+    遇到额度耗尽 / 认证失败时，自动把该 Key 标记为已用尽并切换到下一个可用 Key 重试；
+    其余错误（输入错误、内存超限、超时等）不轮转，原样抛出。
+    """
+    candidates = _candidate_tokens(db)
     queue_timeout = timeout_secs + 60  # 等锁最长比 Actor 超时多 60s
     logger.info(
-        "[Apify] Queued {} (waiting for semaphore, timeout={}s memory={}MB)",
-        actor_id, timeout_secs, memory_mbytes,
+        "[Apify] Queued {} (waiting for semaphore, timeout={}s memory={}MB, keys={})",
+        actor_id, timeout_secs, memory_mbytes, len(candidates),
     )
     acquired = _apify_semaphore.acquire(timeout=queue_timeout)
     if not acquired:
@@ -109,54 +187,30 @@ def _run_actor(
             "请稍后重试或等待前序任务完成"
         )
     try:
-        logger.info(
-            "[Apify] Start {} timeout={}s memory={}MB input={}",
-            actor_id, timeout_secs, memory_mbytes, run_input,
-        )
-        try:
-            # wait_secs：客户端最长等待时间；timeout_secs：Actor 单次运行上限
-            # memory_mbytes：限制单次 Actor 内存占用，避免超出免费计划总额（8192 MB）
-            run = client.actor(actor_id).call(
-                run_input=run_input,
-                wait_secs=timeout_secs,
-                timeout_secs=timeout_secs,
-                memory_mbytes=memory_mbytes,
-            )
-        except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"Apify 调用超时或失败 ({actor_id}): {e}") from e
-        if not run:
-            raise RuntimeError(f"Apify run {actor_id} returned empty")
-
-        status = str(run.get("status") or "").upper()
-        run_id = run.get("id")
-        if status and status != "SUCCEEDED":
-            msg = (
-                run.get("statusMessage")
-                or (run.get("meta") or {}).get("errorMessage")
-                or status
-            )
-            raise RuntimeError(
-                f"Apify run 未成功 (id={run_id}, status={status}): {msg}"
-            )
-
-        dataset_id = run.get("defaultDatasetId")
-        items: list[dict[str, Any]] = []
-        if dataset_id:
-            items = list(client.dataset(dataset_id).iterate_items())
-
-        logger.info(
-            "[Apify] Run {} finished run_id={} status={} items={}",
-            actor_id,
-            run_id,
-            status or "SUCCEEDED",
-            len(items),
-        )
-        return {
-            "run_id": run_id,
-            "dataset_id": dataset_id,
-            "items": items,
-            "status": status or "SUCCEEDED",
-        }
+        last_err: Exception | None = None
+        for idx, (token, key_id) in enumerate(candidates):
+            try:
+                return _call_actor_once(
+                    token, actor_id, run_input, timeout_secs, memory_mbytes
+                )
+            except RuntimeError as e:
+                msg = str(e)
+                kind = apify_key_rotation.classify_error(msg)
+                # 只有数据库 Key 且属于额度 / 认证类错误，才标记并轮转
+                if key_id is not None and kind in ("exhausted", "auth"):
+                    apify_key_rotation.mark_exhausted(db, key_id, reason=msg[:150])
+                    last_err = e
+                    if idx + 1 < len(candidates):
+                        logger.warning(
+                            "[Apify] Key#{} {}，切换到下一个 Key 重试：{}",
+                            key_id, kind, msg,
+                        )
+                        continue
+                    logger.error("[Apify] 所有 Key 均不可用，最后错误：{}", msg)
+                # 非 Key 类错误，或已无可切换的 Key：直接抛出
+                raise
+        # 理论上不会走到这里（candidates 至少 1 个）
+        raise last_err or RuntimeError("没有可用的 Apify Key")
     finally:
         _apify_semaphore.release()
 
@@ -426,3 +480,53 @@ def run_fb_search_cb(
     if extra:
         run_input.update(extra)
     return _run_actor(settings.apify_fb_search_cb_actor, run_input, db=db)
+
+
+# ---------- 8) Instagram Profile Scraper ----------
+def normalize_ig_username(value: str) -> str | None:
+    """把 IG 用户名 / 主页 URL 归一化为纯用户名（actor 也接受数字 id）。
+
+    支持：``nasa`` / ``@nasa`` / ``https://www.instagram.com/nasa/`` /
+    ``instagram.com/nasa?hl=en``。无法识别时返回 None。
+    """
+    if not value or not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    if "instagram.com" in s.lower():
+        m = re.search(r"instagram\.com/+([^/?#]+)", s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        s = m.group(1)
+    s = s.lstrip("@").strip().strip("/")
+    if not s or s.lower() in {"p", "reel", "reels", "explore", "stories"}:
+        return None
+    return s
+
+
+def run_ig_profile(
+    usernames: list[str],
+    include_about: bool = False,
+    extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
+) -> dict[str, Any]:
+    """Instagram 用户名（或主页 URL）→ 主页公开资料（apify/instagram-profile-scraper）。
+
+    官方 input-schema：
+      - usernames: array<string>  用户名列表（也支持数字 id），必填
+      - includeAboutSection: boolean  额外抓 about 信息（付费功能，默认 False）
+    """
+    names: list[str] = []
+    for u in usernames or []:
+        n = normalize_ig_username(u)
+        if n and n not in names:
+            names.append(n)
+    if not names:
+        raise ValueError("instagram-profile-scraper 需要至少一个用户名或主页 URL")
+    run_input: dict[str, Any] = {"usernames": names}
+    if include_about:
+        run_input["includeAboutSection"] = True
+    if extra:
+        run_input.update(extra)
+    return _run_actor(settings.apify_ig_profile_actor, run_input, db=db)
