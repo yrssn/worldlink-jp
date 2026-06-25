@@ -38,6 +38,7 @@ def create_all() -> None:
     _ensure_fb_group_posts_columns()
     _ensure_fb_group_pull_task_columns()
     _ensure_influencer_platform_column()
+    _ensure_influencer_scrape_task_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -176,6 +177,27 @@ def _ensure_influencer_platform_column() -> None:
             "CREATE INDEX ix_influencers_deleted_at ON influencers (deleted_at)",
         ]
     for sql in statements:
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_influencer_scrape_task_columns() -> None:
+    """为 influencer_scrape_tasks 表补齐新增列（platform）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "influencer_scrape_tasks" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("influencer_scrape_tasks")}
+    if "platform" not in cols:
+        sql = (
+            "ALTER TABLE influencer_scrape_tasks "
+            "ADD COLUMN platform VARCHAR(32) NOT NULL DEFAULT 'facebook'"
+        )
         try:
             logger.info("[schema-patch] {}", sql)
             with engine.begin() as conn:
