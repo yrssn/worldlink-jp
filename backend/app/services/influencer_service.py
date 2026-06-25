@@ -209,6 +209,90 @@ def page_profile_to_form(profile: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in mapped.items() if v not in (None, "")}
 
 
+def _map_fb_profile_scraper(profile: dict[str, Any]) -> dict[str, Any]:
+    """把 facebook-profile-scraper（apivault_labs 等社区 actor）的输出映射成表单字段。
+
+    兼容多家 actor 的字段命名：
+      fullName/name/username, bio/biography/intro, category/categories,
+      followerCount/followers, likeCount/likes,
+      primaryEmail/emails[], primaryPhone/phones[], primaryWebsite/websites[]/website,
+      profileUrl/inputUrl/url, fbid/facebookId/pageId, avatarUrl/profilePictureUrl。
+    """
+    name = profile.get("fullName") or profile.get("name") or profile.get("username")
+
+    categories = profile.get("categories")
+    if not categories:
+        cat = profile.get("category")
+        if isinstance(cat, str) and cat:
+            categories = [cat]
+        elif isinstance(cat, list):
+            categories = cat
+
+    emails = profile.get("emails") if isinstance(profile.get("emails"), list) else None
+    phones = profile.get("phones") if isinstance(profile.get("phones"), list) else None
+    websites = profile.get("websites") if isinstance(profile.get("websites"), list) else None
+
+    mapped = {
+        "display_name": name,
+        "fb_page_title": name,
+        "fb_page_id": str(
+            profile.get("fbid") or profile.get("facebookId") or profile.get("pageId") or ""
+        )
+        or None,
+        "fb_page_url": profile.get("profileUrl")
+        or profile.get("inputUrl")
+        or profile.get("url"),
+        "bio": profile.get("bio") or profile.get("biography") or profile.get("intro"),
+        "address": profile.get("address"),
+        "email": profile.get("primaryEmail") or _first(emails) or profile.get("email"),
+        "phone": profile.get("primaryPhone") or _first(phones) or profile.get("phone"),
+        "website": profile.get("primaryWebsite") or _first(websites) or profile.get("website"),
+        "fb_categories": categories,
+        "fb_followers": _to_int(
+            profile.get("followerCount")
+            or profile.get("followers")
+            or profile.get("followersCount")
+        ),
+        "fb_likes": _to_int(profile.get("likeCount") or profile.get("likes")),
+        "avatar_url": profile.get("avatarUrl") or profile.get("profilePictureUrl"),
+        "cover_url": profile.get("coverUrl") or profile.get("coverPhotoUrl"),
+    }
+    return {k: v for k, v in mapped.items() if v not in (None, "")}
+
+
+def fb_profile_to_form(profile: dict[str, Any]) -> dict[str, Any]:
+    """facebook-profile-scraper 的一条主页资料 → 可填充表单字段。"""
+    return _map_fb_profile_scraper(profile)
+
+
+def fb_form_is_sparse(form: dict[str, Any]) -> bool:
+    """判断 pages-scraper 抓到的表单是否过于稀疏（多半是 Profile 类账号）。
+
+    既没拿到有效昵称（非空且非 "Unknown"）、又没拿到粉丝数时，视为稀疏。
+    """
+    name = str(form.get("display_name") or "").strip()
+    has_name = bool(name) and name.lower() != "unknown"
+    has_followers = bool(form.get("fb_followers"))
+    return not (has_name or has_followers)
+
+
+def merge_fb_forms(
+    primary: dict[str, Any], fallback: dict[str, Any]
+) -> dict[str, Any]:
+    """以 primary（pages-scraper）为主，用 fallback（profile-scraper）补齐缺失字段。
+
+    primary 的非空字段优先；display_name 若为空或 "Unknown" 则用 fallback 的。
+    """
+    merged: dict[str, Any] = dict(fallback)
+    for k, v in primary.items():
+        if v not in (None, ""):
+            merged[k] = v
+    pn = str(primary.get("display_name") or "").strip()
+    if (not pn or pn.lower() == "unknown") and fallback.get("display_name"):
+        merged["display_name"] = fallback["display_name"]
+    return merged
+
+
 _FORM_INFLUENCER_FIELDS = (
     "display_name", "real_name", "bio", "avatar_url", "cover_url",
     "country", "region", "city", "language", "address",
