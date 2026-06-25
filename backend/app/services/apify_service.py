@@ -265,6 +265,28 @@ def run_fb_pages(
     return _run_actor(settings.apify_fb_pages_actor, run_input, db=db)
 
 
+# ---------- 2b) Facebook Profile Scraper（个人/创作者主页兜底） ----------
+def run_fb_profile(
+    profile_urls: list[str],
+    max_items: int = 1,
+    extra: Optional[dict[str, Any]] = None,
+    db: Session | None = None,
+) -> dict[str, Any]:
+    """个人/创作者主页 URL → 主页资料（facebook-profile-scraper 兜底）。
+
+    facebook-pages-scraper 对 Profile 类账号（如「数字创作者」）抓到的数据很稀疏，
+    本函数用 ``settings.apify_fb_profile_actor`` 再抓一次。默认 actor 按 ``profileUrls``
+    输入；若在 .env 里换成别的 actor，注意其输入字段可能不同（可用 extra 覆盖）。
+    """
+    urls = [u for u in (profile_urls or []) if u]
+    if not urls:
+        raise ValueError("facebook-profile-scraper 需要至少一个主页 URL (profileUrls)")
+    run_input: dict[str, Any] = {"profileUrls": urls}
+    if extra:
+        run_input.update(extra)
+    return _run_actor(settings.apify_fb_profile_actor, run_input, db=db)
+
+
 # ---------- 3) Facebook Posts Scraper ----------
 def run_fb_posts(
     start_urls: list[str],

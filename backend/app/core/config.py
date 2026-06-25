@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     apify_fb_groups_actor: str = "apify/facebook-groups-scraper"  # 群组 URL → 帖子
     apify_fb_search_cb_actor: str = "crawlerbros/facebook-search-scraper"  # 关键词搜 Pages/People（第三方）
     apify_ig_profile_actor: str = "apify/instagram-profile-scraper"  # IG 用户名 → 主页资料
+    # 个人/创作者主页兜底：facebook-pages-scraper 对 Profile 类账号数据很稀疏，
+    # 抓不到昵称/粉丝时改用此 actor 再抓一次。Apify 没有官方 facebook-profile-scraper，
+    # 默认用社区 actor（按 profileUrls 输入），可在 .env 中覆盖为别的 actor。
+    apify_fb_profile_actor: str = "apivault_labs/facebook-profile-scraper"
+    # 是否在 facebook-pages-scraper 抓到的资料过于稀疏时自动用上面的 actor 兜底
+    apify_fb_profile_fallback: bool = True
 
     # ===== BitBrowser 比特浏览器（本地 Local API）=====
     # 文档：https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou

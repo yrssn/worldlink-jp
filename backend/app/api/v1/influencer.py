@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import settings
 from app.core.deps import get_current_user, get_db, is_admin
 from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform
@@ -118,6 +119,31 @@ def _run_scrape_profile_bg(task_id: int) -> None:
             return
 
         form = influencer_service.page_profile_to_form(items[0])
+
+        # 个人/创作者主页（Profile）pages-scraper 抓到的资料很稀疏（拿不到昵称/粉丝），
+        # 自动用 facebook-profile-scraper 兜底再抓一次并补齐字段。
+        if (
+            settings.apify_fb_profile_fallback
+            and settings.apify_fb_profile_actor
+            and influencer_service.fb_form_is_sparse(form)
+        ):
+            try:
+                logger.info(
+                    "[InfluencerScrape task#{}] pages 资料稀疏，用 profile actor 兜底：{}",
+                    task_id, scrape_url,
+                )
+                pr = apify_service.run_fb_profile([scrape_url], db=db)
+                pitems = pr.get("items") or []
+                if pitems and isinstance(pitems[0], dict):
+                    fb_form = influencer_service.fb_profile_to_form(pitems[0])
+                    if fb_form:
+                        form = influencer_service.merge_fb_forms(form, fb_form)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[InfluencerScrape task#{}] profile 兜底抓取失败（保留 pages 结果）：{}",
+                    task_id, e,
+                )
+
         # 表单回填的主页链接统一用规整后的标准链接，避免回填群组上下文链接
         form["fb_page_url"] = influencer_service.normalize_fb_profile_url(
             form.get("fb_page_url") or scrape_url
