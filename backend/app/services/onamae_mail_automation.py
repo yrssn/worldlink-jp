@@ -103,7 +103,12 @@ class CdpPage:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(f"CDP 调用超时: {method}")
-            raw = self._ws.recv(timeout=remaining)
+            try:
+                raw = self._ws.recv(timeout=remaining)
+            except TimeoutError:
+                # recv 自身超时：不要让 websockets.TimeoutError 冒泡崩线程，
+                # 交回循环统一判断 deadline 后抛 RuntimeError(可被调用方捕获)
+                continue
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
                 continue
