@@ -63,6 +63,7 @@ def open_zoho_mail_login(
     email_submitted = False
     password_submitted = False
     verification_required = False
+    password_changed_page = False
     with CdpPage(page_ws) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
@@ -89,12 +90,20 @@ def open_zoho_mail_login(
             if password_submitted:
                 _skip_zoho_mfa_prompt_if_present(page)
             _handle_zoho_interstitials(page)
-            verification_required = _wait_for_zoho_post_password_state(page)
-            final_url = _current_url(page)
-            _log(
-                f"登录结果：{'需要邮箱验证码' if verification_required else '无需验证码'}"
-                f"（当前 URL: {final_url}）"
-            )
+            if _is_zoho_password_changed_page(page):
+                password_changed_page = True
+                final_url = _current_url(page)
+                _log(
+                    "检测到「パスワードを変更しました/密码已修改」页（会自动跳回登录页死循环），"
+                    f"该账号当前密码可能已失效，停止自动登录（当前 URL: {final_url}）"
+                )
+            else:
+                verification_required = _wait_for_zoho_post_password_state(page)
+                final_url = _current_url(page)
+                _log(
+                    f"登录结果：{'需要邮箱验证码' if verification_required else '无需验证码'}"
+                    f"（当前 URL: {final_url}）"
+                )
     return {
         "mail_opened": True,
         "mail_login_url": target_url,
@@ -103,6 +112,7 @@ def open_zoho_mail_login(
         "mail_email_submitted": email_submitted,
         "mail_password_submitted": password_submitted,
         "mail_verification_required": verification_required,
+        "mail_password_changed_page": password_changed_page,
         "mail_open_hint": open_result.get("hint"),
     }
 
@@ -492,7 +502,7 @@ def _zoho_interstitial_script() -> str:
     # 只点明确的「过场页」按钮，避免误点真正的登录提交按钮（サインインする）。
     return (
         "(() => {"
-        "  const safe = [/サインイン画面に移動/, /ログイン画面に移動/, /サインイン画面へ/, /スキップ/, /後で/];"
+        "  const safe = [/スキップ/, /後で/];"
         "  const visible = (el) => el && el.offsetParent !== null;"
         "  const btns = Array.from(document.querySelectorAll('button,a,[role=\"button\"],input[type=\"button\"],input[type=\"submit\"]'));"
         "  for (const re of safe) {"
@@ -859,6 +869,30 @@ def _is_zoho_email_verification_step(page: CdpPage) -> bool:
             timeout=5,
         )
     )
+
+
+def _is_zoho_password_changed_page(page: CdpPage) -> bool:
+    """检测「パスワードを変更しました→自动跳回登录页」这种死循环过场页。
+
+    出现这页通常意味着该账号密码被改过、当前存的密码已失效，登录会反复跳转，无法自动完成。
+    """
+    try:
+        return bool(
+            page.evaluate(
+                """
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  return /パスワードを変更しました|パスワードが変更されました|Password (has been )?changed|密码已(修改|更改|变更)/i.test(text);
+})()
+""",
+                timeout=5,
+            )
+        )
+    except CdpConnectionClosed:
+        return False
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Zoho mail] 检测密码已修改页跳过: {}", e)
+        return False
 
 
 # ===== Zoho 登录偶发的「扭曲字符验证码」(TextCaptcha) 自动识别 =====

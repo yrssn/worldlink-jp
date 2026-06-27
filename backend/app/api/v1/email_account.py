@@ -461,6 +461,12 @@ def _resolve_verification_mailbox(row: EmailAccount) -> tuple[str, str, str] | N
 
 def _describe_mail_login_failure(result: dict[str, object], row: EmailAccount) -> str:
     """根据 mail_login 各步骤结果给出可操作的失败原因。"""
+    if bool(result.get("mail_password_changed_page")):
+        return (
+            "Zoho 出现「パスワードを変更しました（密码已修改）」页并不停自动跳回登录页，"
+            "通常说明该账号当前登录密码已失效（被改过）；请用最新密码手动登录一次确认，"
+            "并把系统里该账号的密码更新为最新后重试"
+        )
     verification_required = bool(result.get("mail_verification_required"))
     code_submitted = bool(result.get("mail_verification_code_submitted"))
     if verification_required and not code_submitted:
