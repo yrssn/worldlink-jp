@@ -13,8 +13,10 @@ from loguru import logger
 from sqlalchemy.orm import Session
 from websockets.sync.client import connect
 
+from app.core.config import settings
 from app.models.user import User
 from app.services import bitbrowser_service
+from app.services.recaptcha_solver import solve_recaptcha
 from app.services.zoho_mail_automation import open_latest_apify_verification_link
 
 SIGNUP_URL = "https://console.apify.com/sign-up"
@@ -50,11 +52,15 @@ class CdpPage:
         params: dict[str, object] | None = None,
         *,
         timeout: float = 15,
+        session_id: str | None = None,
     ) -> dict[str, object]:
         if self._ws is None:
             raise RuntimeError("CDP 未连接")
         msg_id = next(self._ids)
-        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        message: dict[str, object] = {"id": msg_id, "method": method, "params": params or {}}
+        if session_id:
+            message["sessionId"] = session_id
+        self._ws.send(json.dumps(message))
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -72,7 +78,13 @@ class CdpPage:
             result = data.get("result") or {}
             return result if isinstance(result, dict) else {}
 
-    def evaluate(self, expression: str, *, timeout: float = 15) -> object:
+    def evaluate(
+        self,
+        expression: str,
+        *,
+        timeout: float = 15,
+        session_id: str | None = None,
+    ) -> object:
         result = self.call(
             "Runtime.evaluate",
             {
@@ -81,11 +93,34 @@ class CdpPage:
                 "returnByValue": True,
             },
             timeout=timeout,
+            session_id=session_id,
         )
         remote = result.get("result") or {}
         if not isinstance(remote, dict):
             return None
         return remote.get("value")
+
+    def list_all_targets(self) -> list[dict[str, object]]:
+        """列出浏览器内所有 target（含跨域 iframe，如 reCAPTCHA 的 anchor/bframe）。"""
+        try:
+            self.call("Target.setDiscoverTargets", {"discover": True}, timeout=8)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Apify signup] setDiscoverTargets skipped: {}", e)
+        result = self.call("Target.getTargets", {"filter": [{}]}, timeout=10)
+        infos = result.get("targetInfos")
+        if not isinstance(infos, list):
+            return []
+        return [t for t in infos if isinstance(t, dict)]
+
+    def attach_to_target(self, target_id: str) -> str | None:
+        """attach 到指定 target 并返回 sessionId（flatten 模式，复用同一连接）。"""
+        result = self.call(
+            "Target.attachToTarget",
+            {"targetId": target_id, "flatten": True},
+            timeout=10,
+        )
+        session_id = result.get("sessionId")
+        return str(session_id) if session_id else None
 
     def click(self, x: float, y: float) -> None:
         params = {"x": x, "y": y, "button": "left", "clickCount": 1}
@@ -202,6 +237,10 @@ def start_apify_signup(
             "full_name": _profile_name_from_email(email),
             "username": None,
         }
+        if captcha_required and _try_auto_solve_captcha(page, browser_id, email, progress_callback):
+            captcha_required = False
+            email_already_taken = _has_email_already_taken_error(page)
+            email_verification_required = _is_email_verification_page(page)
         if captcha_required:
             logger.info(
                 "[Apify signup] human verification required; waiting browser_id={} email={}",
@@ -435,6 +474,9 @@ def continue_apify_signup(
         profile_submitted = False
         email_already_taken = _has_email_already_taken_error(page)
         captcha_required = False if email_already_taken else _has_captcha(page)
+        if captcha_required and _try_auto_solve_captcha(page, browser_id, email, progress_callback):
+            captcha_required = False
+            email_already_taken = _has_email_already_taken_error(page)
         if captcha_required:
             logger.info(
                 "[Apify signup] continue found human verification; waiting browser_id={} email={}",
@@ -716,6 +758,53 @@ def _wait_for_apify_post_submit_state(page: CdpPage, timeout: float = 15) -> Non
         except Exception as e:  # noqa: BLE001
             logger.debug("[Apify signup] wait post submit skipped: {}", e)
         time.sleep(0.5)
+
+
+def _try_auto_solve_captcha(
+    page: CdpPage,
+    browser_id: str,
+    email: str,
+    progress_callback: ProgressCallback | None = None,
+) -> bool:
+    """检测到 reCAPTCHA 时先用 CaptchaRun 自动识别求解。
+
+    返回是否已通过（True 表示无需再人工处理）。未配置 token 或失败时返回 False，
+    由调用方回落到原有的人工验证等待逻辑。
+    """
+    if not (settings.captcharun_api_token or "").strip():
+        return False
+    _emit_progress(progress_callback, "captcha_auto_solve", "检测到 reCAPTCHA，尝试用 CaptchaRun 自动识别")
+    try:
+        result = solve_recaptcha(
+            page,
+            log=lambda msg: _emit_progress(progress_callback, "captcha_auto_solve", msg),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "[Apify signup] auto captcha solve error browser_id={} email={}: {}",
+            browser_id,
+            email,
+            e,
+        )
+        return False
+    logger.info(
+        "[Apify signup] auto captcha solve browser_id={} email={} result={}",
+        browser_id,
+        email,
+        result,
+    )
+    if bool(result.get("solved")):
+        time.sleep(1.5)  # 给 reCAPTCHA token 回填留出时间
+        still_captcha = _has_captcha(page)
+        if not still_captcha:
+            _emit_progress(progress_callback, "captcha_auto_solve", "CaptchaRun 自动识别完成，人机验证已通过")
+            return True
+    _emit_progress(
+        progress_callback,
+        "captcha_auto_solve",
+        f"CaptchaRun 自动识别未通过，转人工：{result.get('reason') or '未知原因'}",
+    )
+    return False
 
 
 def _wait_for_human_verification_result(
@@ -1089,7 +1178,7 @@ def _has_captcha(page: CdpPage) -> bool:
   }).join(' ');
   const scripts = Array.from(document.querySelectorAll('script')).map((el) => el.src || '').join(' ');
   const text = `${bodyText} ${frames} ${scripts}`;
-  return /hcaptcha|arkose|challenge|Select all squares|verify\\s+you\\s+are\\s+human|I'm not a robot/i.test(text);
+  return /hcaptcha|arkose|recaptcha|challenge|Select all squares|Select all images|verify\\s+you\\s+are\\s+human|I'm not a robot/i.test(text);
 })()
 """
     return bool(page.evaluate(script, timeout=5))
