@@ -70,7 +70,7 @@ def open_zoho_mail_login(
             password_submitted = _submit_zoho_password(page, password)
             if password_submitted:
                 _skip_zoho_mfa_prompt_if_present(page)
-            verification_required = _is_zoho_email_verification_step(page)
+            verification_required = _wait_for_zoho_post_password_state(page)
             final_url = _current_url(page)
     return {
         "mail_opened": True,
@@ -712,6 +712,29 @@ def _click_apify_verify_email_link_script() -> str:
   return true;
 })()
 """
+
+
+def _wait_for_zoho_post_password_state(page: CdpPage, timeout: float = 20) -> bool:
+    """提交密码后等待页面落到“邮箱验证码”或“收件箱”状态。
+
+    返回是否需要邮箱验证码。验证码页可能在密码提交后才异步渲染，
+    单次检测容易漏判，这里轮询直到出现验证码页或收件箱（或超时）。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if _is_zoho_email_verification_step(page):
+                return True
+            if _is_zoho_mail_ready(page):
+                return False
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] wait post-password state skipped: {}", e)
+        time.sleep(0.5)
+    try:
+        return _is_zoho_email_verification_step(page)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Zoho mail] final verification check skipped: {}", e)
+        return False
 
 
 def _is_zoho_email_verification_step(page: CdpPage) -> bool:
