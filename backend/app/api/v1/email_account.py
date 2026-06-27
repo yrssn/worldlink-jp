@@ -291,7 +291,8 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
         zoho_verification_blocked = bool(mail_login_result.get("mail_verification_required")) and not bool(
             mail_login_result.get("mail_verification_code_submitted")
         )
-        if not mail_ready or zoho_verification_blocked:
+        password_changed_blocked = bool(mail_login_result.get("mail_password_changed_page"))
+        if not mail_ready or zoho_verification_blocked or password_changed_blocked:
             task.status = "paused"
             task.current_node = "mail_login"
             task.error = _describe_mail_login_failure(mail_login_result, row)
