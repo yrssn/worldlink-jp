@@ -9,6 +9,7 @@ from urllib.parse import quote, urlparse
 import httpx
 from loguru import logger
 from sqlalchemy.orm import Session
+from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 from app.core.config import settings
@@ -246,14 +247,27 @@ def wait_current_zoho_inbox_ready(
     }
 
 
+class CdpConnectionClosed(RuntimeError):
+    """CDP 页面 WebSocket 已断开（页面被关/跳转/销毁）。
+
+    与「调用超时」区分：超时可重试，连接断开则应立刻跳出轮询，避免在死连接上空转刷屏。
+    """
+
+
 class CdpPage:
     def __init__(self, ws_url: str):
         self.ws_url = ws_url
         self._ids = count(1)
         self._ws = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._ws is None or self._closed
 
     def __enter__(self) -> "CdpPage":
         self._ws = connect(self.ws_url, open_timeout=15)
+        self._closed = False
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -267,10 +281,14 @@ class CdpPage:
         *,
         timeout: float = 15,
     ) -> dict[str, object]:
-        if self._ws is None:
-            raise RuntimeError("CDP 未连接")
+        if self.closed:
+            raise CdpConnectionClosed("CDP 连接已断开")
         msg_id = next(self._ids)
-        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        try:
+            self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        except (ConnectionClosed, OSError) as e:
+            self._closed = True
+            raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -282,6 +300,10 @@ class CdpPage:
                 # recv 自身超时：不要让 websockets.TimeoutError 冒泡崩线程，
                 # 交回循环统一判断 deadline 后抛 RuntimeError(可被调用方捕获)
                 continue
+            except (ConnectionClosed, OSError) as e:
+                # 连接已断开：标记后立刻抛 CdpConnectionClosed，让轮询循环尽快跳出
+                self._closed = True
+                raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
                 continue
@@ -425,7 +447,16 @@ def _find_zoho_page_ws(http_base: str, preferred_target_id: str | None = None) -
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        state = page.evaluate("document.readyState", timeout=5)
+        if page.closed:
+            return
+        try:
+            state = page.evaluate("document.readyState", timeout=5)
+        except CdpConnectionClosed:
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] wait page ready skipped: {}", e)
+            time.sleep(0.3)
+            continue
         if state in {"interactive", "complete"}:
             return
         time.sleep(0.3)
@@ -440,6 +471,9 @@ def _skip_zoho_mfa_prompt_if_present(page: CdpPage) -> bool:
     deadline = time.monotonic() + 60
     clicked = False
     while time.monotonic() < deadline:
+        if page.closed:
+            # 页面连接已断，再轮询也只是在死连接上空转，直接跳出
+            break
         try:
             result = bool(page.evaluate(_skip_zoho_mfa_prompt_script(), timeout=5))
             clicked = clicked or result
@@ -456,6 +490,8 @@ def _skip_zoho_mfa_prompt_if_present(page: CdpPage) -> bool:
 def _wait_for_zoho_inbox(page: CdpPage, timeout: float = 120) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if page.closed:
+            break
         try:
             _skip_zoho_mfa_prompt_if_present(page)
             if _is_zoho_mail_ready(page):
@@ -728,6 +764,8 @@ def _wait_for_zoho_post_password_state(page: CdpPage, timeout: float = 20) -> bo
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if page.closed:
+            break
         try:
             if _is_zoho_email_verification_step(page):
                 return True
@@ -883,6 +921,8 @@ def _solve_zoho_text_captcha_if_present(page: CdpPage) -> bool | None:
 def _submit_zoho_email(page: CdpPage, email: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
+        if page.closed:
+            break
         try:
             if _is_zoho_password_step(page):
                 return True
@@ -906,6 +946,8 @@ def _submit_zoho_email(page: CdpPage, email: str) -> bool:
 def _submit_zoho_password(page: CdpPage, password: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
+        if page.closed:
+            break
         try:
             if _wait_for_password_input(page, timeout=2):
                 page.call("Page.bringToFront")
@@ -974,6 +1016,8 @@ def _press_enter(page: CdpPage) -> None:
 def _wait_for_password_input(page: CdpPage, timeout: float = 12) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if page.closed:
+            break
         if _is_zoho_password_step(page):
             return True
         time.sleep(0.5)
