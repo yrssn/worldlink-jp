@@ -47,11 +47,14 @@ def open_onamae_mail_login(
         _wait_page_ready(page)
         time.sleep(1)
         login_submitted = _submit_onamae_login(page, email, password)
+        logger.info("[onamae mail] 验证邮箱登录提交={}（{}）", login_submitted, email)
         inbox_ready = _wait_for_onamae_inbox(page)
+        logger.info("[onamae mail] 收件箱就绪={}", inbox_ready)
         verification_code = None
         code_extracted = False
-        if inbox_ready and _open_latest_zoho_otp_message(page):
-            verification_code = _extract_zoho_otp_code(page)
+        if inbox_ready:
+            # 验证码邮件可能延迟到达：用「检查新邮件」轮询，避免整页反复刷新
+            verification_code = _find_zoho_otp_with_refresh(page)
             code_extracted = bool(verification_code)
         final_url = _current_url(page)
     return {
@@ -352,4 +355,51 @@ def _extract_zoho_otp_code(page: CdpPage, timeout: float = 30) -> str | None:
         if isinstance(value, str) and value:
             return value
         time.sleep(0.5)
+    return None
+
+
+def _check_onamae_new_mail(page: CdpPage) -> None:
+    """触发 Roundcube「检查新邮件」获取新到的邮件，尽量不整页刷新（避免页面一直刷）。"""
+    try:
+        page.evaluate(
+            """
+(() => {
+  try {
+    if (window.rcmail && typeof rcmail.command === 'function') {
+      rcmail.command('checkmail');
+      return true;
+    }
+  } catch (e) {}
+  const btn = document.querySelector('a.refresh, a.button.refresh, [command="checkmail"], [title*="更新"], [title*="新着"], [aria-label*="更新"]');
+  if (btn) { btn.click(); return true; }
+  return false;
+})()
+""",
+            timeout=5,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[onamae mail] 检查新邮件跳过: {}", e)
+
+
+def _find_zoho_otp_with_refresh(page: CdpPage, total_timeout: float = 90) -> str | None:
+    """在收件箱里轮询 Zoho 验证码邮件：找到就提取验证码；没有就「检查新邮件」后重试。
+
+    用「检查新邮件」而非整页刷新，避免页面反复刷新；验证码邮件可能延迟到达，故最多等 total_timeout 秒。
+    """
+    deadline = time.monotonic() + total_timeout
+    while time.monotonic() < deadline:
+        if page.closed:
+            break
+        try:
+            if _open_latest_zoho_otp_message(page, timeout=4):
+                code = _extract_zoho_otp_code(page, timeout=12)
+                if code:
+                    logger.info("[onamae mail] 已读取到 Zoho 验证码")
+                    return code
+        except CdpConnectionClosed:
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[onamae mail] 读取验证码邮件跳过: {}", e)
+        _check_onamae_new_mail(page)
+        time.sleep(4)
     return None
