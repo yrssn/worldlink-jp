@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.deps import get_current_user, get_db
 from app.core.security import decrypt_secret, encrypt_secret
 from app.db.session import SessionLocal
@@ -31,7 +32,10 @@ from app.schemas.email_account import (
     ZohoMailLoginOut,
 )
 from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
-from app.services.onamae_mail_automation import open_onamae_mail_login
+from app.services.onamae_mail_automation import (
+    DEFAULT_ONAMAE_WEBMAIL_URL,
+    open_onamae_mail_login,
+)
 from app.services.zoho_mail_automation import (
     normalize_zoho_login_url,
     open_zoho_mail_login,
@@ -224,25 +228,74 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
         db.add(task)
         db.commit()
         _append_apify_task_log(task, db, "mail_login", "先登录注册邮箱，确保可以读取 Apify 验证邮件")
-        mail_login_result = open_zoho_mail_login(
-            row.browser_id,
-            row.mail_login_url,
-            row.email,
-            email_password,
-            user,
+
+        def mail_progress(message: str) -> None:
+            fresh = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+            if fresh:
+                _append_apify_task_log(fresh, db, "mail_login", message)
+
+        try:
+            mail_login_result = open_zoho_mail_login(
+                row.browser_id,
+                row.mail_login_url,
+                row.email,
+                email_password,
+                user,
+                db,
+                progress=mail_progress,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[ApifySignupTask#{}] mail_login 异常", task_id)
+            fresh_task = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+            if fresh_task:
+                fresh_task.status = "paused"
+                fresh_task.current_node = "mail_login"
+                fresh_task.error = f"邮箱登录过程出错（可能网络不稳定/页面跳转）：{str(e)[:500]}；可在浏览器里手动登录后点「继续注册」，或重跑"
+                fresh_task.finished_at = datetime.utcnow()
+                db.add(fresh_task)
+                db.commit()
+                _append_apify_task_log(fresh_task, db, "mail_login", fresh_task.error)
+            return
+        verification_required = bool(mail_login_result.get("mail_verification_required"))
+        _append_apify_task_log(
+            task,
             db,
+            "mail_login",
+            "Zoho 登录：邮箱输入={} 密码提交={} 需要邮箱验证码={}".format(
+                "成功" if mail_login_result.get("mail_email_submitted") else "失败",
+                "成功" if mail_login_result.get("mail_password_submitted") else "失败",
+                "是" if verification_required else "否",
+            ),
         )
+        if verification_required:
+            _append_apify_task_log(
+                task, db, "mail_login", "Zoho 要求邮箱验证码，尝试从验证码邮箱读取并自动填写"
+            )
         mail_login_result = _open_verification_mail_if_needed(mail_login_result, row, user, db)
+        if verification_required:
+            _append_apify_task_log(
+                task,
+                db,
+                "mail_login",
+                "验证码处理：登录验证邮箱={} 收件箱={} 读取验证码={} 提交验证码={}（验证邮箱入口：{}）".format(
+                    "成功" if mail_login_result.get("verification_mail_login_submitted") else "失败",
+                    "就绪" if mail_login_result.get("verification_mail_inbox_ready") else "未就绪",
+                    "成功" if mail_login_result.get("verification_mail_code_extracted") else "失败",
+                    "成功" if mail_login_result.get("mail_verification_code_submitted") else "失败",
+                    mail_login_result.get("verification_mail_login_url") or "(默认)",
+                ),
+            )
         inbox_result = wait_current_zoho_inbox_ready(row.browser_id, user, db)
         mail_login_result = {**mail_login_result, **inbox_result}
         mail_ready = bool(mail_login_result.get("mail_inbox_ready"))
         zoho_verification_blocked = bool(mail_login_result.get("mail_verification_required")) and not bool(
             mail_login_result.get("mail_verification_code_submitted")
         )
-        if not mail_ready or zoho_verification_blocked:
+        password_changed_blocked = bool(mail_login_result.get("mail_password_changed_page"))
+        if not mail_ready or zoho_verification_blocked or password_changed_blocked:
             task.status = "paused"
             task.current_node = "mail_login"
-            task.error = "注册邮箱未登录成功，请先处理邮箱登录/邮箱自身验证后继续注册"
+            task.error = _describe_mail_login_failure(mail_login_result, row)
             task.result = {"ok": False, "mail_login": _json_safe(mail_login_result)}
             task.finished_at = datetime.utcnow()
             db.add(task)
@@ -384,6 +437,65 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
     )
 
 
+def _resolve_verification_mailbox(row: EmailAccount) -> tuple[str, str, str] | None:
+    """解析读取 Zoho 验证码所用的「验证码邮箱」配置。
+
+    各字段独立回退：账号自身字段 → .env 共用默认（DEFAULT_VERIFICATION_*）；
+    入口(login_url) 再兜底用 onamae Webmail 默认地址。只要解析出邮箱+密码即可登录
+    （入口总有默认值）。缺邮箱或密码则返回 None。返回 (email, password, login_url)。
+    """
+    email = (row.verification_email or "").strip() or (
+        settings.default_verification_email or ""
+    ).strip()
+    password = (decrypt_secret(row.verification_password) or "").strip() or (
+        settings.default_verification_password or ""
+    ).strip()
+    login_url = (
+        (row.verification_login_url or "").strip()
+        or (settings.default_verification_login_url or "").strip()
+        or DEFAULT_ONAMAE_WEBMAIL_URL
+    )
+    if email and password:
+        return email, password, login_url
+    return None
+
+
+def _describe_mail_login_failure(result: dict[str, object], row: EmailAccount) -> str:
+    """根据 mail_login 各步骤结果给出可操作的失败原因。"""
+    if bool(result.get("mail_password_changed_page")):
+        return (
+            "Zoho 出现「パスワードを変更しました（密码已修改）」页并不停自动跳回登录页，"
+            "通常说明该账号当前登录密码已失效（被改过）；请用最新密码手动登录一次确认，"
+            "并把系统里该账号的密码更新为最新后重试"
+        )
+    verification_required = bool(result.get("mail_verification_required"))
+    code_submitted = bool(result.get("mail_verification_code_submitted"))
+    if verification_required and not code_submitted:
+        has_verification_config = _resolve_verification_mailbox(row) is not None
+        if not has_verification_config:
+            return (
+                "Zoho 登录需要邮箱验证码，但该账号未配置验证码邮箱/入口/密码，"
+                "且未设置共用默认验证码邮箱(DEFAULT_VERIFICATION_*)；"
+                "请补全验证码邮箱信息后重试，或在浏览器中手动输入验证码完成登录后点击“继续注册”"
+            )
+        if not bool(result.get("verification_mail_inbox_ready")):
+            return (
+                "Zoho 登录需要邮箱验证码，但验证码邮箱未能登录/打开收件箱；"
+                "请检查验证码邮箱账号密码，或手动完成验证码后点击“继续注册”"
+            )
+        if not bool(result.get("verification_mail_code_extracted")):
+            return (
+                "Zoho 登录需要邮箱验证码，但未能在验证码邮箱中读取到验证码邮件；"
+                "请稍后重试，或手动完成验证码后点击“继续注册”"
+            )
+        return "Zoho 登录验证码已读取但提交后仍未通过；请手动确认验证码后点击“继续注册”"
+    if not bool(result.get("mail_email_submitted")):
+        return "注册邮箱登录失败：未能在 Zoho 登录页填写邮箱；请检查登录入口/指纹浏览器后重试"
+    if not bool(result.get("mail_password_submitted")):
+        return "注册邮箱登录失败：未能提交 Zoho 密码；请检查邮箱密码是否正确后重试"
+    return "注册邮箱未登录成功，请先处理邮箱登录/邮箱自身验证后继续注册"
+
+
 def _open_verification_mail_if_needed(
     result: dict[str, object],
     row: EmailAccount,
@@ -392,16 +504,15 @@ def _open_verification_mail_if_needed(
 ) -> dict[str, object]:
     if not bool(result.get("mail_verification_required")):
         return result
-    if not row.verification_email or not row.verification_login_url:
+    mailbox = _resolve_verification_mailbox(row)
+    if mailbox is None:
         return result
-    verification_password = decrypt_secret(row.verification_password)
-    if not verification_password:
-        return result
+    v_email, v_password, v_login_url = mailbox
     verification_result = open_onamae_mail_login(
         row.browser_id or "",
-        row.verification_login_url,
-        row.verification_email,
-        verification_password,
+        v_login_url,
+        v_email,
+        v_password,
         user,
         db,
     )
@@ -790,18 +901,18 @@ def start_email_verification_mail_login(
         raise HTTPException(status_code=404, detail="邮箱账号不存在")
     if not row.browser_id:
         raise HTTPException(status_code=400, detail="请先为该邮箱选择指纹浏览器")
-    if not row.verification_email:
-        raise HTTPException(status_code=400, detail="请先填写验证码邮箱")
-    if not row.verification_login_url:
-        raise HTTPException(status_code=400, detail="请先填写验证码邮箱入口")
-    verification_password = decrypt_secret(row.verification_password)
-    if not verification_password:
-        raise HTTPException(status_code=400, detail="请先填写验证码邮箱密码")
+    mailbox = _resolve_verification_mailbox(row)
+    if mailbox is None:
+        raise HTTPException(
+            status_code=400,
+            detail="请先填写验证码邮箱/密码/入口，或在 .env 配置共用默认验证码邮箱(DEFAULT_VERIFICATION_*)",
+        )
+    v_email, verification_password, v_login_url = mailbox
     try:
         result = open_onamae_mail_login(
             row.browser_id,
-            row.verification_login_url,
-            row.verification_email,
+            v_login_url,
+            v_email,
             verification_password,
             user,
             db,
