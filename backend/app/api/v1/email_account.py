@@ -277,10 +277,12 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
                 task,
                 db,
                 "mail_login",
-                "验证码处理：验证码邮箱收件箱={} 读取验证码={} 提交验证码={}".format(
+                "验证码处理：登录验证邮箱={} 收件箱={} 读取验证码={} 提交验证码={}（验证邮箱入口：{}）".format(
+                    "成功" if mail_login_result.get("verification_mail_login_submitted") else "失败",
                     "就绪" if mail_login_result.get("verification_mail_inbox_ready") else "未就绪",
                     "成功" if mail_login_result.get("verification_mail_code_extracted") else "失败",
                     "成功" if mail_login_result.get("mail_verification_code_submitted") else "失败",
+                    mail_login_result.get("verification_mail_login_url") or "(默认)",
                 ),
             )
         inbox_result = wait_current_zoho_inbox_ready(row.browser_id, user, db)
