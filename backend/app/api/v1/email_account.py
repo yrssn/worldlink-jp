@@ -228,14 +228,34 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
         db.add(task)
         db.commit()
         _append_apify_task_log(task, db, "mail_login", "先登录注册邮箱，确保可以读取 Apify 验证邮件")
-        mail_login_result = open_zoho_mail_login(
-            row.browser_id,
-            row.mail_login_url,
-            row.email,
-            email_password,
-            user,
-            db,
-        )
+
+        def mail_progress(message: str) -> None:
+            fresh = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+            if fresh:
+                _append_apify_task_log(fresh, db, "mail_login", message)
+
+        try:
+            mail_login_result = open_zoho_mail_login(
+                row.browser_id,
+                row.mail_login_url,
+                row.email,
+                email_password,
+                user,
+                db,
+                progress=mail_progress,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[ApifySignupTask#{}] mail_login 异常", task_id)
+            fresh_task = db.query(ApifySignupTask).filter(ApifySignupTask.id == task_id).first()
+            if fresh_task:
+                fresh_task.status = "paused"
+                fresh_task.current_node = "mail_login"
+                fresh_task.error = f"邮箱登录过程出错（可能网络不稳定/页面跳转）：{str(e)[:500]}；可在浏览器里手动登录后点「继续注册」，或重跑"
+                fresh_task.finished_at = datetime.utcnow()
+                db.add(fresh_task)
+                db.commit()
+                _append_apify_task_log(fresh_task, db, "mail_login", fresh_task.error)
+            return
         verification_required = bool(mail_login_result.get("mail_verification_required"))
         _append_apify_task_log(
             task,
