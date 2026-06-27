@@ -881,11 +881,41 @@ def _solve_textcaptcha_via_captcharun(image_b64: str) -> str | None:
     return text or None
 
 
+# 上一次验证码填错时（Zoho 提示「入力した文字が間違っています」），先点刷新换一张新图再识别，
+# 否则同一张图 CaptchaRun 会返回同样的错误结果，陷入死循环。
+_ZOHO_CAPTCHA_REFRESH_IF_ERROR_JS = """
+(() => {
+  const text = document.body ? document.body.innerText : '';
+  const hasError = /間違って|もう一度|入力した文字|incorrect|try again|invalid|エラー/i.test(text);
+  if (!hasError) return false;
+  const re = /refresh|reload|renew|change|更新|再読み込み|再取得/i;
+  const clsOf = (el) => {
+    const c = el.className;
+    return (c && c.baseVal !== undefined) ? c.baseVal : (c || '');
+  };
+  const cands = Array.from(document.querySelectorAll('a,button,i,span,svg,img,[role="button"]'));
+  const btn = cands.find((el) => re.test(el.getAttribute && (el.getAttribute('aria-label') || '') || '')
+    || re.test(el.title || '') || re.test(String(clsOf(el))) || re.test(el.id || ''));
+  if (btn) { btn.click(); return true; }
+  return false;
+})()
+"""
+
+
 def _solve_zoho_text_captcha_if_present(page: CdpPage) -> bool | None:
     """检测当前页是否有字符验证码；有则用 CaptchaRun 识别并回填。
 
     返回 None=没有验证码；True=识别并填入成功；False=有验证码但未能自动填(未配 token/识别失败)。
+    Zoho 字符验证码区分大小写且全为大写字母+数字，故识别结果统一转大写后再回填。
     """
+    try:
+        # 若上一次填错，先刷新换一张新图，避免对同一张错图反复识别
+        refreshed = bool(page.evaluate(_ZOHO_CAPTCHA_REFRESH_IF_ERROR_JS, timeout=5))
+        if refreshed:
+            logger.info("[Zoho mail] 验证码上次填错，已点刷新换新图")
+            time.sleep(1.5)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Zoho mail] 刷新验证码跳过: {}", e)
     try:
         grabbed = page.evaluate(_FIND_ZOHO_CAPTCHA_IMG_JS, timeout=8)
     except Exception as e:  # noqa: BLE001
@@ -908,6 +938,8 @@ def _solve_zoho_text_captcha_if_present(page: CdpPage) -> bool | None:
     text = _solve_textcaptcha_via_captcharun(image_b64)
     if not text:
         return False
+    # Zoho 验证码区分大小写且字符集为大写字母+数字，CaptchaRun 可能返回小写，统一转大写
+    text = text.upper()
     try:
         filled = bool(page.evaluate(_fill_zoho_captcha_script(text), timeout=5))
     except Exception as e:  # noqa: BLE001
