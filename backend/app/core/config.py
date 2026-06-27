@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     apify_fb_search_cb_actor: str = "crawlerbros/facebook-search-scraper"  # 关键词搜 Pages/People（第三方）
     apify_ig_profile_actor: str = "apify/instagram-profile-scraper"  # IG 用户名 → 主页资料
 
+    # ===== CaptchaRun 打码服务（自动识别 Apify 注册时的 reCAPTCHA 图片挑战）=====
+    # 文档：https://captcharun.atlassian.net/wiki/spaces/captcharunnew/pages/463110445/ReCaptcha
+    captcharun_api_token: Optional[str] = None
+    captcharun_api_base: str = "https://api.captcha-run.com"
+    captcharun_max_attempts: int = 8  # 一次挑战内最多识别/点击轮数（含动态刷新）
+
     # ===== BitBrowser 比特浏览器（本地 Local API）=====
     # 文档：https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou
     # 每个登录用户在「浏览器窗口」页自行配置本机地址与 API Token（存 users 表），此处仅全局超时与分页
