@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import time
 from itertools import count
+from typing import Callable
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -30,7 +31,16 @@ def open_zoho_mail_login(
     password: str | None,
     user: User,
     db: Session,
+    progress: "Callable[[str], None] | None" = None,
 ) -> dict[str, object]:
+    def _log(message: str) -> None:
+        logger.info("[Zoho mail] {}", message)
+        if progress is not None:
+            try:
+                progress(message)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[Zoho mail] progress 回调失败: {}", e)
+
     target_url = normalize_zoho_login_url(login_url)
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
@@ -60,8 +70,11 @@ def open_zoho_mail_login(
         page.call("Page.navigate", {"url": target_url})
         _wait_page_ready(page)
         time.sleep(1)
+        _handle_zoho_interstitials(page)
+        _log(f"打开登录页，输入注册邮箱（当前 URL: {_current_url(page)}）")
         email_submitted = _submit_zoho_email(page, email)
         final_url = _current_url(page)
+        _log(f"注册邮箱输入{'成功' if email_submitted else '失败'}（当前 URL: {final_url}）")
     if email_submitted and password:
         refreshed_ws = _find_zoho_page_ws(http_base, preferred_target_id=page_id) or page_ws
         with CdpPage(refreshed_ws) as page:
@@ -69,11 +82,19 @@ def open_zoho_mail_login(
             page.call("Runtime.enable")
             page.call("Page.bringToFront")
             _wait_page_ready(page)
+            _handle_zoho_interstitials(page)
+            _log("进入密码页，输入密码并登录")
             password_submitted = _submit_zoho_password(page, password)
+            _log(f"密码提交{'成功' if password_submitted else '失败'}（当前 URL: {_current_url(page)}）")
             if password_submitted:
                 _skip_zoho_mfa_prompt_if_present(page)
+            _handle_zoho_interstitials(page)
             verification_required = _wait_for_zoho_post_password_state(page)
             final_url = _current_url(page)
+            _log(
+                f"登录结果：{'需要邮箱验证码' if verification_required else '无需验证码'}"
+                f"（当前 URL: {final_url}）"
+            )
     return {
         "mail_opened": True,
         "mail_login_url": target_url,
@@ -465,6 +486,46 @@ def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
 def _current_url(page: CdpPage) -> str:
     value = page.evaluate("window.location.href", timeout=5)
     return str(value or "")
+
+
+def _zoho_interstitial_script() -> str:
+    # 只点明确的「过场页」按钮，避免误点真正的登录提交按钮（サインインする）。
+    return (
+        "(() => {"
+        "  const safe = [/サインイン画面に移動/, /ログイン画面に移動/, /サインイン画面へ/, /スキップ/, /後で/];"
+        "  const visible = (el) => el && el.offsetParent !== null;"
+        "  const btns = Array.from(document.querySelectorAll('button,a,[role=\"button\"],input[type=\"button\"],input[type=\"submit\"]'));"
+        "  for (const re of safe) {"
+        "    const b = btns.find((el) => visible(el) && re.test(((el.innerText || el.value || '')).trim()));"
+        "    if (b) { b.click(); return ((b.innerText || b.value || '')).trim(); }"
+        "  }"
+        "  return '';"
+        "})()"
+    )
+
+
+def _handle_zoho_interstitials(page: CdpPage) -> None:
+    """点过 Zoho 登录前后的过场页（如「パスワードを変更しました→サインイン画面に移動する」、スキップ 等）。
+
+    best-effort：最多点几次，遇到连接断开/异常直接返回，绝不长时间空转。
+    """
+    for _ in range(3):
+        if page.closed:
+            return
+        try:
+            clicked = page.evaluate(_zoho_interstitial_script(), timeout=5)
+        except CdpConnectionClosed:
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] 处理过场页跳过: {}", e)
+            return
+        label = str(clicked or "").strip()
+        if not label:
+            return
+        logger.info("[Zoho mail] 已点过场页按钮: {}", label)
+        time.sleep(1.5)
+        if not page.closed:
+            _wait_page_ready(page, timeout=10)
 
 
 def _skip_zoho_mfa_prompt_if_present(page: CdpPage) -> bool:
