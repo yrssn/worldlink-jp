@@ -275,7 +275,12 @@ class CdpPage:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(f"CDP 调用超时: {method}")
-            raw = self._ws.recv(timeout=remaining)
+            try:
+                raw = self._ws.recv(timeout=remaining)
+            except TimeoutError:
+                # recv 自身超时：不要让 websockets.TimeoutError 冒泡崩线程，
+                # 交回循环统一判断 deadline 后抛 RuntimeError(可被调用方捕获)
+                continue
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
                 continue
@@ -759,17 +764,21 @@ def _is_zoho_email_verification_step(page: CdpPage) -> bool:
 def _submit_zoho_email(page: CdpPage, email: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
-        if _is_zoho_password_step(page):
-            return True
-        focused = bool(page.evaluate(_focus_zoho_email_script(), timeout=5))
-        submitted = False
-        if focused:
-            page.call("Input.insertText", {"text": email}, timeout=5)
-            submitted = bool(page.evaluate(_click_zoho_email_next_script(email), timeout=5))
-        if not submitted:
-            submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
-        if submitted and _wait_for_password_input(page, timeout=4):
-            return True
+        try:
+            if _is_zoho_password_step(page):
+                return True
+            focused = bool(page.evaluate(_focus_zoho_email_script(), timeout=5))
+            submitted = False
+            if focused:
+                page.call("Input.insertText", {"text": email}, timeout=5)
+                submitted = bool(page.evaluate(_click_zoho_email_next_script(email), timeout=5))
+            if not submitted:
+                submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
+            if submitted and _wait_for_password_input(page, timeout=4):
+                return True
+        except Exception as e:  # noqa: BLE001
+            # 单次 CDP 超时不应中断整段登录，记录后继续轮询重试
+            logger.debug("[Zoho mail] submit email iteration skipped: {}", e)
         time.sleep(0.5)
     return False
 
@@ -777,33 +786,37 @@ def _submit_zoho_email(page: CdpPage, email: str) -> bool:
 def _submit_zoho_password(page: CdpPage, password: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
-        if _wait_for_password_input(page, timeout=2):
-            page.call("Page.bringToFront")
-            focused = bool(page.evaluate(_focus_zoho_password_script(), timeout=5))
-            submitted = False
-            if focused:
-                filled = bool(page.evaluate(_clear_zoho_password_script(), timeout=5))
-                if filled:
-                    _type_text(page, password)
-                    filled = bool(page.evaluate(_verify_zoho_password_script(password), timeout=5))
-                if not filled:
-                    filled = bool(page.evaluate(_fill_zoho_password_only_script(password), timeout=8))
-                if not filled:
-                    filled = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=False), timeout=8))
-                if not filled:
-                    time.sleep(0.5)
-                    continue
-                time.sleep(1)
-                submitted = bool(page.evaluate(_click_zoho_password_submit_script(), timeout=5))
+        try:
+            if _wait_for_password_input(page, timeout=2):
+                page.call("Page.bringToFront")
+                focused = bool(page.evaluate(_focus_zoho_password_script(), timeout=5))
+                submitted = False
+                if focused:
+                    filled = bool(page.evaluate(_clear_zoho_password_script(), timeout=5))
+                    if filled:
+                        _type_text(page, password)
+                        filled = bool(page.evaluate(_verify_zoho_password_script(password), timeout=5))
+                    if not filled:
+                        filled = bool(page.evaluate(_fill_zoho_password_only_script(password), timeout=8))
+                    if not filled:
+                        filled = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=False), timeout=8))
+                    if not filled:
+                        time.sleep(0.5)
+                        continue
+                    time.sleep(1)
+                    submitted = bool(page.evaluate(_click_zoho_password_submit_script(), timeout=5))
+                    if submitted:
+                        _press_enter(page)
+                if not submitted:
+                    submitted = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=True), timeout=8))
+                if not submitted:
+                    submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
                 if submitted:
-                    _press_enter(page)
-            if not submitted:
-                submitted = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=True), timeout=8))
-            if not submitted:
-                submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
-            if submitted:
-                time.sleep(2)
-                return True
+                    time.sleep(2)
+                    return True
+        except Exception as e:  # noqa: BLE001
+            # 单次 CDP 超时不应中断整段登录，记录后继续轮询重试
+            logger.debug("[Zoho mail] submit password iteration skipped: {}", e)
         time.sleep(0.5)
     return False
 
@@ -847,7 +860,12 @@ def _wait_for_password_input(page: CdpPage, timeout: float = 12) -> bool:
 
 
 def _is_zoho_password_step(page: CdpPage) -> bool:
-    return bool(page.evaluate(_zoho_password_step_script(), timeout=5))
+    try:
+        return bool(page.evaluate(_zoho_password_step_script(), timeout=5))
+    except Exception as e:  # noqa: BLE001
+        # 单次 CDP 调用超时/异常时当作"还没到密码页"，由调用方继续轮询，避免崩线程
+        logger.debug("[Zoho mail] password-step check skipped: {}", e)
+        return False
 
 
 def _zoho_password_step_script() -> str:

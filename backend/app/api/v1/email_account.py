@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.deps import get_current_user, get_db
 from app.core.security import decrypt_secret, encrypt_secret
 from app.db.session import SessionLocal
@@ -410,19 +411,36 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
     )
 
 
+def _resolve_verification_mailbox(row: EmailAccount) -> tuple[str, str, str] | None:
+    """解析读取 Zoho 验证码所用的「验证码邮箱」配置。
+
+    优先用账号自身填写的「验证邮箱/密码/入口」；账号没填时回退到 .env 里的
+    共用默认验证码邮箱（DEFAULT_VERIFICATION_*）。两者都没有则返回 None。
+    返回 (email, password, login_url)。
+    """
+    row_email = (row.verification_email or "").strip()
+    row_url = (row.verification_login_url or "").strip()
+    row_password = (decrypt_secret(row.verification_password) or "").strip()
+    if row_email and row_url and row_password:
+        return row_email, row_password, row_url
+    d_email = (settings.default_verification_email or "").strip()
+    d_url = (settings.default_verification_login_url or "").strip()
+    d_password = (settings.default_verification_password or "").strip()
+    if d_email and d_url and d_password:
+        return d_email, d_password, d_url
+    return None
+
+
 def _describe_mail_login_failure(result: dict[str, object], row: EmailAccount) -> str:
     """根据 mail_login 各步骤结果给出可操作的失败原因。"""
     verification_required = bool(result.get("mail_verification_required"))
     code_submitted = bool(result.get("mail_verification_code_submitted"))
     if verification_required and not code_submitted:
-        has_verification_config = bool(
-            row.verification_email
-            and row.verification_login_url
-            and decrypt_secret(row.verification_password)
-        )
+        has_verification_config = _resolve_verification_mailbox(row) is not None
         if not has_verification_config:
             return (
-                "Zoho 登录需要邮箱验证码，但该账号未配置验证码邮箱/入口/密码；"
+                "Zoho 登录需要邮箱验证码，但该账号未配置验证码邮箱/入口/密码，"
+                "且未设置共用默认验证码邮箱(DEFAULT_VERIFICATION_*)；"
                 "请补全验证码邮箱信息后重试，或在浏览器中手动输入验证码完成登录后点击“继续注册”"
             )
         if not bool(result.get("verification_mail_inbox_ready")):
@@ -451,16 +469,15 @@ def _open_verification_mail_if_needed(
 ) -> dict[str, object]:
     if not bool(result.get("mail_verification_required")):
         return result
-    if not row.verification_email or not row.verification_login_url:
+    mailbox = _resolve_verification_mailbox(row)
+    if mailbox is None:
         return result
-    verification_password = decrypt_secret(row.verification_password)
-    if not verification_password:
-        return result
+    v_email, v_password, v_login_url = mailbox
     verification_result = open_onamae_mail_login(
         row.browser_id or "",
-        row.verification_login_url,
-        row.verification_email,
-        verification_password,
+        v_login_url,
+        v_email,
+        v_password,
         user,
         db,
     )
@@ -849,18 +866,18 @@ def start_email_verification_mail_login(
         raise HTTPException(status_code=404, detail="邮箱账号不存在")
     if not row.browser_id:
         raise HTTPException(status_code=400, detail="请先为该邮箱选择指纹浏览器")
-    if not row.verification_email:
-        raise HTTPException(status_code=400, detail="请先填写验证码邮箱")
-    if not row.verification_login_url:
-        raise HTTPException(status_code=400, detail="请先填写验证码邮箱入口")
-    verification_password = decrypt_secret(row.verification_password)
-    if not verification_password:
-        raise HTTPException(status_code=400, detail="请先填写验证码邮箱密码")
+    mailbox = _resolve_verification_mailbox(row)
+    if mailbox is None:
+        raise HTTPException(
+            status_code=400,
+            detail="请先填写验证码邮箱/密码/入口，或在 .env 配置共用默认验证码邮箱(DEFAULT_VERIFICATION_*)",
+        )
+    v_email, verification_password, v_login_url = mailbox
     try:
         result = open_onamae_mail_login(
             row.browser_id,
-            row.verification_login_url,
-            row.verification_email,
+            v_login_url,
+            v_email,
             verification_password,
             user,
             db,
