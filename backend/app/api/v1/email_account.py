@@ -232,7 +232,33 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
             user,
             db,
         )
+        verification_required = bool(mail_login_result.get("mail_verification_required"))
+        _append_apify_task_log(
+            task,
+            db,
+            "mail_login",
+            "Zoho 登录：邮箱输入={} 密码提交={} 需要邮箱验证码={}".format(
+                "成功" if mail_login_result.get("mail_email_submitted") else "失败",
+                "成功" if mail_login_result.get("mail_password_submitted") else "失败",
+                "是" if verification_required else "否",
+            ),
+        )
+        if verification_required:
+            _append_apify_task_log(
+                task, db, "mail_login", "Zoho 要求邮箱验证码，尝试从验证码邮箱读取并自动填写"
+            )
         mail_login_result = _open_verification_mail_if_needed(mail_login_result, row, user, db)
+        if verification_required:
+            _append_apify_task_log(
+                task,
+                db,
+                "mail_login",
+                "验证码处理：验证码邮箱收件箱={} 读取验证码={} 提交验证码={}".format(
+                    "就绪" if mail_login_result.get("verification_mail_inbox_ready") else "未就绪",
+                    "成功" if mail_login_result.get("verification_mail_code_extracted") else "失败",
+                    "成功" if mail_login_result.get("mail_verification_code_submitted") else "失败",
+                ),
+            )
         inbox_result = wait_current_zoho_inbox_ready(row.browser_id, user, db)
         mail_login_result = {**mail_login_result, **inbox_result}
         mail_ready = bool(mail_login_result.get("mail_inbox_ready"))
@@ -242,7 +268,7 @@ def _run_apify_signup_task_bg(task_id: int) -> None:
         if not mail_ready or zoho_verification_blocked:
             task.status = "paused"
             task.current_node = "mail_login"
-            task.error = "注册邮箱未登录成功，请先处理邮箱登录/邮箱自身验证后继续注册"
+            task.error = _describe_mail_login_failure(mail_login_result, row)
             task.result = {"ok": False, "mail_login": _json_safe(mail_login_result)}
             task.finished_at = datetime.utcnow()
             db.add(task)
@@ -382,6 +408,39 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _describe_mail_login_failure(result: dict[str, object], row: EmailAccount) -> str:
+    """根据 mail_login 各步骤结果给出可操作的失败原因。"""
+    verification_required = bool(result.get("mail_verification_required"))
+    code_submitted = bool(result.get("mail_verification_code_submitted"))
+    if verification_required and not code_submitted:
+        has_verification_config = bool(
+            row.verification_email
+            and row.verification_login_url
+            and decrypt_secret(row.verification_password)
+        )
+        if not has_verification_config:
+            return (
+                "Zoho 登录需要邮箱验证码，但该账号未配置验证码邮箱/入口/密码；"
+                "请补全验证码邮箱信息后重试，或在浏览器中手动输入验证码完成登录后点击“继续注册”"
+            )
+        if not bool(result.get("verification_mail_inbox_ready")):
+            return (
+                "Zoho 登录需要邮箱验证码，但验证码邮箱未能登录/打开收件箱；"
+                "请检查验证码邮箱账号密码，或手动完成验证码后点击“继续注册”"
+            )
+        if not bool(result.get("verification_mail_code_extracted")):
+            return (
+                "Zoho 登录需要邮箱验证码，但未能在验证码邮箱中读取到验证码邮件；"
+                "请稍后重试，或手动完成验证码后点击“继续注册”"
+            )
+        return "Zoho 登录验证码已读取但提交后仍未通过；请手动确认验证码后点击“继续注册”"
+    if not bool(result.get("mail_email_submitted")):
+        return "注册邮箱登录失败：未能在 Zoho 登录页填写邮箱；请检查登录入口/指纹浏览器后重试"
+    if not bool(result.get("mail_password_submitted")):
+        return "注册邮箱登录失败：未能提交 Zoho 密码；请检查邮箱密码是否正确后重试"
+    return "注册邮箱未登录成功，请先处理邮箱登录/邮箱自身验证后继续注册"
 
 
 def _open_verification_mail_if_needed(
