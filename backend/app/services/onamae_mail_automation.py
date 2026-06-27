@@ -64,10 +64,14 @@ def open_onamae_mail_login(
     }
 
 
+# お名前.com Webmail 默认入口（同一域名下的验证邮箱通常都用这个登录地址）
+DEFAULT_ONAMAE_WEBMAIL_URL = "https://webmail74.onamae.ne.jp/"
+
+
 def normalize_onamae_login_url(login_url: str | None) -> str:
     raw = (login_url or "").strip()
     if not raw:
-        raise ValueError("请先填写验证码邮箱入口")
+        return DEFAULT_ONAMAE_WEBMAIL_URL
     if raw.startswith(("http://", "https://")):
         return raw
     return f"https://{raw}"
