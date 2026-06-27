@@ -32,7 +32,10 @@ from app.schemas.email_account import (
     ZohoMailLoginOut,
 )
 from app.services.apify_signup_automation import continue_apify_signup, start_apify_signup
-from app.services.onamae_mail_automation import open_onamae_mail_login
+from app.services.onamae_mail_automation import (
+    DEFAULT_ONAMAE_WEBMAIL_URL,
+    open_onamae_mail_login,
+)
 from app.services.zoho_mail_automation import (
     normalize_zoho_login_url,
     open_zoho_mail_login,
@@ -414,20 +417,23 @@ def _to_out(row: EmailAccount) -> EmailAccountOut:
 def _resolve_verification_mailbox(row: EmailAccount) -> tuple[str, str, str] | None:
     """解析读取 Zoho 验证码所用的「验证码邮箱」配置。
 
-    优先用账号自身填写的「验证邮箱/密码/入口」；账号没填时回退到 .env 里的
-    共用默认验证码邮箱（DEFAULT_VERIFICATION_*）。两者都没有则返回 None。
-    返回 (email, password, login_url)。
+    各字段独立回退：账号自身字段 → .env 共用默认（DEFAULT_VERIFICATION_*）；
+    入口(login_url) 再兜底用 onamae Webmail 默认地址。只要解析出邮箱+密码即可登录
+    （入口总有默认值）。缺邮箱或密码则返回 None。返回 (email, password, login_url)。
     """
-    row_email = (row.verification_email or "").strip()
-    row_url = (row.verification_login_url or "").strip()
-    row_password = (decrypt_secret(row.verification_password) or "").strip()
-    if row_email and row_url and row_password:
-        return row_email, row_password, row_url
-    d_email = (settings.default_verification_email or "").strip()
-    d_url = (settings.default_verification_login_url or "").strip()
-    d_password = (settings.default_verification_password or "").strip()
-    if d_email and d_url and d_password:
-        return d_email, d_password, d_url
+    email = (row.verification_email or "").strip() or (
+        settings.default_verification_email or ""
+    ).strip()
+    password = (decrypt_secret(row.verification_password) or "").strip() or (
+        settings.default_verification_password or ""
+    ).strip()
+    login_url = (
+        (row.verification_login_url or "").strip()
+        or (settings.default_verification_login_url or "").strip()
+        or DEFAULT_ONAMAE_WEBMAIL_URL
+    )
+    if email and password:
+        return email, password, login_url
     return None
 
 

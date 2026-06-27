@@ -7,7 +7,9 @@ from itertools import count
 from urllib.parse import quote, urlparse
 
 import httpx
+from loguru import logger
 from sqlalchemy.orm import Session
+from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 from app.models.user import User
@@ -64,13 +66,21 @@ def open_onamae_mail_login(
     }
 
 
+# お名前.com Webmail 默认入口（同一域名下的验证邮箱通常都用这个登录地址）
+DEFAULT_ONAMAE_WEBMAIL_URL = "https://webmail74.onamae.ne.jp/"
+
+
 def normalize_onamae_login_url(login_url: str | None) -> str:
     raw = (login_url or "").strip()
     if not raw:
-        raise ValueError("请先填写验证码邮箱入口")
+        return DEFAULT_ONAMAE_WEBMAIL_URL
     if raw.startswith(("http://", "https://")):
         return raw
     return f"https://{raw}"
+
+
+class CdpConnectionClosed(RuntimeError):
+    """CDP 页面 WebSocket 已断开（页面被关/跳转/销毁）。"""
 
 
 class CdpPage:
@@ -78,9 +88,15 @@ class CdpPage:
         self.ws_url = ws_url
         self._ids = count(1)
         self._ws = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._ws is None or self._closed
 
     def __enter__(self) -> "CdpPage":
         self._ws = connect(self.ws_url, open_timeout=15)
+        self._closed = False
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -94,10 +110,14 @@ class CdpPage:
         *,
         timeout: float = 15,
     ) -> dict[str, object]:
-        if self._ws is None:
-            raise RuntimeError("CDP 未连接")
+        if self.closed:
+            raise CdpConnectionClosed("CDP 连接已断开")
         msg_id = next(self._ids)
-        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        try:
+            self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        except (ConnectionClosed, OSError) as e:
+            self._closed = True
+            raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -109,6 +129,10 @@ class CdpPage:
                 # recv 自身超时：不要让 websockets.TimeoutError 冒泡崩线程，
                 # 交回循环统一判断 deadline 后抛 RuntimeError(可被调用方捕获)
                 continue
+            except (ConnectionClosed, OSError) as e:
+                # 连接已断开：标记后立刻抛 CdpConnectionClosed，让轮询循环尽快跳出
+                self._closed = True
+                raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
                 continue
@@ -171,7 +195,16 @@ def _create_page(http_base: str, url: str) -> tuple[str, str]:
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        state = page.evaluate("document.readyState", timeout=5)
+        if page.closed:
+            return
+        try:
+            state = page.evaluate("document.readyState", timeout=5)
+        except CdpConnectionClosed:
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[onamae mail] wait page ready skipped: {}", e)
+            time.sleep(0.3)
+            continue
         if state in {"interactive", "complete"}:
             return
         time.sleep(0.3)

@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     default_verification_password: Optional[str] = None
     default_verification_login_url: Optional[str] = None
 
+    # ===== CaptchaRun 打码服务（自动识别验证码）=====
+    # 文档：https://captcharun.atlassian.net/wiki/spaces/captcharunnew
+    # 用于 Zoho 登录偶发的「扭曲字符验证码(TextCaptcha)」自动识别。
+    # 留空则不启用，遇到字符验证码会回落人工输入。
+    captcharun_api_token: Optional[str] = None
+    captcharun_api_base: str = "https://api.captcha-run.com"
+
     # ===== 私信内容图片上传目录（相对 backend 根目录）=====
     dm_upload_dir: str = "uploads/dm"
 
