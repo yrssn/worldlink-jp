@@ -112,5 +112,8 @@ class DmOutreachOut(BaseModel):
     page_opened: bool = False
     message_clicked: bool = False
     matched_text: Optional[str] = None
+    text_sent: bool = False
+    images_sent: int = 0
+    scrape_task_id: Optional[int] = None
     final_url: Optional[str] = None
     open_hint: Optional[Any] = None
