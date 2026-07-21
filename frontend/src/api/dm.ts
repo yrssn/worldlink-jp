@@ -38,6 +38,18 @@ export interface DmContent {
   updated_at: string
 }
 
+export interface DmOutreachResult {
+  ok: boolean
+  browser_id: string
+  content_id: number
+  content_title?: string | null
+  page_opened: boolean
+  message_clicked: boolean
+  matched_text?: string | null
+  final_url?: string | null
+  open_hint?: unknown
+}
+
 export interface DmUploadResult {
   url: string
   path: string
@@ -63,6 +75,9 @@ export const dmApi = {
   updateContent: (id: number, data: Partial<DmContent>) =>
     http.put<unknown, DmContent>(`/dm/contents/${id}`, data),
   deleteContent: (id: number) => http.delete(`/dm/contents/${id}`),
+
+  startOutreach: (data: { url: string; browser_id: string; content_id: number }) =>
+    http.post<unknown, DmOutreachResult>('/dm/outreach/start', data, { timeout: 180000 }),
 
   uploadImage: (file: File) => {
     const fd = new FormData()

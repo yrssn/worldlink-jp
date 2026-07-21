@@ -96,3 +96,21 @@ class DmUploadOut(BaseModel):
     url: str
     path: str
     name: str
+
+
+class DmOutreachStart(BaseModel):
+    url: str = Field(..., min_length=1, description="达人主页链接")
+    browser_id: str = Field(..., min_length=1, description="BitBrowser 窗口 ID")
+    content_id: int = Field(..., description="私信内容库内容 ID")
+
+
+class DmOutreachOut(BaseModel):
+    ok: bool
+    browser_id: str
+    content_id: int
+    content_title: Optional[str] = None
+    page_opened: bool = False
+    message_clicked: bool = False
+    matched_text: Optional[str] = None
+    final_url: Optional[str] = None
+    open_hint: Optional[Any] = None

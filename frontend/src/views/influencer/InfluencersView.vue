@@ -8,6 +8,8 @@ import {
   type InfluencerScrapeTask,
   type ScrapePlatform,
 } from '@/api/influencer'
+import { bitbrowserApi, type BitBrowserWindow } from '@/api/bitbrowser'
+import { dmApi, type DmContent } from '@/api/dm'
 
 // 抓取平台（为以后更多平台预留，只需在此追加一项）
 const SCRAPE_PLATFORMS: { value: ScrapePlatform; label: string; placeholder: string }[] = [
@@ -244,6 +246,71 @@ async function startTaskScrape() {
     /* 拦截器已提示 */
   } finally {
     taskStarting.value = false
+  }
+}
+
+// ─── 私信建联（选窗口 + 选内容库，自动进主页点「发消息」） ────────
+const dmDialogVisible = ref(false)
+const dmWindows = ref<BitBrowserWindow[]>([])
+const dmContents = ref<DmContent[]>([])
+const dmBrowserId = ref('')
+const dmContentId = ref<number | null>(null)
+const dmLoading = ref(false)
+const dmRunning = ref(false)
+const dmUrl = ref('')
+
+async function openDmDialog() {
+  const url = taskScrapeUrl.value.trim()
+  if (!url) {
+    ElMessage.warning('请先粘贴达人主页链接')
+    return
+  }
+  dmUrl.value = url
+  dmDialogVisible.value = true
+  dmLoading.value = true
+  try {
+    const [windows, contents] = await Promise.all([
+      bitbrowserApi.listWindows(),
+      dmApi.listContents({ active_only: true }),
+    ])
+    dmWindows.value = windows
+    dmContents.value = contents
+  } finally {
+    dmLoading.value = false
+  }
+}
+
+function windowLabel(w: BitBrowserWindow) {
+  const parts = [w.seq != null ? `#${w.seq}` : '', w.name || '', w.remark || '']
+  return parts.filter(Boolean).join(' ') || w.browser_id
+}
+
+async function startDmOutreach() {
+  if (!dmBrowserId.value) {
+    ElMessage.warning('请选择浏览器窗口')
+    return
+  }
+  if (dmContentId.value == null) {
+    ElMessage.warning('请选择私信内容')
+    return
+  }
+  dmRunning.value = true
+  try {
+    const r = await dmApi.startOutreach({
+      url: dmUrl.value,
+      browser_id: dmBrowserId.value,
+      content_id: dmContentId.value,
+    })
+    if (r.message_clicked) {
+      ElMessage.success('已进入主页并点击「发消息」，对话框已打开')
+      dmDialogVisible.value = false
+    } else {
+      ElMessage.warning('已进入主页，但未找到「发消息」按钮（请确认窗口内已登录 Facebook）')
+    }
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    dmRunning.value = false
   }
 }
 
@@ -537,6 +604,7 @@ onUnmounted(() => {
           @keyup.enter="startTaskScrape"
         />
         <el-button type="primary" :loading="taskStarting" @click="startTaskScrape">发起抓取</el-button>
+        <el-button type="success" @click="openDmDialog">私信建联</el-button>
         <el-button :loading="tasksLoading" @click="loadTasks">刷新</el-button>
       </div>
       <el-table v-loading="tasksLoading" :data="tasks" border max-height="420">
@@ -595,6 +663,36 @@ onUnmounted(() => {
           </template>
         </el-table-column>
       </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="dmDialogVisible" title="私信建联" width="520px">
+      <el-form label-width="100px" v-loading="dmLoading">
+        <el-form-item label="主页链接">
+          <span style="word-break: break-all">{{ dmUrl }}</span>
+        </el-form-item>
+        <el-form-item label="浏览器窗口">
+          <el-select v-model="dmBrowserId" placeholder="选择用于发私信的窗口" filterable style="width: 100%">
+            <el-option
+              v-for="w in dmWindows"
+              :key="w.browser_id"
+              :label="windowLabel(w)"
+              :value="w.browser_id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="私信内容">
+          <el-select v-model="dmContentId" placeholder="选择内容库中的私信内容" filterable style="width: 100%">
+            <el-option v-for="c in dmContents" :key="c.id" :label="c.title" :value="c.id" />
+          </el-select>
+        </el-form-item>
+        <div style="color: #909399; font-size: 12px; margin-left: 100px">
+          将在选中窗口自动打开达人主页并点击「发消息」，后续步骤逐步完善
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="dmDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dmRunning" @click="startDmOutreach">开始建联</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="detailVisible" title="抓取资料" width="560px">
