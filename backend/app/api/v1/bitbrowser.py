@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import and_
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,7 +13,8 @@ from app.core.security import decode_token
 from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform, BitBrowserWindow, BitBrowserWindowCatalog
 from app.models.user import User
-from app.services.bitbrowser_relay import relay_manager
+from app.core.config import settings
+from app.services.bitbrowser_relay import SHARED_RELAY_KEY, relay_manager
 from app.schemas.bitbrowser import (
     BitBrowserCatalogOut,
     BitBrowserCatalogRowOut,
@@ -66,10 +67,26 @@ async def bitbrowser_relay_ws(websocket: WebSocket, token: str = Query(...)):
     await relay_manager.connect(user_id, websocket)
 
 
+# ── 共享中继 agent WebSocket 入口（跑在 BitBrowser 所在电脑的独立脚本）──
+@router.websocket("/relay/agent/ws")
+async def bitbrowser_relay_agent_ws(websocket: WebSocket, token: str = Query(...)):
+    """中继 agent 连接此 WS，为所有系统用户共享转发 BitBrowser Local API 与 CDP。"""
+    expected = (settings.bitbrowser_relay_agent_token or "").strip()
+    if not expected or token != expected:
+        await websocket.close(code=4001)
+        return
+    await websocket.accept()
+    logger.info("[BitBrowserRelay] shared relay agent connected")
+    await relay_manager.connect(SHARED_RELAY_KEY, websocket)
+
+
 @router.get("/relay/status")
 def bitbrowser_relay_status(user: User = Depends(get_current_user)):
     """查询当前用户的浏览器中继是否已连接。"""
-    return {"connected": relay_manager.has_relay(user.id)}
+    return {
+        "connected": relay_manager.has_relay(user.id),
+        "shared_agent": relay_manager.has_shared_relay(),
+    }
 
 
 def _user_local_hint(user: User) -> str:
