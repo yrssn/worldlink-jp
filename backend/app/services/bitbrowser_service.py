@@ -425,13 +425,16 @@ def clear_browser_profile_cookies(browser_id: str, user: User) -> dict[str, bool
 
 
 def _build_open_payload(browser_id: str, *, headless: bool, ignore_default_urls: bool = False) -> dict[str, Any]:
-    payload: dict[str, Any] = {"id": browser_id, "queue": True}
+    # --remote-allow-origins=*：允许任意 Origin 连接窗口的 DevTools WebSocket，
+    # 浏览器中继（管理端页面）转发 CDP 时需要（Chrome 111+ 默认拒绝跨源握手）
+    args: list[str] = ["--remote-allow-origins=*"]
+    payload: dict[str, Any] = {"id": browser_id, "queue": True, "args": args}
     if ignore_default_urls:
         payload["ignoreDefaultUrls"] = True
     if headless:
         raw = (getattr(settings, "bitbrowser_headless_chrome_args", None) or "--headless").strip()
         parts = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
-        payload["args"] = parts if parts else ["--headless"]
+        args.extend(parts if parts else ["--headless"])
         payload["ignoreDefaultUrls"] = True
     return payload
 

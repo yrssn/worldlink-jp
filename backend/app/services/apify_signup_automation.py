@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from itertools import count
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import urljoin
 
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.user import User
 from app.services import bitbrowser_service
-from app.services.cdp_transport import devtools_json, open_cdp
+from app.services import cdp_transport
+from app.services.cdp_transport import open_cdp
 from app.services.recaptcha_solver import solve_recaptcha
 from app.services.zoho_mail_automation import open_latest_apify_verification_link
 
@@ -163,9 +164,9 @@ def start_apify_signup(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
-    http_base = _extract_devtools_http(open_data)
-    _close_apify_pages(http_base, user_id=user.id)
-    page_ws = _create_page(http_base, SIGNUP_URL, user_id=user.id)
+    browser_ws = cdp_transport.extract_browser_ws(open_data)
+    _close_apify_pages(browser_ws, user_id=user.id)
+    page_ws = _create_page(browser_ws, SIGNUP_URL, user_id=user.id)
     with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Network.enable")
@@ -330,8 +331,8 @@ def start_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
-            http_base, SETTINGS_INTEGRATIONS_URL, user_id=user.id
+        refreshed_ws = _find_apify_page(browser_ws, user_id=user.id) or _create_page(
+            browser_ws, SETTINGS_INTEGRATIONS_URL, user_id=user.id
         )
         with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
@@ -454,9 +455,9 @@ def continue_apify_signup(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
-    http_base = _extract_devtools_http(open_data)
-    page_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
-        http_base, SIGNUP_URL, user_id=user.id
+    browser_ws = cdp_transport.extract_browser_ws(open_data)
+    page_ws = _find_apify_page(browser_ws, user_id=user.id) or _create_page(
+        browser_ws, SIGNUP_URL, user_id=user.id
     )
     profile_details: dict[str, object] = {
         "submitted": False,
@@ -566,8 +567,8 @@ def continue_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] continue collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
-            http_base, SETTINGS_INTEGRATIONS_URL, user_id=user.id
+        refreshed_ws = _find_apify_page(browser_ws, user_id=user.id) or _create_page(
+            browser_ws, SETTINGS_INTEGRATIONS_URL, user_id=user.id
         )
         with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
@@ -629,40 +630,22 @@ def continue_apify_signup(
     }
 
 
-def _extract_devtools_http(open_data: dict[str, object]) -> str:
-    raw_http = str(open_data.get("http") or "").strip()
-    if raw_http:
-        return raw_http if raw_http.startswith(("http://", "https://")) else f"http://{raw_http}"
-    raw_ws = str(open_data.get("ws") or "").strip()
-    if raw_ws:
-        parsed = urlparse(raw_ws)
-        if parsed.netloc:
-            return f"http://{parsed.netloc}"
-    raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
-
-
-def _create_page(http_base: str, url: str, user_id: int | None = None) -> str:
-    target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe=':/?&=%')}"
-    data = devtools_json(target_url, user_id, method="PUT", timeout=15)
-    if not isinstance(data, dict):
-        data = {}
-    ws_url = data.get("webSocketDebuggerUrl")
-    if not ws_url:
-        raise RuntimeError("创建 Apify 注册页失败：DevTools 未返回页面 WebSocket")
-    return str(ws_url)
-
-
-def _find_apify_page(http_base: str, user_id: int | None = None) -> str | None:
+def _create_page(browser_ws: str, url: str, user_id: int | None = None) -> str:
+    page_ws, target_id = cdp_transport.create_page(browser_ws, url, user_id)
     try:
-        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+        cdp_transport.activate_target(browser_ws, target_id, user_id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] activate target {} skipped: {}", target_id, e)
+    return page_ws
+
+
+def _find_apify_page(browser_ws: str, user_id: int | None = None) -> str | None:
+    try:
+        targets = cdp_transport.list_pages(browser_ws, user_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("[Apify signup] find target skipped: {}", e)
         return None
-    if not isinstance(targets, list):
-        return None
     for target in targets:
-        if not isinstance(target, dict):
-            continue
         url = str(target.get("url") or "")
         ws_url = str(target.get("webSocketDebuggerUrl") or "")
         if "console.apify.com" in url and ws_url:
@@ -670,28 +653,20 @@ def _find_apify_page(http_base: str, user_id: int | None = None) -> str | None:
     return None
 
 
-def _close_apify_pages(http_base: str, user_id: int | None = None) -> int:
+def _close_apify_pages(browser_ws: str, user_id: int | None = None) -> int:
     closed = 0
     try:
-        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+        targets = cdp_transport.list_pages(browser_ws, user_id)
     except Exception as e:  # noqa: BLE001
         logger.debug("[Apify signup] list targets skipped: {}", e)
         return 0
-    if not isinstance(targets, list):
-        return 0
     for target in targets:
-        if not isinstance(target, dict):
-            continue
         url = str(target.get("url") or "")
         target_id = str(target.get("id") or "")
         if "apify.com" not in url or not target_id:
             continue
         try:
-            devtools_json(
-                f"{http_base.rstrip('/')}/json/close/{quote(target_id, safe='')}",
-                user_id,
-                timeout=10,
-            )
+            cdp_transport.close_target(browser_ws, target_id, user_id)
             closed += 1
         except Exception as e:  # noqa: BLE001
             logger.debug("[Apify signup] close target skipped {}: {}", target_id, e)
