@@ -327,8 +327,16 @@ def start_dm_outreach(
     image_paths: list[Path] = []
     images = content.images if isinstance(content.images, list) else []
     upload_root = _dm_upload_root()
+    media_prefix = "/api/v1/dm/media/"
     for img in images:
-        rel = str(img.get("path") or "").strip() if isinstance(img, dict) else ""
+        if not isinstance(img, dict):
+            continue
+        rel = str(img.get("path") or "").strip()
+        if not rel:
+            # 兼容早期数据：path 缺失时从 media URL 反推相对路径
+            u = str(img.get("url") or "").strip()
+            if media_prefix in u:
+                rel = u.split(media_prefix, 1)[1]
         if not rel:
             continue
         p = (upload_root / rel).resolve()

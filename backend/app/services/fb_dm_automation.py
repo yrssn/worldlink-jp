@@ -65,6 +65,40 @@ _CHAT_INPUT_TEXT_JS = """
 })()
 """
 
+# 聊天小窗中的「发送」按钮（粘贴附件后出现的纸飞机图标）
+_SEND_BUTTON_TEXTS = ("按 Enter 键发送", "发送", "傳送", "Press enter to send", "Send", "送信", "Enterキーを押して送信")
+
+_CLICK_SEND_JS = """
+(() => {
+  const texts = %s;
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  const candidates = Array.from(
+    document.querySelectorAll('div[role="button"], span[role="button"], button')
+  ).filter((el) => el.offsetParent !== null);
+  for (const el of candidates) {
+    const label = norm(el.getAttribute('aria-label'));
+    for (const t of texts) {
+      if (label === t) {
+        el.click();
+        return { clicked: true, matched: t };
+      }
+    }
+  }
+  return { clicked: false };
+})()
+"""
+
+# 聊天小窗内是否还有待发送的附件预览（有「移除附件」的删除按钮即为存在）
+_HAS_PENDING_ATTACHMENT_JS = """
+(() => {
+  const labels = ['移除附件', '移除', 'Remove attachment', '添付ファイルを削除'];
+  const els = Array.from(document.querySelectorAll('[aria-label]')).filter(
+    (el) => el.offsetParent !== null
+  );
+  return els.some((el) => labels.includes((el.getAttribute('aria-label') || '').trim()));
+})()
+"""
+
 # 把 base64 图片以粘贴事件注入聊天输入框（FB 支持粘贴图片）
 _PASTE_IMAGE_JS_TEMPLATE = """
 (() => {
@@ -212,13 +246,51 @@ def _send_chat_message(
         if not (isinstance(result, dict) and result.get("pasted")):
             _log(f"图片粘贴失败，跳过 {path.name}")
             continue
-        _log(f"已粘贴图片 {path.name}，等待上传预览")
-        time.sleep(3)
-        _press_enter(page)
-        time.sleep(2)
-        images_sent += 1
-        _log(f"图片 {path.name} 已发送")
+        _log(f"已粘贴图片 {path.name}，等待附件预览就绪")
+        if not _wait_pending_attachment(page, appear=True):
+            _log(f"未检测到附件预览，跳过 {path.name}")
+            continue
+        time.sleep(1.5)
+        if _submit_attachment(page, _log):
+            images_sent += 1
+            _log(f"图片 {path.name} 已发送")
+        else:
+            _log(f"图片 {path.name} 发送未确认（附件预览未消失），请在窗口内检查")
     return text_sent, images_sent
+
+
+def _wait_pending_attachment(
+    page: CdpPage, *, appear: bool, timeout: float = 30
+) -> bool:
+    """等待附件预览出现（appear=True）或发送后消失（appear=False）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            present = bool(page.evaluate(_HAS_PENDING_ATTACHMENT_JS, timeout=5))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[FB DM] check attachment skipped: {}", e)
+            present = not appear
+        if present == appear:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _submit_attachment(page: CdpPage, _log: "Callable[[str], None]") -> bool:
+    """发送已粘贴的附件：重新聚焦后回车，失败则点「发送」按钮兜底。"""
+    _focus_chat_input(page, attempts=3)
+    _press_enter(page)
+    if _wait_pending_attachment(page, appear=False, timeout=8):
+        return True
+    js = _CLICK_SEND_JS % json.dumps(list(_SEND_BUTTON_TEXTS), ensure_ascii=False)
+    try:
+        result = page.evaluate(js, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[FB DM] click send button skipped: {}", e)
+        result = None
+    if isinstance(result, dict) and result.get("clicked"):
+        _log("回车未生效，已改点「发送」按钮")
+    return _wait_pending_attachment(page, appear=False, timeout=10)
 
 
 def _focus_chat_input(page: CdpPage, attempts: int = 8, interval: float = 1.0) -> bool:
