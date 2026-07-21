@@ -6,7 +6,9 @@ import time
 from itertools import count
 from urllib.parse import quote, urlparse
 
+from loguru import logger
 from sqlalchemy.orm import Session
+from websockets.exceptions import ConnectionClosed
 
 from app.models.user import User
 from app.services import bitbrowser_service
@@ -44,11 +46,14 @@ def open_onamae_mail_login(
         _wait_page_ready(page)
         time.sleep(1)
         login_submitted = _submit_onamae_login(page, email, password)
+        logger.info("[onamae mail] 验证邮箱登录提交={}（{}）", login_submitted, email)
         inbox_ready = _wait_for_onamae_inbox(page)
+        logger.info("[onamae mail] 收件箱就绪={}", inbox_ready)
         verification_code = None
         code_extracted = False
-        if inbox_ready and _open_latest_zoho_otp_message(page):
-            verification_code = _extract_zoho_otp_code(page)
+        if inbox_ready:
+            # 验证码邮件可能延迟到达：用「检查新邮件」轮询，避免整页反复刷新
+            verification_code = _find_zoho_otp_with_refresh(page)
             code_extracted = bool(verification_code)
         final_url = _current_url(page)
     return {
@@ -63,13 +68,21 @@ def open_onamae_mail_login(
     }
 
 
+# お名前.com Webmail 默认入口（同一域名下的验证邮箱通常都用这个登录地址）
+DEFAULT_ONAMAE_WEBMAIL_URL = "https://webmail74.onamae.ne.jp/"
+
+
 def normalize_onamae_login_url(login_url: str | None) -> str:
     raw = (login_url or "").strip()
     if not raw:
-        raise ValueError("请先填写验证码邮箱入口")
+        return DEFAULT_ONAMAE_WEBMAIL_URL
     if raw.startswith(("http://", "https://")):
         return raw
     return f"https://{raw}"
+
+
+class CdpConnectionClosed(RuntimeError):
+    """CDP 页面 WebSocket 已断开（页面被关/跳转/销毁）。"""
 
 
 class CdpPage:
@@ -78,9 +91,15 @@ class CdpPage:
         self.user_id = user_id
         self._ids = count(1)
         self._ws = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._ws is None or self._closed
 
     def __enter__(self) -> "CdpPage":
         self._ws = open_cdp(self.ws_url, self.user_id, open_timeout=15)
+        self._closed = False
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -94,16 +113,29 @@ class CdpPage:
         *,
         timeout: float = 15,
     ) -> dict[str, object]:
-        if self._ws is None:
-            raise RuntimeError("CDP 未连接")
+        if self.closed:
+            raise CdpConnectionClosed("CDP 连接已断开")
         msg_id = next(self._ids)
-        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        try:
+            self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+        except (ConnectionClosed, OSError) as e:
+            self._closed = True
+            raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(f"CDP 调用超时: {method}")
-            raw = self._ws.recv(timeout=remaining)
+            try:
+                raw = self._ws.recv(timeout=remaining)
+            except TimeoutError:
+                # recv 自身超时：不要让 websockets.TimeoutError 冒泡崩线程，
+                # 交回循环统一判断 deadline 后抛 RuntimeError(可被调用方捕获)
+                continue
+            except (ConnectionClosed, OSError) as e:
+                # 连接已断开：标记后立刻抛 CdpConnectionClosed，让轮询循环尽快跳出
+                self._closed = True
+                raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
                 continue
@@ -163,7 +195,16 @@ def _create_page(http_base: str, url: str, user_id: int | None = None) -> tuple[
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        state = page.evaluate("document.readyState", timeout=5)
+        if page.closed:
+            return
+        try:
+            state = page.evaluate("document.readyState", timeout=5)
+        except CdpConnectionClosed:
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[onamae mail] wait page ready skipped: {}", e)
+            time.sleep(0.3)
+            continue
         if state in {"interactive", "complete"}:
             return
         time.sleep(0.3)
@@ -311,4 +352,51 @@ def _extract_zoho_otp_code(page: CdpPage, timeout: float = 30) -> str | None:
         if isinstance(value, str) and value:
             return value
         time.sleep(0.5)
+    return None
+
+
+def _check_onamae_new_mail(page: CdpPage) -> None:
+    """触发 Roundcube「检查新邮件」获取新到的邮件，尽量不整页刷新（避免页面一直刷）。"""
+    try:
+        page.evaluate(
+            """
+(() => {
+  try {
+    if (window.rcmail && typeof rcmail.command === 'function') {
+      rcmail.command('checkmail');
+      return true;
+    }
+  } catch (e) {}
+  const btn = document.querySelector('a.refresh, a.button.refresh, [command="checkmail"], [title*="更新"], [title*="新着"], [aria-label*="更新"]');
+  if (btn) { btn.click(); return true; }
+  return false;
+})()
+""",
+            timeout=5,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[onamae mail] 检查新邮件跳过: {}", e)
+
+
+def _find_zoho_otp_with_refresh(page: CdpPage, total_timeout: float = 90) -> str | None:
+    """在收件箱里轮询 Zoho 验证码邮件：找到就提取验证码；没有就「检查新邮件」后重试。
+
+    用「检查新邮件」而非整页刷新，避免页面反复刷新；验证码邮件可能延迟到达，故最多等 total_timeout 秒。
+    """
+    deadline = time.monotonic() + total_timeout
+    while time.monotonic() < deadline:
+        if page.closed:
+            break
+        try:
+            if _open_latest_zoho_otp_message(page, timeout=4):
+                code = _extract_zoho_otp_code(page, timeout=12)
+                if code:
+                    logger.info("[onamae mail] 已读取到 Zoho 验证码")
+                    return code
+        except CdpConnectionClosed:
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[onamae mail] 读取验证码邮件跳过: {}", e)
+        _check_onamae_new_mail(page)
+        time.sleep(4)
     return None

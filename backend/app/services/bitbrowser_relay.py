@@ -206,19 +206,19 @@ class BitBrowserRelayManager:
     async def _cdp_send_async(self, tid: str, data: str) -> None:
         tunnel = self._tunnels.get(tid)
         if tunnel is None or tunnel.closed:
-            raise RuntimeError("CDP 隧道已关闭")
+            raise OSError("CDP 隧道已关闭")
         ws = self._connections.get(tunnel.user_id)
         if ws is None:
-            raise RuntimeError("BitBrowser 中继连接已断开")
+            raise OSError("BitBrowser 中继连接已断开")
         await ws.send_json({"type": "cdp_msg", "id": tid, "data": data})
 
     async def _cdp_recv_async(self, tid: str, timeout: float | None) -> str:
         tunnel = self._tunnels.get(tid)
         if tunnel is None:
-            raise RuntimeError("CDP 隧道已关闭")
+            raise OSError("CDP 隧道已关闭")
         item = await asyncio.wait_for(tunnel.inbox.get(), timeout=timeout)
         if item is None:
-            raise RuntimeError("CDP 隧道已关闭")
+            raise OSError("CDP 隧道已关闭")
         return item
 
     async def _cdp_close_async(self, tid: str) -> None:
