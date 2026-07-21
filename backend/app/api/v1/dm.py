@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
@@ -401,3 +402,15 @@ async def upload_dm_image(
     dest.write_bytes(raw)
     rel = f"{user.id}/{safe_name}"
     return DmUploadOut(url=_media_url(user.id, safe_name), path=rel, name=file.filename)
+
+
+@router.get("/media/{owner_id}/{filename}")
+def get_dm_media(owner_id: int, filename: str):
+    """返回已上传的私信图片（文件名为随机 uuid，供 <img> 标签直接加载）。"""
+    name = Path(filename).name
+    if name != filename or Path(name).suffix.lower() not in _ALLOWED_IMAGE_SUFFIX:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    path = _dm_upload_root() / str(owner_id) / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在")
+    return FileResponse(path)
