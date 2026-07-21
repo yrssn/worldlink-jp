@@ -133,6 +133,7 @@ class BitBrowserRelayManager:
         *,
         method: str = "POST",
         url: str | None = None,
+        headers: dict[str, str] | None = None,
         timeout: float = 30.0,
     ) -> Any:
         ws = self._connections.get(user_id)
@@ -153,6 +154,8 @@ class BitBrowserRelayManager:
         }
         if url:
             msg["url"] = url
+        if headers:
+            msg["headers"] = headers
         try:
             await ws.send_json(msg)
             return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
@@ -169,6 +172,7 @@ class BitBrowserRelayManager:
         *,
         method: str = "POST",
         url: str | None = None,
+        headers: dict[str, str] | None = None,
         timeout: float = 30.0,
     ) -> Any:
         """从同步代码中阻塞式调用异步中继（线程安全）。"""
@@ -176,7 +180,9 @@ class BitBrowserRelayManager:
         if loop is None or not loop.is_running():
             raise RuntimeError("BitBrowser 中继事件循环未就绪，请重启后端服务")
         future = asyncio.run_coroutine_threadsafe(
-            self.call_async(user_id, path, body, method=method, url=url, timeout=timeout),
+            self.call_async(
+                user_id, path, body, method=method, url=url, headers=headers, timeout=timeout
+            ),
             loop,
         )
         try:

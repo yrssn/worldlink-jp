@@ -35,7 +35,11 @@ def client_context_from_user(user: User) -> BitBrowserClientContext:
             "请先在「本机连接配置」中填写 BitBrowser 本地服务地址（与客户端「设置 → 本地 API」中的地址一致，例如 http://127.0.0.1:54345）"
         )
     base = raw.rstrip("/")
-    tok = (getattr(user, "bitbrowser_api_key", None) or "").strip() or None
+    tok = (
+        (getattr(user, "bitbrowser_api_key", None) or "").strip()
+        or (settings.bitbrowser_api_key or "").strip()
+        or None
+    )
     return BitBrowserClientContext(
         base_url=base,
         api_key=tok,
@@ -65,7 +69,9 @@ def _post_local(
         if relay_manager.has_relay(ctx.user_id):
             t = float(timeout_sec) if timeout_sec is not None else ctx.http_timeout_sec
             logger.debug("[BitBrowser] relay path: user={} {}", ctx.user_id, path)
-            return relay_manager.call_sync(ctx.user_id, path, body, timeout=t)
+            return relay_manager.call_sync(
+                ctx.user_id, path, body, headers=_local_headers(ctx) or None, timeout=t
+            )
     # ── 直连 ─────────────────────────────────────────────────────────
     url = f"{ctx.base_url}{path}"
     headers = _local_headers(ctx)

@@ -146,12 +146,16 @@ async function connect(): Promise<void> {
     const method = (req.method as string) || 'POST'
 
     try {
+      const extraHeaders = (req.headers && typeof req.headers === 'object')
+        ? (req.headers as Record<string, string>)
+        : {}
       const init: RequestInit = {
         method,
+        headers: { ...extraHeaders },
         signal: AbortSignal.timeout(30000)
       }
       if (method !== 'GET' && body != null) {
-        init.headers = { 'Content-Type': 'application/json' }
+        init.headers = { ...extraHeaders, 'Content-Type': 'application/json' }
         init.body = JSON.stringify(body)
       }
       let resp = await fetch(targetUrl, init)

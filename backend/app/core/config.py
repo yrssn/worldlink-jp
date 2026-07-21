@@ -69,7 +69,9 @@ class Settings(BaseSettings):
 
     # ===== BitBrowser 比特浏览器（本地 Local API）=====
     # 文档：https://doc.bitbrowser.net/zh/api-jie-kou-wen-dang/liu-lan-qi-jie-kou
-    # 每个登录用户在「浏览器窗口」页自行配置本机地址与 API Token（存 users 表），此处仅全局超时与分页
+    # 每个登录用户在「浏览器窗口」页自行配置本机地址与 API Token（存 users 表）
+    # 用户未单独配置 Token 时回退用这里的全局 Token（对应客户端「设置 → Local API → API Token」）
+    bitbrowser_api_key: Optional[str] = None
     bitbrowser_http_timeout_sec: float = 60.0
     bitbrowser_list_page_size: int = 100
     bitbrowser_headless_chrome_args: str = "--headless"
