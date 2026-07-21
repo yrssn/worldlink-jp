@@ -94,7 +94,9 @@ function openCreate() {
 }
 
 function imagesToFileList(images: DmImageItem[]): UploadUserFile[] {
-  return (images || []).map((img, i) => ({
+  return (images || [])
+    .filter((img) => img.url && !img.url.startsWith('blob:'))
+    .map((img, i) => ({
     name: img.name || `image-${i + 1}`,
     url: img.url,
     status: 'success',
