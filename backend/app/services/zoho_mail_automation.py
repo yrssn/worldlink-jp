@@ -4,18 +4,14 @@ from __future__ import annotations
 import json
 import time
 from itertools import count
-from typing import Callable
 from urllib.parse import quote, urlparse
 
-import httpx
 from loguru import logger
 from sqlalchemy.orm import Session
-from websockets.exceptions import ConnectionClosed
-from websockets.sync.client import connect
 
-from app.core.config import settings
 from app.models.user import User
 from app.services import bitbrowser_service
+from app.services.cdp_transport import devtools_json, open_cdp
 
 DEFAULT_ZOHO_LOGIN_URL = (
     "https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice"
@@ -31,16 +27,7 @@ def open_zoho_mail_login(
     password: str | None,
     user: User,
     db: Session,
-    progress: "Callable[[str], None] | None" = None,
 ) -> dict[str, object]:
-    def _log(message: str) -> None:
-        logger.info("[Zoho mail] {}", message)
-        if progress is not None:
-            try:
-                progress(message)
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[Zoho mail] progress 回调失败: {}", e)
-
     target_url = normalize_zoho_login_url(login_url)
     open_result = bitbrowser_service.open_browser_window(
         browser_id,
@@ -56,54 +43,37 @@ def open_zoho_mail_login(
 
     http_base = _extract_devtools_http(open_data)
     time.sleep(1)
-    closed_count = _close_zoho_pages_until_clear(http_base)
-    page_ws, page_id = _create_page(http_base, target_url)
+    closed_count = _close_zoho_pages_until_clear(http_base, user_id=user.id)
+    page_ws, page_id = _create_page(http_base, target_url, user_id=user.id)
     time.sleep(0.5)
     final_url = target_url
     email_submitted = False
     password_submitted = False
     verification_required = False
-    password_changed_page = False
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
         page.call("Page.navigate", {"url": target_url})
         _wait_page_ready(page)
         time.sleep(1)
-        _handle_zoho_interstitials(page)
-        _log(f"打开登录页，输入注册邮箱（当前 URL: {_current_url(page)}）")
         email_submitted = _submit_zoho_email(page, email)
         final_url = _current_url(page)
-        _log(f"注册邮箱输入{'成功' if email_submitted else '失败'}（当前 URL: {final_url}）")
     if email_submitted and password:
-        refreshed_ws = _find_zoho_page_ws(http_base, preferred_target_id=page_id) or page_ws
-        with CdpPage(refreshed_ws) as page:
+        refreshed_ws = (
+            _find_zoho_page_ws(http_base, preferred_target_id=page_id, user_id=user.id)
+            or page_ws
+        )
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Runtime.enable")
             page.call("Page.bringToFront")
             _wait_page_ready(page)
-            _handle_zoho_interstitials(page)
-            _log("进入密码页，输入密码并登录")
             password_submitted = _submit_zoho_password(page, password)
-            _log(f"密码提交{'成功' if password_submitted else '失败'}（当前 URL: {_current_url(page)}）")
             if password_submitted:
                 _skip_zoho_mfa_prompt_if_present(page)
-            _handle_zoho_interstitials(page)
-            if _is_zoho_password_changed_page(page):
-                password_changed_page = True
-                final_url = _current_url(page)
-                _log(
-                    "检测到「パスワードを変更しました/密码已修改」页（会自动跳回登录页死循环），"
-                    f"该账号当前密码可能已失效，停止自动登录（当前 URL: {final_url}）"
-                )
-            else:
-                verification_required = _wait_for_zoho_post_password_state(page)
-                final_url = _current_url(page)
-                _log(
-                    f"登录结果：{'需要邮箱验证码' if verification_required else '无需验证码'}"
-                    f"（当前 URL: {final_url}）"
-                )
+            verification_required = _is_zoho_email_verification_step(page)
+            final_url = _current_url(page)
     return {
         "mail_opened": True,
         "mail_login_url": target_url,
@@ -112,7 +82,6 @@ def open_zoho_mail_login(
         "mail_email_submitted": email_submitted,
         "mail_password_submitted": password_submitted,
         "mail_verification_required": verification_required,
-        "mail_password_changed_page": password_changed_page,
         "mail_open_hint": open_result.get("hint"),
     }
 
@@ -135,13 +104,13 @@ def submit_zoho_verification_code(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_zoho_page_ws(http_base)
+    page_ws = _find_zoho_page_ws(http_base, user_id=user.id)
     if not page_ws:
         return {
             "mail_verification_code_submitted": False,
             "mail_verification_submit_hint": "未找到 Zoho 验证页面",
         }
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -181,7 +150,7 @@ def open_latest_apify_verification_link(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_zoho_page_ws(http_base)
+    page_ws = _find_zoho_page_ws(http_base, user_id=user.id)
     if not page_ws:
         logger.info("[Apify signup] Zoho page not found for Apify verification browser_id={} email={}", browser_id, email)
         return {
@@ -196,7 +165,7 @@ def open_latest_apify_verification_link(
     mail_opened = False
     link_clicked = False
     final_url = ""
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -255,7 +224,7 @@ def wait_current_zoho_inbox_ready(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_zoho_page_ws(http_base)
+    page_ws = _find_zoho_page_ws(http_base, user_id=user.id)
     if not page_ws:
         return {
             "mail_inbox_ready": False,
@@ -263,7 +232,7 @@ def wait_current_zoho_inbox_ready(
         }
     inbox_ready = False
     final_url = ""
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -278,27 +247,15 @@ def wait_current_zoho_inbox_ready(
     }
 
 
-class CdpConnectionClosed(RuntimeError):
-    """CDP 页面 WebSocket 已断开（页面被关/跳转/销毁）。
-
-    与「调用超时」区分：超时可重试，连接断开则应立刻跳出轮询，避免在死连接上空转刷屏。
-    """
-
-
 class CdpPage:
-    def __init__(self, ws_url: str):
+    def __init__(self, ws_url: str, user_id: int | None = None):
         self.ws_url = ws_url
+        self.user_id = user_id
         self._ids = count(1)
         self._ws = None
-        self._closed = False
-
-    @property
-    def closed(self) -> bool:
-        return self._ws is None or self._closed
 
     def __enter__(self) -> "CdpPage":
-        self._ws = connect(self.ws_url, open_timeout=15)
-        self._closed = False
+        self._ws = open_cdp(self.ws_url, self.user_id, open_timeout=15)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -312,29 +269,16 @@ class CdpPage:
         *,
         timeout: float = 15,
     ) -> dict[str, object]:
-        if self.closed:
-            raise CdpConnectionClosed("CDP 连接已断开")
+        if self._ws is None:
+            raise RuntimeError("CDP 未连接")
         msg_id = next(self._ids)
-        try:
-            self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
-        except (ConnectionClosed, OSError) as e:
-            self._closed = True
-            raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
+        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(f"CDP 调用超时: {method}")
-            try:
-                raw = self._ws.recv(timeout=remaining)
-            except TimeoutError:
-                # recv 自身超时：不要让 websockets.TimeoutError 冒泡崩线程，
-                # 交回循环统一判断 deadline 后抛 RuntimeError(可被调用方捕获)
-                continue
-            except (ConnectionClosed, OSError) as e:
-                # 连接已断开：标记后立刻抛 CdpConnectionClosed，让轮询循环尽快跳出
-                self._closed = True
-                raise CdpConnectionClosed(f"CDP 连接已断开: {e}") from e
+            raw = self._ws.recv(timeout=remaining)
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
                 continue
@@ -383,20 +327,17 @@ def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str) -> tuple[str, str]:
+def _create_page(http_base: str, url: str, user_id: int | None = None) -> tuple[str, str]:
     target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe='')}"
-    with httpx.Client(timeout=15, trust_env=False) as client:
-        response = client.request("PUT", target_url)
-        if response.status_code in (404, 405):
-            response = client.get(target_url)
-        response.raise_for_status()
-        data = response.json()
-        target_id = str(data.get("id") or "")
-        if target_id:
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/activate/{target_id}")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[Zoho mail] activate target {} skipped: {}", target_id, e)
+    data = devtools_json(target_url, user_id, method="PUT", timeout=15)
+    if not isinstance(data, dict):
+        data = {}
+    target_id = str(data.get("id") or "")
+    if target_id:
+        try:
+            devtools_json(f"{http_base.rstrip('/')}/json/activate/{target_id}", user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] activate target {} skipped: {}", target_id, e)
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建 Zoho 邮箱登录页失败：DevTools 未返回页面 WebSocket")
@@ -407,10 +348,11 @@ def _close_zoho_pages_until_clear(
     http_base: str,
     keep_target_id: str | None = None,
     attempts: int = 3,
+    user_id: int | None = None,
 ) -> int:
     closed = 0
     for _ in range(attempts):
-        closed_now = _close_zoho_pages(http_base, keep_target_id=keep_target_id)
+        closed_now = _close_zoho_pages(http_base, keep_target_id=keep_target_id, user_id=user_id)
         closed += closed_now
         if closed_now == 0:
             return closed
@@ -418,42 +360,44 @@ def _close_zoho_pages_until_clear(
     return closed
 
 
-def _close_zoho_pages(http_base: str, keep_target_id: str | None = None) -> int:
+def _close_zoho_pages(
+    http_base: str,
+    keep_target_id: str | None = None,
+    user_id: int | None = None,
+) -> int:
     closed = 0
-    with httpx.Client(timeout=10, trust_env=False) as client:
+    try:
+        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Zoho mail] list targets skipped: {}", e)
+        return 0
+    if not isinstance(targets, list):
+        return 0
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        target_id = str(target.get("id") or "")
+        target_url = str(target.get("url") or "")
+        if not target_id or target_id == keep_target_id or "zoho.com" not in target_url:
+            continue
         try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
+            devtools_json(f"{http_base.rstrip('/')}/json/close/{target_id}", user_id, timeout=10)
+            closed += 1
         except Exception as e:  # noqa: BLE001
-            logger.debug("[Zoho mail] list targets skipped: {}", e)
-            return 0
-        if not isinstance(targets, list):
-            return 0
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            target_id = str(target.get("id") or "")
-            target_url = str(target.get("url") or "")
-            if not target_id or target_id == keep_target_id or "zoho.com" not in target_url:
-                continue
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/close/{target_id}")
-                closed += 1
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[Zoho mail] close target {} skipped: {}", target_id, e)
+            logger.debug("[Zoho mail] close target {} skipped: {}", target_id, e)
     return closed
 
 
-def _find_zoho_page_ws(http_base: str, preferred_target_id: str | None = None) -> str | None:
-    with httpx.Client(timeout=10, trust_env=False) as client:
-        try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Zoho mail] find target skipped: {}", e)
-            return None
+def _find_zoho_page_ws(
+    http_base: str,
+    preferred_target_id: str | None = None,
+    user_id: int | None = None,
+) -> str | None:
+    try:
+        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Zoho mail] find target skipped: {}", e)
+        return None
     if not isinstance(targets, list):
         return None
     fallback_ws = None
@@ -478,16 +422,7 @@ def _find_zoho_page_ws(http_base: str, preferred_target_id: str | None = None) -
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if page.closed:
-            return
-        try:
-            state = page.evaluate("document.readyState", timeout=5)
-        except CdpConnectionClosed:
-            return
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Zoho mail] wait page ready skipped: {}", e)
-            time.sleep(0.3)
-            continue
+        state = page.evaluate("document.readyState", timeout=5)
         if state in {"interactive", "complete"}:
             return
         time.sleep(0.3)
@@ -498,53 +433,10 @@ def _current_url(page: CdpPage) -> str:
     return str(value or "")
 
 
-def _zoho_interstitial_script() -> str:
-    # 只点明确的「过场页」按钮，避免误点真正的登录提交按钮（サインインする）。
-    return (
-        "(() => {"
-        "  const safe = [/スキップ/, /後で/];"
-        "  const visible = (el) => el && el.offsetParent !== null;"
-        "  const btns = Array.from(document.querySelectorAll('button,a,[role=\"button\"],input[type=\"button\"],input[type=\"submit\"]'));"
-        "  for (const re of safe) {"
-        "    const b = btns.find((el) => visible(el) && re.test(((el.innerText || el.value || '')).trim()));"
-        "    if (b) { b.click(); return ((b.innerText || b.value || '')).trim(); }"
-        "  }"
-        "  return '';"
-        "})()"
-    )
-
-
-def _handle_zoho_interstitials(page: CdpPage) -> None:
-    """点过 Zoho 登录前后的过场页（如「パスワードを変更しました→サインイン画面に移動する」、スキップ 等）。
-
-    best-effort：最多点几次，遇到连接断开/异常直接返回，绝不长时间空转。
-    """
-    for _ in range(3):
-        if page.closed:
-            return
-        try:
-            clicked = page.evaluate(_zoho_interstitial_script(), timeout=5)
-        except CdpConnectionClosed:
-            return
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Zoho mail] 处理过场页跳过: {}", e)
-            return
-        label = str(clicked or "").strip()
-        if not label:
-            return
-        logger.info("[Zoho mail] 已点过场页按钮: {}", label)
-        time.sleep(1.5)
-        if not page.closed:
-            _wait_page_ready(page, timeout=10)
-
-
 def _skip_zoho_mfa_prompt_if_present(page: CdpPage) -> bool:
     deadline = time.monotonic() + 60
     clicked = False
     while time.monotonic() < deadline:
-        if page.closed:
-            # 页面连接已断，再轮询也只是在死连接上空转，直接跳出
-            break
         try:
             result = bool(page.evaluate(_skip_zoho_mfa_prompt_script(), timeout=5))
             clicked = clicked or result
@@ -561,8 +453,6 @@ def _skip_zoho_mfa_prompt_if_present(page: CdpPage) -> bool:
 def _wait_for_zoho_inbox(page: CdpPage, timeout: float = 120) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if page.closed:
-            break
         try:
             _skip_zoho_mfa_prompt_if_present(page)
             if _is_zoho_mail_ready(page):
@@ -827,31 +717,6 @@ def _click_apify_verify_email_link_script() -> str:
 """
 
 
-def _wait_for_zoho_post_password_state(page: CdpPage, timeout: float = 20) -> bool:
-    """提交密码后等待页面落到“邮箱验证码”或“收件箱”状态。
-
-    返回是否需要邮箱验证码。验证码页可能在密码提交后才异步渲染，
-    单次检测容易漏判，这里轮询直到出现验证码页或收件箱（或超时）。
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if page.closed:
-            break
-        try:
-            if _is_zoho_email_verification_step(page):
-                return True
-            if _is_zoho_mail_ready(page):
-                return False
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Zoho mail] wait post-password state skipped: {}", e)
-        time.sleep(0.5)
-    try:
-        return _is_zoho_email_verification_step(page)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[Zoho mail] final verification check skipped: {}", e)
-        return False
-
-
 def _is_zoho_email_verification_step(page: CdpPage) -> bool:
     return bool(
         page.evaluate(
@@ -871,201 +736,20 @@ def _is_zoho_email_verification_step(page: CdpPage) -> bool:
     )
 
 
-def _is_zoho_password_changed_page(page: CdpPage) -> bool:
-    """检测「パスワードを変更しました→自动跳回登录页」这种死循环过场页。
-
-    出现这页通常意味着该账号密码被改过、当前存的密码已失效，登录会反复跳转，无法自动完成。
-    """
-    try:
-        return bool(
-            page.evaluate(
-                """
-(() => {
-  const text = document.body ? document.body.innerText : '';
-  return /パスワードを変更しました|パスワードが変更されました|Password (has been )?changed|密码已(修改|更改|变更)/i.test(text);
-})()
-""",
-                timeout=5,
-            )
-        )
-    except CdpConnectionClosed:
-        return False
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[Zoho mail] 检测密码已修改页跳过: {}", e)
-        return False
-
-
-# ===== Zoho 登录偶发的「扭曲字符验证码」(TextCaptcha) 自动识别 =====
-# 选择器尽量宽松，覆盖 Zoho accounts 不同版本的验证码图片/输入框写法。
-_FIND_ZOHO_CAPTCHA_IMG_JS = """
-(() => {
-  const visible = (el) => {
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    const s = getComputedStyle(el);
-    return r.width > 4 && r.height > 4 && s.display !== 'none' && s.visibility !== 'hidden';
-  };
-  const cands = Array.from(document.querySelectorAll('img'));
-  const re = /captcha|cpimg|verifyimg|imgcode|seccode/i;
-  let img = cands.find((el) => visible(el) && (re.test(el.id || '') || re.test(el.className || '')
-    || re.test(el.getAttribute('src') || '') || re.test(el.getAttribute('alt') || '')));
-  if (!img) {
-    // 兜底：找到「表示された文字」输入框附近的图片
-    const input = document.querySelector('input[placeholder*="文字"], input[id*="captcha" i], input[name*="captcha" i]');
-    if (input) {
-      const scope = input.closest('div, form, section, body') || document;
-      img = Array.from(scope.querySelectorAll('img')).find((el) => visible(el)
-        && (el.naturalWidth || el.width) >= 40 && (el.naturalHeight || el.height) >= 12);
-    }
-  }
-  if (!img || !visible(img)) return null;
-  if (!(img.naturalWidth > 0)) return 'NOT_LOADED';
-  try {
-    const c = document.createElement('canvas');
-    c.width = img.naturalWidth; c.height = img.naturalHeight;
-    c.getContext('2d').drawImage(img, 0, 0);
-    return c.toDataURL('image/png');
-  } catch (e) {
-    return 'ERR:' + (e && e.message ? e.message : e);
-  }
-})()
-"""
-
-
-def _fill_zoho_captcha_script(text: str) -> str:
-    payload = json.dumps(text)
-    return (
-        "(() => {"
-        "const input = document.querySelector('input[placeholder*=\"文字\"]')"
-        " || document.querySelector('input[id*=\"captcha\" i]')"
-        " || document.querySelector('input[name*=\"captcha\" i]')"
-        " || document.querySelector('input[placeholder*=\"captcha\" i]');"
-        "if (!input) return false;"
-        "input.focus();"
-        f"input.value = {payload};"
-        "input.dispatchEvent(new Event('input', {bubbles: true}));"
-        "input.dispatchEvent(new Event('change', {bubbles: true}));"
-        f"return input.value === {payload};"
-        "})()"
-    )
-
-
-def _solve_textcaptcha_via_captcharun(image_b64: str) -> str | None:
-    """调用 CaptchaRun TextCaptcha 接口识别一张字符验证码图片，返回识别文本。"""
-    token = (settings.captcharun_api_token or "").strip()
-    if not token:
-        return None
-    url = f"{settings.captcharun_api_base.rstrip('/')}/v2/tasks"
-    payload = {"captchaType": "TextCaptcha", "image": image_b64}
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
-    try:
-        with httpx.Client(timeout=30, trust_env=False) as client:
-            resp = client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[Zoho mail] CaptchaRun TextCaptcha 请求失败: {}", e)
-        return None
-    result = data.get("result") if isinstance(data, dict) else None
-    if not isinstance(result, dict):
-        return None
-    if str(result.get("status") or "").lower() not in {"success", ""}:
-        logger.warning("[Zoho mail] CaptchaRun TextCaptcha 未成功: {}", result)
-        return None
-    text = str(result.get("text") or "").strip()
-    return text or None
-
-
-# 上一次验证码填错时（Zoho 提示「入力した文字が間違っています」），先点刷新换一张新图再识别，
-# 否则同一张图 CaptchaRun 会返回同样的错误结果，陷入死循环。
-_ZOHO_CAPTCHA_REFRESH_IF_ERROR_JS = """
-(() => {
-  const text = document.body ? document.body.innerText : '';
-  const hasError = /間違って|もう一度|入力した文字|incorrect|try again|invalid|エラー/i.test(text);
-  if (!hasError) return false;
-  const re = /refresh|reload|renew|change|更新|再読み込み|再取得/i;
-  const clsOf = (el) => {
-    const c = el.className;
-    return (c && c.baseVal !== undefined) ? c.baseVal : (c || '');
-  };
-  const cands = Array.from(document.querySelectorAll('a,button,i,span,svg,img,[role="button"]'));
-  const btn = cands.find((el) => re.test(el.getAttribute && (el.getAttribute('aria-label') || '') || '')
-    || re.test(el.title || '') || re.test(String(clsOf(el))) || re.test(el.id || ''));
-  if (btn) { btn.click(); return true; }
-  return false;
-})()
-"""
-
-
-def _solve_zoho_text_captcha_if_present(page: CdpPage) -> bool | None:
-    """检测当前页是否有字符验证码；有则用 CaptchaRun 识别并回填。
-
-    返回 None=没有验证码；True=识别并填入成功；False=有验证码但未能自动填(未配 token/识别失败)。
-    Zoho 字符验证码区分大小写且全为大写字母+数字，故识别结果统一转大写后再回填。
-    """
-    try:
-        # 若上一次填错，先刷新换一张新图，避免对同一张错图反复识别
-        refreshed = bool(page.evaluate(_ZOHO_CAPTCHA_REFRESH_IF_ERROR_JS, timeout=5))
-        if refreshed:
-            logger.info("[Zoho mail] 验证码上次填错，已点刷新换新图")
-            time.sleep(1.5)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[Zoho mail] 刷新验证码跳过: {}", e)
-    try:
-        grabbed = page.evaluate(_FIND_ZOHO_CAPTCHA_IMG_JS, timeout=8)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[Zoho mail] 抓取验证码图片跳过: {}", e)
-        return None
-    if not grabbed or not isinstance(grabbed, str):
-        return None
-    if grabbed == "NOT_LOADED":
-        return False
-    if grabbed.startswith("ERR:"):
-        logger.warning("[Zoho mail] 验证码图片转 base64 失败: {}", grabbed)
-        return False
-    if "," in grabbed and grabbed.startswith("data:"):
-        image_b64 = grabbed.split(",", 1)[1]
-    else:
-        image_b64 = grabbed
-    if not (settings.captcharun_api_token or "").strip():
-        logger.info("[Zoho mail] 检测到字符验证码，但未配置 CAPTCHARUN_API_TOKEN，回落人工输入")
-        return False
-    text = _solve_textcaptcha_via_captcharun(image_b64)
-    if not text:
-        return False
-    # Zoho 验证码区分大小写且字符集为大写字母+数字，CaptchaRun 可能返回小写，统一转大写
-    text = text.upper()
-    try:
-        filled = bool(page.evaluate(_fill_zoho_captcha_script(text), timeout=5))
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[Zoho mail] 回填验证码跳过: {}", e)
-        return False
-    if filled:
-        logger.info("[Zoho mail] 字符验证码已自动识别并填入: {}", text)
-    return filled
-
-
 def _submit_zoho_email(page: CdpPage, email: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
-        if page.closed:
-            break
-        try:
-            if _is_zoho_password_step(page):
-                return True
-            focused = bool(page.evaluate(_focus_zoho_email_script(), timeout=5))
-            submitted = False
-            if focused:
-                page.call("Input.insertText", {"text": email}, timeout=5)
-                _solve_zoho_text_captcha_if_present(page)
-                submitted = bool(page.evaluate(_click_zoho_email_next_script(email), timeout=5))
-            if not submitted:
-                submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
-            if submitted and _wait_for_password_input(page, timeout=4):
-                return True
-        except Exception as e:  # noqa: BLE001
-            # 单次 CDP 超时不应中断整段登录，记录后继续轮询重试
-            logger.debug("[Zoho mail] submit email iteration skipped: {}", e)
+        if _is_zoho_password_step(page):
+            return True
+        focused = bool(page.evaluate(_focus_zoho_email_script(), timeout=5))
+        submitted = False
+        if focused:
+            page.call("Input.insertText", {"text": email}, timeout=5)
+            submitted = bool(page.evaluate(_click_zoho_email_next_script(email), timeout=5))
+        if not submitted:
+            submitted = bool(page.evaluate(_fill_zoho_email_script(email), timeout=8))
+        if submitted and _wait_for_password_input(page, timeout=4):
+            return True
         time.sleep(0.5)
     return False
 
@@ -1073,40 +757,33 @@ def _submit_zoho_email(page: CdpPage, email: str) -> bool:
 def _submit_zoho_password(page: CdpPage, password: str) -> bool:
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
-        if page.closed:
-            break
-        try:
-            if _wait_for_password_input(page, timeout=2):
-                page.call("Page.bringToFront")
-                focused = bool(page.evaluate(_focus_zoho_password_script(), timeout=5))
-                submitted = False
-                if focused:
-                    filled = bool(page.evaluate(_clear_zoho_password_script(), timeout=5))
-                    if filled:
-                        _type_text(page, password)
-                        filled = bool(page.evaluate(_verify_zoho_password_script(password), timeout=5))
-                    if not filled:
-                        filled = bool(page.evaluate(_fill_zoho_password_only_script(password), timeout=8))
-                    if not filled:
-                        filled = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=False), timeout=8))
-                    if not filled:
-                        time.sleep(0.5)
-                        continue
-                    _solve_zoho_text_captcha_if_present(page)
-                    time.sleep(1)
-                    submitted = bool(page.evaluate(_click_zoho_password_submit_script(), timeout=5))
-                    if submitted:
-                        _press_enter(page)
-                if not submitted:
-                    submitted = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=True), timeout=8))
-                if not submitted:
-                    submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
+        if _wait_for_password_input(page, timeout=2):
+            page.call("Page.bringToFront")
+            focused = bool(page.evaluate(_focus_zoho_password_script(), timeout=5))
+            submitted = False
+            if focused:
+                filled = bool(page.evaluate(_clear_zoho_password_script(), timeout=5))
+                if filled:
+                    _type_text(page, password)
+                    filled = bool(page.evaluate(_verify_zoho_password_script(password), timeout=5))
+                if not filled:
+                    filled = bool(page.evaluate(_fill_zoho_password_only_script(password), timeout=8))
+                if not filled:
+                    filled = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=False), timeout=8))
+                if not filled:
+                    time.sleep(0.5)
+                    continue
+                time.sleep(1)
+                submitted = bool(page.evaluate(_click_zoho_password_submit_script(), timeout=5))
                 if submitted:
-                    time.sleep(2)
-                    return True
-        except Exception as e:  # noqa: BLE001
-            # 单次 CDP 超时不应中断整段登录，记录后继续轮询重试
-            logger.debug("[Zoho mail] submit password iteration skipped: {}", e)
+                    _press_enter(page)
+            if not submitted:
+                submitted = bool(page.evaluate(_force_submit_zoho_password_script(password, submit=True), timeout=8))
+            if not submitted:
+                submitted = bool(page.evaluate(_fill_zoho_password_script(password), timeout=8))
+            if submitted:
+                time.sleep(2)
+                return True
         time.sleep(0.5)
     return False
 
@@ -1143,8 +820,6 @@ def _press_enter(page: CdpPage) -> None:
 def _wait_for_password_input(page: CdpPage, timeout: float = 12) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if page.closed:
-            break
         if _is_zoho_password_step(page):
             return True
         time.sleep(0.5)
@@ -1152,12 +827,7 @@ def _wait_for_password_input(page: CdpPage, timeout: float = 12) -> bool:
 
 
 def _is_zoho_password_step(page: CdpPage) -> bool:
-    try:
-        return bool(page.evaluate(_zoho_password_step_script(), timeout=5))
-    except Exception as e:  # noqa: BLE001
-        # 单次 CDP 调用超时/异常时当作"还没到密码页"，由调用方继续轮询，避免崩线程
-        logger.debug("[Zoho mail] password-step check skipped: {}", e)
-        return False
+    return bool(page.evaluate(_zoho_password_step_script(), timeout=5))
 
 
 def _zoho_password_step_script() -> str:

@@ -8,15 +8,12 @@ from datetime import datetime
 from itertools import count
 from urllib.parse import quote, urljoin, urlparse
 
-import httpx
 from loguru import logger
 from sqlalchemy.orm import Session
-from websockets.sync.client import connect
 
-from app.core.config import settings
 from app.models.user import User
 from app.services import bitbrowser_service
-from app.services.recaptcha_solver import solve_recaptcha
+from app.services.cdp_transport import devtools_json, open_cdp
 from app.services.zoho_mail_automation import open_latest_apify_verification_link
 
 SIGNUP_URL = "https://console.apify.com/sign-up"
@@ -33,13 +30,14 @@ def _emit_progress(progress_callback: ProgressCallback | None, node: str, messag
 
 
 class CdpPage:
-    def __init__(self, ws_url: str):
+    def __init__(self, ws_url: str, user_id: int | None = None):
         self.ws_url = ws_url
+        self.user_id = user_id
         self._ids = count(1)
         self._ws = None
 
     def __enter__(self) -> "CdpPage":
-        self._ws = connect(self.ws_url, open_timeout=15)
+        self._ws = open_cdp(self.ws_url, self.user_id, open_timeout=15)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -52,15 +50,11 @@ class CdpPage:
         params: dict[str, object] | None = None,
         *,
         timeout: float = 15,
-        session_id: str | None = None,
     ) -> dict[str, object]:
         if self._ws is None:
             raise RuntimeError("CDP 未连接")
         msg_id = next(self._ids)
-        message: dict[str, object] = {"id": msg_id, "method": method, "params": params or {}}
-        if session_id:
-            message["sessionId"] = session_id
-        self._ws.send(json.dumps(message))
+        self._ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -78,13 +72,7 @@ class CdpPage:
             result = data.get("result") or {}
             return result if isinstance(result, dict) else {}
 
-    def evaluate(
-        self,
-        expression: str,
-        *,
-        timeout: float = 15,
-        session_id: str | None = None,
-    ) -> object:
+    def evaluate(self, expression: str, *, timeout: float = 15) -> object:
         result = self.call(
             "Runtime.evaluate",
             {
@@ -93,34 +81,11 @@ class CdpPage:
                 "returnByValue": True,
             },
             timeout=timeout,
-            session_id=session_id,
         )
         remote = result.get("result") or {}
         if not isinstance(remote, dict):
             return None
         return remote.get("value")
-
-    def list_all_targets(self) -> list[dict[str, object]]:
-        """列出浏览器内所有 target（含跨域 iframe，如 reCAPTCHA 的 anchor/bframe）。"""
-        try:
-            self.call("Target.setDiscoverTargets", {"discover": True}, timeout=8)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Apify signup] setDiscoverTargets skipped: {}", e)
-        result = self.call("Target.getTargets", {"filter": [{}]}, timeout=10)
-        infos = result.get("targetInfos")
-        if not isinstance(infos, list):
-            return []
-        return [t for t in infos if isinstance(t, dict)]
-
-    def attach_to_target(self, target_id: str) -> str | None:
-        """attach 到指定 target 并返回 sessionId（flatten 模式，复用同一连接）。"""
-        result = self.call(
-            "Target.attachToTarget",
-            {"targetId": target_id, "flatten": True},
-            timeout=10,
-        )
-        session_id = result.get("sessionId")
-        return str(session_id) if session_id else None
 
     def click(self, x: float, y: float) -> None:
         params = {"x": x, "y": y, "button": "left", "clickCount": 1}
@@ -164,9 +129,9 @@ def start_apify_signup(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
-    _close_apify_pages(http_base)
-    page_ws = _create_page(http_base, SIGNUP_URL)
-    with CdpPage(page_ws) as page:
+    _close_apify_pages(http_base, user_id=user.id)
+    page_ws = _create_page(http_base, SIGNUP_URL, user_id=user.id)
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Network.enable")
         page.call("Runtime.enable")
@@ -237,10 +202,6 @@ def start_apify_signup(
             "full_name": _profile_name_from_email(email),
             "username": None,
         }
-        if captcha_required and _try_auto_solve_captcha(page, browser_id, email, progress_callback):
-            captcha_required = False
-            email_already_taken = _has_email_already_taken_error(page)
-            email_verification_required = _is_email_verification_page(page)
         if captcha_required:
             logger.info(
                 "[Apify signup] human verification required; waiting browser_id={} email={}",
@@ -330,8 +291,10 @@ def start_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
-        with CdpPage(refreshed_ws) as page:
+        refreshed_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
+            http_base, SETTINGS_INTEGRATIONS_URL, user_id=user.id
+        )
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Network.enable")
             page.call("Runtime.enable")
@@ -453,7 +416,9 @@ def continue_apify_signup(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_apify_page(http_base) or _create_page(http_base, SIGNUP_URL)
+    page_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
+        http_base, SIGNUP_URL, user_id=user.id
+    )
     profile_details: dict[str, object] = {
         "submitted": False,
         "full_name": _profile_name_from_email(email),
@@ -464,7 +429,7 @@ def continue_apify_signup(
     apify_login_attempted = False
     apify_logged_in = False
     login_result: dict[str, object] = {}
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Network.enable")
         page.call("Runtime.enable")
@@ -474,9 +439,6 @@ def continue_apify_signup(
         profile_submitted = False
         email_already_taken = _has_email_already_taken_error(page)
         captcha_required = False if email_already_taken else _has_captcha(page)
-        if captcha_required and _try_auto_solve_captcha(page, browser_id, email, progress_callback):
-            captcha_required = False
-            email_already_taken = _has_email_already_taken_error(page)
         if captcha_required:
             logger.info(
                 "[Apify signup] continue found human verification; waiting browser_id={} email={}",
@@ -562,8 +524,10 @@ def continue_apify_signup(
     if can_collect_token:
         logger.info("[Apify signup] continue collecting Apify token browser_id={} email={}", browser_id, email)
         _emit_progress(progress_callback, "collect_token", "进入 Apify integrations 采集默认 API token")
-        refreshed_ws = _find_apify_page(http_base) or _create_page(http_base, SETTINGS_INTEGRATIONS_URL)
-        with CdpPage(refreshed_ws) as page:
+        refreshed_ws = _find_apify_page(http_base, user_id=user.id) or _create_page(
+            http_base, SETTINGS_INTEGRATIONS_URL, user_id=user.id
+        )
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Network.enable")
             page.call("Runtime.enable")
@@ -635,29 +599,23 @@ def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str) -> str:
+def _create_page(http_base: str, url: str, user_id: int | None = None) -> str:
     target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe=':/?&=%')}"
-    with httpx.Client(timeout=15, trust_env=False) as client:
-        response = client.request("PUT", target_url)
-        if response.status_code in (404, 405):
-            response = client.get(target_url)
-        response.raise_for_status()
-        data = response.json()
+    data = devtools_json(target_url, user_id, method="PUT", timeout=15)
+    if not isinstance(data, dict):
+        data = {}
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建 Apify 注册页失败：DevTools 未返回页面 WebSocket")
     return str(ws_url)
 
 
-def _find_apify_page(http_base: str) -> str | None:
-    with httpx.Client(timeout=10, trust_env=False) as client:
-        try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Apify signup] find target skipped: {}", e)
-            return None
+def _find_apify_page(http_base: str, user_id: int | None = None) -> str | None:
+    try:
+        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] find target skipped: {}", e)
+        return None
     if not isinstance(targets, list):
         return None
     for target in targets:
@@ -670,30 +628,31 @@ def _find_apify_page(http_base: str) -> str | None:
     return None
 
 
-def _close_apify_pages(http_base: str) -> int:
+def _close_apify_pages(http_base: str, user_id: int | None = None) -> int:
     closed = 0
-    with httpx.Client(timeout=10, trust_env=False) as client:
+    try:
+        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Apify signup] list targets skipped: {}", e)
+        return 0
+    if not isinstance(targets, list):
+        return 0
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        url = str(target.get("url") or "")
+        target_id = str(target.get("id") or "")
+        if "apify.com" not in url or not target_id:
+            continue
         try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
+            devtools_json(
+                f"{http_base.rstrip('/')}/json/close/{quote(target_id, safe='')}",
+                user_id,
+                timeout=10,
+            )
+            closed += 1
         except Exception as e:  # noqa: BLE001
-            logger.debug("[Apify signup] list targets skipped: {}", e)
-            return 0
-        if not isinstance(targets, list):
-            return 0
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            url = str(target.get("url") or "")
-            target_id = str(target.get("id") or "")
-            if "apify.com" not in url or not target_id:
-                continue
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/close/{quote(target_id, safe='')}")
-                closed += 1
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[Apify signup] close target skipped {}: {}", target_id, e)
+            logger.debug("[Apify signup] close target skipped {}: {}", target_id, e)
     return closed
 
 
@@ -758,53 +717,6 @@ def _wait_for_apify_post_submit_state(page: CdpPage, timeout: float = 15) -> Non
         except Exception as e:  # noqa: BLE001
             logger.debug("[Apify signup] wait post submit skipped: {}", e)
         time.sleep(0.5)
-
-
-def _try_auto_solve_captcha(
-    page: CdpPage,
-    browser_id: str,
-    email: str,
-    progress_callback: ProgressCallback | None = None,
-) -> bool:
-    """检测到 reCAPTCHA 时先用 CaptchaRun 自动识别求解。
-
-    返回是否已通过（True 表示无需再人工处理）。未配置 token 或失败时返回 False，
-    由调用方回落到原有的人工验证等待逻辑。
-    """
-    if not (settings.captcharun_api_token or "").strip():
-        return False
-    _emit_progress(progress_callback, "captcha_auto_solve", "检测到 reCAPTCHA，尝试用 CaptchaRun 自动识别")
-    try:
-        result = solve_recaptcha(
-            page,
-            log=lambda msg: _emit_progress(progress_callback, "captcha_auto_solve", msg),
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "[Apify signup] auto captcha solve error browser_id={} email={}: {}",
-            browser_id,
-            email,
-            e,
-        )
-        return False
-    logger.info(
-        "[Apify signup] auto captcha solve browser_id={} email={} result={}",
-        browser_id,
-        email,
-        result,
-    )
-    if bool(result.get("solved")):
-        time.sleep(1.5)  # 给 reCAPTCHA token 回填留出时间
-        still_captcha = _has_captcha(page)
-        if not still_captcha:
-            _emit_progress(progress_callback, "captcha_auto_solve", "CaptchaRun 自动识别完成，人机验证已通过")
-            return True
-    _emit_progress(
-        progress_callback,
-        "captcha_auto_solve",
-        f"CaptchaRun 自动识别未通过，转人工：{result.get('reason') or '未知原因'}",
-    )
-    return False
 
 
 def _wait_for_human_verification_result(
@@ -1178,7 +1090,7 @@ def _has_captcha(page: CdpPage) -> bool:
   }).join(' ');
   const scripts = Array.from(document.querySelectorAll('script')).map((el) => el.src || '').join(' ');
   const text = `${bodyText} ${frames} ${scripts}`;
-  return /hcaptcha|arkose|recaptcha|challenge|Select all squares|Select all images|verify\\s+you\\s+are\\s+human|I'm not a robot/i.test(text);
+  return /hcaptcha|arkose|challenge|Select all squares|verify\\s+you\\s+are\\s+human|I'm not a robot/i.test(text);
 })()
 """
     return bool(page.evaluate(script, timeout=5))
