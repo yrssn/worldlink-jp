@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session, joinedload
 
@@ -20,8 +20,11 @@ from app.schemas.dm import (
     DmContentOut,
     DmContentUpdate,
     DmImageItem,
+    DmOutreachOut,
+    DmOutreachStart,
     DmUploadOut,
 )
+from app.services.fb_dm_automation import open_fb_profile_and_message
 
 router = APIRouter(prefix="/dm", tags=["dm"])
 
@@ -298,6 +301,49 @@ def delete_dm_content(
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+# ----- 私信建联自动化 -----
+
+
+@router.post("/outreach/start", response_model=DmOutreachOut)
+def start_dm_outreach(
+    body: DmOutreachStart,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """在指定 BitBrowser 窗口中打开达人主页并点击「发消息」（私信建联第一步）。"""
+    content = (
+        db.query(DmContent)
+        .filter(DmContent.id == body.content_id, DmContent.owner_id == user.id)
+        .first()
+    )
+    if not content:
+        raise HTTPException(status_code=404, detail="私信内容不存在")
+    try:
+        result = open_fb_profile_and_message(
+            body.browser_id.strip(),
+            body.url,
+            user,
+            db,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return DmOutreachOut(
+        ok=True,
+        browser_id=body.browser_id.strip(),
+        content_id=content.id,
+        content_title=content.title,
+        page_opened=bool(result.get("page_opened")),
+        message_clicked=bool(result.get("message_clicked")),
+        matched_text=(str(result["matched_text"]) if result.get("matched_text") else None),
+        final_url=(str(result["final_url"]) if result.get("final_url") else None),
+        open_hint=result.get("open_hint"),
+    )
 
 
 # ----- 上传 -----
