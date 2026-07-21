@@ -104,7 +104,7 @@ function imagesToFileList(images: DmImageItem[]): UploadUserFile[] {
 
 function fileListToImages(files: UploadUserFile[]): DmImageItem[] {
   return files
-    .filter((f) => f.url)
+    .filter((f) => f.url && !f.url.startsWith('blob:'))
     .map((f, i) => ({
       url: f.url!,
       path: (f.response as { path?: string } | undefined)?.path,
@@ -147,14 +147,15 @@ const handleUpload: UploadProps['httpRequest'] = async (options) => {
   uploading.value = true
   try {
     const r = await dmApi.uploadImage(file)
-    const item: UploadUserFile = {
-      name: r.name,
-      url: r.url,
-      status: 'success',
-      uid: Date.now(),
-      response: r
+    // el-upload（v-model:file-list）已自动把该文件加入列表，这里只回填服务端 url/response
+    const uid = (file as File & { uid?: number }).uid
+    const entry = imageFileList.value.find((f) => f.uid === uid)
+    if (entry) {
+      entry.name = r.name
+      entry.url = r.url
+      entry.response = r
+      entry.status = 'success'
     }
-    imageFileList.value = [...imageFileList.value, item]
     options.onSuccess?.(r)
   } catch (e) {
     options.onError?.(e as any)
