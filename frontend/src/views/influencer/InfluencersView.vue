@@ -301,9 +301,18 @@ async function startDmOutreach() {
       browser_id: dmBrowserId.value,
       content_id: dmContentId.value,
     })
-    if (r.message_clicked) {
-      ElMessage.success('已进入主页并点击「发消息」，对话框已打开')
+    if (r.text_sent || r.images_sent > 0) {
+      const parts = [
+        r.text_sent ? '正文' : '',
+        r.images_sent > 0 ? `${r.images_sent} 张图片` : '',
+      ].filter(Boolean)
+      ElMessage.success(
+        `私信已发送（${parts.join(' + ')}）${r.scrape_task_id != null ? '，已自动发起主页抓取' : ''}`,
+      )
       dmDialogVisible.value = false
+      loadTasks()
+    } else if (r.message_clicked) {
+      ElMessage.warning('已打开聊天窗，但发送未确认成功，请在窗口内检查')
     } else {
       ElMessage.warning('已进入主页，但未找到「发消息」按钮（请确认窗口内已登录 Facebook）')
     }
@@ -686,7 +695,7 @@ onUnmounted(() => {
           </el-select>
         </el-form-item>
         <div style="color: #909399; font-size: 12px; margin-left: 100px">
-          将在选中窗口自动打开达人主页并点击「发消息」，后续步骤逐步完善
+          将在选中窗口自动打开达人主页、点「发消息」并发送所选内容（含图片），成功后自动发起主页抓取
         </div>
       </el-form>
       <template #footer>

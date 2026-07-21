@@ -1,8 +1,11 @@
-"""Facebook 私信建联的浏览器自动化步骤（第一步：进主页并点「发消息」）。"""
+"""Facebook 私信建联的浏览器自动化：进主页→点「发消息」→在聊天小窗发送正文与图片。"""
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import time
+from pathlib import Path
 from typing import Callable
 
 from loguru import logger
@@ -38,6 +41,52 @@ _CLICK_MESSAGE_JS = """
 """
 
 
+# 定位聊天小窗里的消息输入框（contenteditable 的 textbox）并聚焦
+_FOCUS_CHAT_INPUT_JS = """
+(() => {
+  const boxes = Array.from(
+    document.querySelectorAll('div[role="textbox"][contenteditable="true"]')
+  ).filter((el) => el.offsetParent !== null);
+  if (!boxes.length) return { focused: false };
+  const el = boxes[boxes.length - 1];
+  el.scrollIntoView({ block: 'center' });
+  el.focus();
+  return { focused: true, label: (el.getAttribute('aria-label') || '').trim() };
+})()
+"""
+
+_CHAT_INPUT_TEXT_JS = """
+(() => {
+  const boxes = Array.from(
+    document.querySelectorAll('div[role="textbox"][contenteditable="true"]')
+  ).filter((el) => el.offsetParent !== null);
+  if (!boxes.length) return null;
+  return (boxes[boxes.length - 1].innerText || '').trim();
+})()
+"""
+
+# 把 base64 图片以粘贴事件注入聊天输入框（FB 支持粘贴图片）
+_PASTE_IMAGE_JS_TEMPLATE = """
+(() => {
+  const boxes = Array.from(
+    document.querySelectorAll('div[role="textbox"][contenteditable="true"]')
+  ).filter((el) => el.offsetParent !== null);
+  if (!boxes.length) return { pasted: false, reason: 'no-textbox' };
+  const el = boxes[boxes.length - 1];
+  el.focus();
+  const bin = atob(%(b64)s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const file = new File([bytes], %(name)s, { type: %(mime)s });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  const evt = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
+  el.dispatchEvent(evt);
+  return { pasted: true };
+})()
+"""
+
+
 def _message_button_js() -> str:
     return _CLICK_MESSAGE_JS % json.dumps(list(_MESSAGE_BUTTON_TEXTS), ensure_ascii=False)
 
@@ -47,11 +96,14 @@ def open_fb_profile_and_message(
     profile_url: str,
     user: User,
     db: Session,
+    message_text: str | None = None,
+    image_paths: "list[Path] | None" = None,
     progress: "Callable[[str], None] | None" = None,
 ) -> dict[str, object]:
-    """在指定 BitBrowser 窗口中打开达人主页并点击「发消息」按钮。
+    """在指定 BitBrowser 窗口中打开达人主页、点「发消息」，并在聊天小窗发送正文/图片。
 
-    返回 dict：page_opened / message_clicked / matched_text / final_url。
+    返回 dict：page_opened / message_clicked / matched_text / text_sent /
+    images_sent / final_url。
     """
 
     def _log(message: str) -> None:
@@ -91,6 +143,8 @@ def open_fb_profile_and_message(
     time.sleep(1)
     message_clicked = False
     matched_text: str | None = None
+    text_sent = False
+    images_sent = 0
     final_url = url
     with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
@@ -100,8 +154,12 @@ def open_fb_profile_and_message(
         _log("主页加载完成，查找「发消息」按钮")
         message_clicked, matched_text = _click_message_button(page)
         if message_clicked:
-            _log(f"已点击「{matched_text}」按钮，等待对话框打开")
+            _log(f"已点击「{matched_text}」按钮，等待聊天小窗打开")
             time.sleep(2)
+            if message_text or image_paths:
+                text_sent, images_sent = _send_chat_message(
+                    page, message_text, image_paths or [], _log
+                )
         else:
             _log("未找到「发消息」按钮（可能未登录 Facebook，或对方未开放私信）")
         final_url = str(page.evaluate("window.location.href", timeout=5) or url)
@@ -109,9 +167,82 @@ def open_fb_profile_and_message(
         "page_opened": True,
         "message_clicked": message_clicked,
         "matched_text": matched_text,
+        "text_sent": text_sent,
+        "images_sent": images_sent,
         "final_url": final_url,
         "open_hint": open_result.get("hint"),
     }
+
+
+def _send_chat_message(
+    page: CdpPage,
+    message_text: str | None,
+    image_paths: "list[Path]",
+    _log: "Callable[[str], None]",
+) -> tuple[bool, int]:
+    """在已打开的聊天小窗里发送正文与图片，返回 (text_sent, images_sent)。"""
+    if not _focus_chat_input(page):
+        _log("未找到聊天输入框，无法自动发送（小窗可能未打开）")
+        return False, 0
+    text_sent = False
+    images_sent = 0
+    text = (message_text or "").strip()
+    if text:
+        _log("输入私信正文")
+        page.call("Input.insertText", {"text": text}, timeout=15)
+        time.sleep(0.5)
+        _press_enter(page)
+        time.sleep(1.5)
+        remaining = page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5)
+        text_sent = not str(remaining or "").strip()
+        _log(f"正文发送{'成功' if text_sent else '可能失败（输入框未清空）'}")
+    for path in image_paths:
+        try:
+            raw = path.read_bytes()
+        except OSError as e:
+            _log(f"读取图片失败，跳过 {path.name}: {e}")
+            continue
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        js = _PASTE_IMAGE_JS_TEMPLATE % {
+            "b64": json.dumps(base64.b64encode(raw).decode("ascii")),
+            "name": json.dumps(path.name, ensure_ascii=False),
+            "mime": json.dumps(mime),
+        }
+        result = page.evaluate(js, timeout=30)
+        if not (isinstance(result, dict) and result.get("pasted")):
+            _log(f"图片粘贴失败，跳过 {path.name}")
+            continue
+        _log(f"已粘贴图片 {path.name}，等待上传预览")
+        time.sleep(3)
+        _press_enter(page)
+        time.sleep(2)
+        images_sent += 1
+        _log(f"图片 {path.name} 已发送")
+    return text_sent, images_sent
+
+
+def _focus_chat_input(page: CdpPage, attempts: int = 8, interval: float = 1.0) -> bool:
+    for _ in range(attempts):
+        try:
+            result = page.evaluate(_FOCUS_CHAT_INPUT_JS, timeout=10)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[FB DM] focus chat input skipped: {}", e)
+            result = None
+        if isinstance(result, dict) and result.get("focused"):
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _press_enter(page: CdpPage) -> None:
+    common = {
+        "key": "Enter",
+        "code": "Enter",
+        "windowsVirtualKeyCode": 13,
+        "nativeVirtualKeyCode": 13,
+    }
+    page.call("Input.dispatchKeyEvent", {"type": "keyDown", "text": "\r", **common}, timeout=10)
+    page.call("Input.dispatchKeyEvent", {"type": "keyUp", **common}, timeout=10)
 
 
 def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:

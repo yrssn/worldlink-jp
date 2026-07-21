@@ -46,6 +46,9 @@ export interface DmOutreachResult {
   page_opened: boolean
   message_clicked: boolean
   matched_text?: string | null
+  text_sent: boolean
+  images_sent: number
+  scrape_task_id?: number | null
   final_url?: string | null
   open_hint?: unknown
 }
@@ -77,7 +80,7 @@ export const dmApi = {
   deleteContent: (id: number) => http.delete(`/dm/contents/${id}`),
 
   startOutreach: (data: { url: string; browser_id: string; content_id: number }) =>
-    http.post<unknown, DmOutreachResult>('/dm/outreach/start', data, { timeout: 180000 }),
+    http.post<unknown, DmOutreachResult>('/dm/outreach/start', data, { timeout: 300000 }),
 
   uploadImage: (file: File) => {
     const fd = new FormData()

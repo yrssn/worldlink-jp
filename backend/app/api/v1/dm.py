@@ -1,16 +1,19 @@
 """私信内容：分类、模板、图片上传。"""
 from __future__ import annotations
 
+import threading
 import uuid
 from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.deps import get_current_user, get_db
 from app.models.dm import DmCategory, DmContent
+from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.user import User
 from app.schemas.dm import (
     DmCategoryCreate,
@@ -24,6 +27,7 @@ from app.schemas.dm import (
     DmOutreachStart,
     DmUploadOut,
 )
+from app.api.v1.influencer import _run_scrape_profile_bg
 from app.services.fb_dm_automation import open_fb_profile_and_message
 
 router = APIRouter(prefix="/dm", tags=["dm"])
@@ -320,12 +324,26 @@ def start_dm_outreach(
     )
     if not content:
         raise HTTPException(status_code=404, detail="私信内容不存在")
+    image_paths: list[Path] = []
+    images = content.images if isinstance(content.images, list) else []
+    upload_root = _dm_upload_root()
+    for img in images:
+        rel = str(img.get("path") or "").strip() if isinstance(img, dict) else ""
+        if not rel:
+            continue
+        p = (upload_root / rel).resolve()
+        if upload_root.resolve() not in p.parents:
+            continue
+        if p.is_file():
+            image_paths.append(p)
     try:
         result = open_fb_profile_and_message(
             body.browser_id.strip(),
             body.url,
             user,
             db,
+            message_text=content.content,
+            image_paths=image_paths,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -333,6 +351,18 @@ def start_dm_outreach(
         raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+    scrape_task_id: int | None = None
+    if result.get("text_sent") or result.get("images_sent"):
+        task = InfluencerScrapeTask(
+            owner_id=user.id, platform="facebook", url=body.url.strip(), status="pending"
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        scrape_task_id = task.id
+        threading.Thread(
+            target=_run_scrape_profile_bg, args=(task.id,), daemon=True
+        ).start()
     return DmOutreachOut(
         ok=True,
         browser_id=body.browser_id.strip(),
@@ -341,6 +371,9 @@ def start_dm_outreach(
         page_opened=bool(result.get("page_opened")),
         message_clicked=bool(result.get("message_clicked")),
         matched_text=(str(result["matched_text"]) if result.get("matched_text") else None),
+        text_sent=bool(result.get("text_sent")),
+        images_sent=int(result.get("images_sent") or 0),
+        scrape_task_id=scrape_task_id,
         final_url=(str(result["final_url"]) if result.get("final_url") else None),
         open_hint=result.get("open_hint"),
     )
@@ -369,3 +402,15 @@ async def upload_dm_image(
     dest.write_bytes(raw)
     rel = f"{user.id}/{safe_name}"
     return DmUploadOut(url=_media_url(user.id, safe_name), path=rel, name=file.filename)
+
+
+@router.get("/media/{owner_id}/{filename}")
+def get_dm_media(owner_id: int, filename: str):
+    """返回已上传的私信图片（文件名为随机 uuid，供 <img> 标签直接加载）。"""
+    name = Path(filename).name
+    if name != filename or Path(name).suffix.lower() not in _ALLOWED_IMAGE_SUFFIX:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    path = _dm_upload_root() / str(owner_id) / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在")
+    return FileResponse(path)
