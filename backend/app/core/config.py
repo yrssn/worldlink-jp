@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # 每个登录用户在「浏览器窗口」页自行配置本机地址与 API Token（存 users 表）
     # 用户未单独配置 Token 时回退用这里的全局 Token（对应客户端「设置 → Local API → API Token」）
     bitbrowser_api_key: Optional[str] = None
+    # 共享中继 agent（跑在 BitBrowser 电脑上的 scripts/bitbrowser_relay_agent.py）的连接令牌；
+    # 留空则禁用 agent 入口
+    bitbrowser_relay_agent_token: Optional[str] = None
     bitbrowser_http_timeout_sec: float = 60.0
     bitbrowser_list_page_size: int = 100
     bitbrowser_headless_chrome_args: str = "--headless"

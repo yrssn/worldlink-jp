@@ -30,6 +30,9 @@ from typing import Any
 
 from loguru import logger
 
+# 共享中继 agent（跑在 BitBrowser 所在电脑的独立脚本）的路由键；真实用户 id 从 1 开始
+SHARED_RELAY_KEY = 0
+
 
 class _CdpTunnel:
     def __init__(self, user_id: int, loop: asyncio.AbstractEventLoop) -> None:
@@ -52,10 +55,21 @@ class BitBrowserRelayManager:
 
     # ── 连接状态 ────────────────────────────────────────────────────
     def has_relay(self, user_id: int) -> bool:
-        return user_id in self._connections
+        return user_id in self._connections or SHARED_RELAY_KEY in self._connections
+
+    def has_shared_relay(self) -> bool:
+        return SHARED_RELAY_KEY in self._connections
 
     def connected_user_ids(self) -> list[int]:
         return list(self._connections.keys())
+
+    def _route_key(self, user_id: int) -> int | None:
+        """优先用户自己的页面中继，否则回退到共享 agent 中继。"""
+        if user_id in self._connections:
+            return user_id
+        if SHARED_RELAY_KEY in self._connections:
+            return SHARED_RELAY_KEY
+        return None
 
     # ── WebSocket 生命周期（async，在路由中 await）──────────────────
     async def connect(self, user_id: int, ws: Any) -> None:
@@ -136,10 +150,11 @@ class BitBrowserRelayManager:
         headers: dict[str, str] | None = None,
         timeout: float = 30.0,
     ) -> Any:
-        ws = self._connections.get(user_id)
+        key = self._route_key(user_id)
+        ws = self._connections.get(key) if key is not None else None
         if ws is None:
             raise RuntimeError(
-                "BitBrowser 中继未连接——请确保管理端页面已打开且中继已启用"
+                "BitBrowser 中继未连接——请确保 BitBrowser 电脑上的中继 agent 已启动（或管理端页面已打开）"
             )
         req_id = str(uuid.uuid4())
         loop = asyncio.get_event_loop()
@@ -192,14 +207,15 @@ class BitBrowserRelayManager:
 
     # ── CDP 隧道 ─────────────────────────────────────────────
     async def _cdp_open_async(self, user_id: int, ws_url: str, open_timeout: float) -> str:
-        ws = self._connections.get(user_id)
-        if ws is None:
+        key = self._route_key(user_id)
+        ws = self._connections.get(key) if key is not None else None
+        if ws is None or key is None:
             raise RuntimeError(
-                "BitBrowser 中继未连接——请确保管理端页面已打开且中继已启用"
+                "BitBrowser 中继未连接——请确保 BitBrowser 电脑上的中继 agent 已启动（或管理端页面已打开）"
             )
         tid = str(uuid.uuid4())
         loop = asyncio.get_event_loop()
-        tunnel = _CdpTunnel(user_id, loop)
+        tunnel = _CdpTunnel(key, loop)
         self._tunnels[tid] = tunnel
         try:
             await ws.send_json({"type": "cdp_open", "id": tid, "url": ws_url})
