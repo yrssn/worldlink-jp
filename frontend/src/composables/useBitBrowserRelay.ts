@@ -15,6 +15,14 @@ export const relayConnected = ref(false)
 
 let ws: WebSocket | null = null
 let localBbUrl = ''
+const cdpSockets = new Map<string, WebSocket>()
+
+function closeAllCdpSockets() {
+  cdpSockets.forEach((sock) => {
+    try { sock.close() } catch { /* ignore */ }
+  })
+  cdpSockets.clear()
+}
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let destroyed = false
 let currentToken = ''
@@ -64,6 +72,7 @@ async function connect(): Promise<void> {
     if (socket !== ws) return
     relayConnected.value = false
     ws = null
+    closeAllCdpSockets()
     if (!destroyed) {
       reconnectTimer = setTimeout(connect, 5000)
     }
@@ -81,19 +90,79 @@ async function connect(): Promise<void> {
     } catch {
       return
     }
-    if (req.type !== 'req' || typeof req.id !== 'string') return
-
-    const path = req.path as string
-    const body = req.body ?? {}
+    if (typeof req.id !== 'string') return
     const reqId = req.id
 
+    // ── CDP 隧道：后端通过此页面连接本机窗口的 DevTools WebSocket ──
+    if (req.type === 'cdp_open' && typeof req.url === 'string') {
+      try {
+        const cdp = new WebSocket(req.url)
+        let opened = false
+        cdp.onopen = () => {
+          opened = true
+          cdpSockets.set(reqId, cdp)
+          socket.send(JSON.stringify({ type: 'cdp_opened', id: reqId }))
+        }
+        cdp.onmessage = (ev: MessageEvent) => {
+          socket.send(JSON.stringify({ type: 'cdp_msg', id: reqId, data: String(ev.data) }))
+        }
+        cdp.onclose = () => {
+          if (opened) {
+            cdpSockets.delete(reqId)
+            socket.send(JSON.stringify({ type: 'cdp_closed', id: reqId }))
+          } else {
+            socket.send(JSON.stringify({ type: 'cdp_opened', id: reqId, error: '无法连接本机 CDP WebSocket（窗口可能已关闭）' }))
+          }
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        socket.send(JSON.stringify({ type: 'cdp_opened', id: reqId, error: msg }))
+      }
+      return
+    }
+    if (req.type === 'cdp_msg') {
+      const sock = cdpSockets.get(reqId)
+      if (sock && sock.readyState === WebSocket.OPEN) {
+        sock.send(String(req.data ?? ''))
+      }
+      return
+    }
+    if (req.type === 'cdp_close') {
+      const sock = cdpSockets.get(reqId)
+      cdpSockets.delete(reqId)
+      if (sock) {
+        try { sock.close() } catch { /* ignore */ }
+      }
+      return
+    }
+
+    if (req.type !== 'req') return
+
+    const path = req.path as string
+    const body = req.body
+    // 若后端指定了绝对地址（DevTools /json/* 接口），则直接请求该地址
+    const isAbsolute = typeof req.url === 'string' && !!req.url
+    const targetUrl = isAbsolute ? (req.url as string) : `${localBbUrl}${path}`
+    const method = (req.method as string) || 'POST'
+
     try {
-      const resp = await fetch(`${localBbUrl}${path}`, {
-        method: (req.method as string) || 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      const init: RequestInit = {
+        method,
         signal: AbortSignal.timeout(30000)
-      })
+      }
+      if (method !== 'GET' && body != null) {
+        init.headers = { 'Content-Type': 'application/json' }
+        init.body = JSON.stringify(body)
+      }
+      let resp = await fetch(targetUrl, init)
+      // DevTools 旧版内核不支持 PUT /json/new，回退 GET
+      if (isAbsolute && method === 'PUT' && (resp.status === 404 || resp.status === 405)) {
+        resp = await fetch(targetUrl, { method: 'GET', signal: AbortSignal.timeout(30000) })
+      }
+      if (isAbsolute && !resp.ok) {
+        socket.send(JSON.stringify({ type: 'res', id: reqId, error: `HTTP ${resp.status}` }))
+        return
+      }
       let respBody: unknown = {}
       try { respBody = await resp.json() } catch { /* empty body */ }
       socket.send(JSON.stringify({ type: 'res', id: reqId, status: resp.status, body: respBody }))
@@ -107,6 +176,7 @@ async function connect(): Promise<void> {
 function disconnect(): void {
   destroyed = true
   stopReconnect()
+  closeAllCdpSockets()
   if (ws) {
     try { ws.close() } catch { /* ignore */ }
     ws = null

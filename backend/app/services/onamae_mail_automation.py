@@ -6,12 +6,11 @@ import time
 from itertools import count
 from urllib.parse import quote, urlparse
 
-import httpx
 from sqlalchemy.orm import Session
-from websockets.sync.client import connect
 
 from app.models.user import User
 from app.services import bitbrowser_service
+from app.services.cdp_transport import devtools_json, open_cdp
 
 
 def open_onamae_mail_login(
@@ -36,8 +35,8 @@ def open_onamae_mail_login(
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
 
     http_base = _extract_devtools_http(open_data)
-    page_ws, _page_id = _create_page(http_base, target_url)
-    with CdpPage(page_ws) as page:
+    page_ws, _page_id = _create_page(http_base, target_url, user_id=user.id)
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -74,13 +73,14 @@ def normalize_onamae_login_url(login_url: str | None) -> str:
 
 
 class CdpPage:
-    def __init__(self, ws_url: str):
+    def __init__(self, ws_url: str, user_id: int | None = None):
         self.ws_url = ws_url
+        self.user_id = user_id
         self._ids = count(1)
         self._ws = None
 
     def __enter__(self) -> "CdpPage":
-        self._ws = connect(self.ws_url, open_timeout=15)
+        self._ws = open_cdp(self.ws_url, self.user_id, open_timeout=15)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -143,20 +143,17 @@ def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str) -> tuple[str, str]:
+def _create_page(http_base: str, url: str, user_id: int | None = None) -> tuple[str, str]:
     target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe='')}"
-    with httpx.Client(timeout=15, trust_env=False) as client:
-        response = client.request("PUT", target_url)
-        if response.status_code in (404, 405):
-            response = client.get(target_url)
-        response.raise_for_status()
-        data = response.json()
-        target_id = str(data.get("id") or "")
-        if target_id:
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/activate/{target_id}")
-            except Exception:
-                pass
+    data = devtools_json(target_url, user_id, method="PUT", timeout=15)
+    if not isinstance(data, dict):
+        data = {}
+    target_id = str(data.get("id") or "")
+    if target_id:
+        try:
+            devtools_json(f"{http_base.rstrip('/')}/json/activate/{target_id}", user_id)
+        except Exception:
+            pass
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建お名前.com Webmail 登录页失败：DevTools 未返回页面 WebSocket")

@@ -6,13 +6,12 @@ import time
 from itertools import count
 from urllib.parse import quote, urlparse
 
-import httpx
 from loguru import logger
 from sqlalchemy.orm import Session
-from websockets.sync.client import connect
 
 from app.models.user import User
 from app.services import bitbrowser_service
+from app.services.cdp_transport import devtools_json, open_cdp
 
 DEFAULT_ZOHO_LOGIN_URL = (
     "https://accounts.zoho.com/signin?service_language=ja&servicename=VirtualOffice"
@@ -44,14 +43,14 @@ def open_zoho_mail_login(
 
     http_base = _extract_devtools_http(open_data)
     time.sleep(1)
-    closed_count = _close_zoho_pages_until_clear(http_base)
-    page_ws, page_id = _create_page(http_base, target_url)
+    closed_count = _close_zoho_pages_until_clear(http_base, user_id=user.id)
+    page_ws, page_id = _create_page(http_base, target_url, user_id=user.id)
     time.sleep(0.5)
     final_url = target_url
     email_submitted = False
     password_submitted = False
     verification_required = False
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -61,8 +60,11 @@ def open_zoho_mail_login(
         email_submitted = _submit_zoho_email(page, email)
         final_url = _current_url(page)
     if email_submitted and password:
-        refreshed_ws = _find_zoho_page_ws(http_base, preferred_target_id=page_id) or page_ws
-        with CdpPage(refreshed_ws) as page:
+        refreshed_ws = (
+            _find_zoho_page_ws(http_base, preferred_target_id=page_id, user_id=user.id)
+            or page_ws
+        )
+        with CdpPage(refreshed_ws, user_id=user.id) as page:
             page.call("Page.enable")
             page.call("Runtime.enable")
             page.call("Page.bringToFront")
@@ -102,13 +104,13 @@ def submit_zoho_verification_code(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_zoho_page_ws(http_base)
+    page_ws = _find_zoho_page_ws(http_base, user_id=user.id)
     if not page_ws:
         return {
             "mail_verification_code_submitted": False,
             "mail_verification_submit_hint": "未找到 Zoho 验证页面",
         }
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -148,7 +150,7 @@ def open_latest_apify_verification_link(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_zoho_page_ws(http_base)
+    page_ws = _find_zoho_page_ws(http_base, user_id=user.id)
     if not page_ws:
         logger.info("[Apify signup] Zoho page not found for Apify verification browser_id={} email={}", browser_id, email)
         return {
@@ -163,7 +165,7 @@ def open_latest_apify_verification_link(
     mail_opened = False
     link_clicked = False
     final_url = ""
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -222,7 +224,7 @@ def wait_current_zoho_inbox_ready(
     if not isinstance(open_data, dict) or not open_data:
         raise RuntimeError("BitBrowser 已打开，但未返回 CDP 连接信息；请先关再开该环境后重试")
     http_base = _extract_devtools_http(open_data)
-    page_ws = _find_zoho_page_ws(http_base)
+    page_ws = _find_zoho_page_ws(http_base, user_id=user.id)
     if not page_ws:
         return {
             "mail_inbox_ready": False,
@@ -230,7 +232,7 @@ def wait_current_zoho_inbox_ready(
         }
     inbox_ready = False
     final_url = ""
-    with CdpPage(page_ws) as page:
+    with CdpPage(page_ws, user_id=user.id) as page:
         page.call("Page.enable")
         page.call("Runtime.enable")
         page.call("Page.bringToFront")
@@ -246,13 +248,14 @@ def wait_current_zoho_inbox_ready(
 
 
 class CdpPage:
-    def __init__(self, ws_url: str):
+    def __init__(self, ws_url: str, user_id: int | None = None):
         self.ws_url = ws_url
+        self.user_id = user_id
         self._ids = count(1)
         self._ws = None
 
     def __enter__(self) -> "CdpPage":
-        self._ws = connect(self.ws_url, open_timeout=15)
+        self._ws = open_cdp(self.ws_url, self.user_id, open_timeout=15)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -324,20 +327,17 @@ def _extract_devtools_http(open_data: dict[str, object]) -> str:
     raise RuntimeError("BitBrowser /browser/open 返回中缺少 http/ws CDP 地址")
 
 
-def _create_page(http_base: str, url: str) -> tuple[str, str]:
+def _create_page(http_base: str, url: str, user_id: int | None = None) -> tuple[str, str]:
     target_url = f"{http_base.rstrip('/')}/json/new?{quote(url, safe='')}"
-    with httpx.Client(timeout=15, trust_env=False) as client:
-        response = client.request("PUT", target_url)
-        if response.status_code in (404, 405):
-            response = client.get(target_url)
-        response.raise_for_status()
-        data = response.json()
-        target_id = str(data.get("id") or "")
-        if target_id:
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/activate/{target_id}")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[Zoho mail] activate target {} skipped: {}", target_id, e)
+    data = devtools_json(target_url, user_id, method="PUT", timeout=15)
+    if not isinstance(data, dict):
+        data = {}
+    target_id = str(data.get("id") or "")
+    if target_id:
+        try:
+            devtools_json(f"{http_base.rstrip('/')}/json/activate/{target_id}", user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Zoho mail] activate target {} skipped: {}", target_id, e)
     ws_url = data.get("webSocketDebuggerUrl")
     if not ws_url:
         raise RuntimeError("创建 Zoho 邮箱登录页失败：DevTools 未返回页面 WebSocket")
@@ -348,10 +348,11 @@ def _close_zoho_pages_until_clear(
     http_base: str,
     keep_target_id: str | None = None,
     attempts: int = 3,
+    user_id: int | None = None,
 ) -> int:
     closed = 0
     for _ in range(attempts):
-        closed_now = _close_zoho_pages(http_base, keep_target_id=keep_target_id)
+        closed_now = _close_zoho_pages(http_base, keep_target_id=keep_target_id, user_id=user_id)
         closed += closed_now
         if closed_now == 0:
             return closed
@@ -359,42 +360,44 @@ def _close_zoho_pages_until_clear(
     return closed
 
 
-def _close_zoho_pages(http_base: str, keep_target_id: str | None = None) -> int:
+def _close_zoho_pages(
+    http_base: str,
+    keep_target_id: str | None = None,
+    user_id: int | None = None,
+) -> int:
     closed = 0
-    with httpx.Client(timeout=10, trust_env=False) as client:
+    try:
+        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Zoho mail] list targets skipped: {}", e)
+        return 0
+    if not isinstance(targets, list):
+        return 0
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        target_id = str(target.get("id") or "")
+        target_url = str(target.get("url") or "")
+        if not target_id or target_id == keep_target_id or "zoho.com" not in target_url:
+            continue
         try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
+            devtools_json(f"{http_base.rstrip('/')}/json/close/{target_id}", user_id, timeout=10)
+            closed += 1
         except Exception as e:  # noqa: BLE001
-            logger.debug("[Zoho mail] list targets skipped: {}", e)
-            return 0
-        if not isinstance(targets, list):
-            return 0
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            target_id = str(target.get("id") or "")
-            target_url = str(target.get("url") or "")
-            if not target_id or target_id == keep_target_id or "zoho.com" not in target_url:
-                continue
-            try:
-                client.get(f"{http_base.rstrip('/')}/json/close/{target_id}")
-                closed += 1
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[Zoho mail] close target {} skipped: {}", target_id, e)
+            logger.debug("[Zoho mail] close target {} skipped: {}", target_id, e)
     return closed
 
 
-def _find_zoho_page_ws(http_base: str, preferred_target_id: str | None = None) -> str | None:
-    with httpx.Client(timeout=10, trust_env=False) as client:
-        try:
-            response = client.get(f"{http_base.rstrip('/')}/json/list")
-            response.raise_for_status()
-            targets = response.json()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[Zoho mail] find target skipped: {}", e)
-            return None
+def _find_zoho_page_ws(
+    http_base: str,
+    preferred_target_id: str | None = None,
+    user_id: int | None = None,
+) -> str | None:
+    try:
+        targets = devtools_json(f"{http_base.rstrip('/')}/json/list", user_id, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[Zoho mail] find target skipped: {}", e)
+        return None
     if not isinstance(targets, list):
         return None
     fallback_ws = None

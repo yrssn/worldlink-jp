@@ -140,6 +140,10 @@ onMounted(async () => {
           <code>{{ bbSettings?.local_url || 'http://127.0.0.1:54345' }}</code>，
           无需任何外部工具。<strong>保持此浏览器标签页打开即可</strong>。
         </p>
+        <p style="margin:0 0 6px">
+          窗口打开后的 CDP 调试连接（<code>ws://127.0.0.1:…</code>）同样会经此页面中继转发，
+          自动化流程（Zoho / Apify / 验证码邮箱等）在公网部署下也能直接操作你本机的窗口。
+        </p>
         <div v-if="relayConnected" style="color:#67c23a">✓ 中继已连接，本机 BitBrowser 请求将通过浏览器转发。</div>
         <div v-else style="color:#909399">中继未连接。若已配置本地服务地址，点「重新连接」或刷新页面。</div>
       </div>
