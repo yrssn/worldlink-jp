@@ -64,11 +64,15 @@ class BitBrowserRelayManager:
         return list(self._connections.keys())
 
     def _route_key(self, user_id: int) -> int | None:
-        """优先用户自己的页面中继，否则回退到共享 agent 中继。"""
-        if user_id in self._connections:
-            return user_id
+        """优先共享 agent 中继（跑在 BitBrowser 电脑上），否则回退到用户自己的页面中继。
+
+        页面中继可能开在任意用户的电脑上（不一定装有 BitBrowser），
+        而共享 agent 一定与 BitBrowser 同机，能就地访问 Local API 与 CDP。
+        """
         if SHARED_RELAY_KEY in self._connections:
             return SHARED_RELAY_KEY
+        if user_id in self._connections:
+            return user_id
         return None
 
     # ── WebSocket 生命周期（async，在路由中 await）──────────────────
