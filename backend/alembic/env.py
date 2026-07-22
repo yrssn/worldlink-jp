@@ -18,7 +18,10 @@ from app.models import influencer as _influencer_model  # noqa: F401
 from app.models import social_account as _social_account_model  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_uri)
+# 密码/URL 里可能含 % 等字符；configparser 会把 % 当插值语法，需转义为 %%
+config.set_main_option(
+    "sqlalchemy.url", settings.sqlalchemy_database_uri.replace("%", "%%")
+)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
