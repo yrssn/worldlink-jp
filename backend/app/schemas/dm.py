@@ -117,3 +117,21 @@ class DmOutreachOut(BaseModel):
     scrape_task_id: Optional[int] = None
     final_url: Optional[str] = None
     open_hint: Optional[Any] = None
+
+
+class DmOutreachLogOut(BaseModel):
+    """私信建联发送记录（达人详情页展示：发了哪条私信、什么时候）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    influencer_id: Optional[int] = None
+    url: str
+    browser_id: Optional[str] = None
+    content_id: Optional[int] = None
+    content_title: Optional[str] = None
+    content_text: Optional[str] = None
+    images_count: int = 0
+    text_sent: bool = False
+    images_sent: int = 0
+    created_at: datetime

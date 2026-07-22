@@ -540,7 +540,7 @@ def list_email_accounts(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = db.query(EmailAccount).filter(EmailAccount.owner_id == user.id)
+    query = db.query(EmailAccount)
     keyword = _clean_text(q)
     if keyword:
         like = f"%{keyword}%"
@@ -569,7 +569,7 @@ def create_email_account(
         raise HTTPException(status_code=400, detail="请填写注册邮箱")
     exists = (
         db.query(EmailAccount)
-        .filter(EmailAccount.owner_id == user.id, EmailAccount.email == email)
+        .filter(EmailAccount.email == email)
         .first()
     )
     if exists:
@@ -665,9 +665,7 @@ async def import_email_accounts(
 
     existing = {
         row[0]
-        for row in db.query(EmailAccount.email)
-        .filter(EmailAccount.owner_id == user.id)
-        .all()
+        for row in db.query(EmailAccount.email).all()
     }
     created = 0
     skipped = 0
@@ -746,7 +744,7 @@ def start_email_apify_signup(
 ):
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == account_id)
         .first()
     )
     if not row:
@@ -771,7 +769,7 @@ def continue_email_apify_signup(
 ):
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == account_id)
         .first()
     )
     if not row:
@@ -796,14 +794,14 @@ def get_latest_apify_signup_task(
 ):
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == account_id)
         .first()
     )
     if not row:
         raise HTTPException(status_code=404, detail="邮箱账号不存在")
     return (
         db.query(ApifySignupTask)
-        .filter(ApifySignupTask.email_account_id == row.id, ApifySignupTask.owner_id == user.id)
+        .filter(ApifySignupTask.email_account_id == row.id)
         .order_by(ApifySignupTask.id.desc())
         .first()
     )
@@ -818,7 +816,7 @@ def list_apify_signup_tasks(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = db.query(ApifySignupTask).filter(ApifySignupTask.owner_id == user.id)
+    query = db.query(ApifySignupTask)
     if account_id:
         query = query.filter(ApifySignupTask.email_account_id == account_id)
     if status:
@@ -841,7 +839,7 @@ def get_apify_signup_task(
 ):
     task = (
         db.query(ApifySignupTask)
-        .filter(ApifySignupTask.id == task_id, ApifySignupTask.owner_id == user.id)
+        .filter(ApifySignupTask.id == task_id)
         .first()
     )
     if not task:
@@ -857,7 +855,7 @@ def start_email_zoho_mail_login(
 ):
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == account_id)
         .first()
     )
     if not row:
@@ -894,7 +892,7 @@ def start_email_verification_mail_login(
 ):
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == account_id)
         .first()
     )
     if not row:
@@ -941,7 +939,7 @@ def update_email_account(
 ):
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == account_id)
         .first()
     )
     if not row:
@@ -954,7 +952,6 @@ def update_email_account(
         duplicate = (
             db.query(EmailAccount)
             .filter(
-                EmailAccount.owner_id == user.id,
                 EmailAccount.email == email,
                 EmailAccount.id != row.id,
             )
@@ -1000,7 +997,7 @@ def delete_email_account(
 ):
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == account_id)
         .first()
     )
     if not row:

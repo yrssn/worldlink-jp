@@ -51,3 +51,31 @@ class DmContent(Base, TimestampMixin):
     category: Mapped[DmCategory | None] = relationship(
         "DmCategory", back_populates="contents", foreign_keys=[category_id]
     )
+
+
+class DmOutreachLog(Base, TimestampMixin):
+    """私信建联发送记录：某次「私信建联」实际发给了哪个达人、发的哪条内容。
+
+    按发送人隔离（owner_id）。达人可能在发送时还没入库，故 influencer_id 可空，
+    先按主页 URL 记录，达人入库后回填关联。content_* 为发送时的内容快照，
+    即使模板后续被改/删也能追溯。
+    """
+
+    __tablename__ = "dm_outreach_logs"
+
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    influencer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("influencers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    url: Mapped[str] = mapped_column(String(512), nullable=False, index=True, comment="达人主页链接")
+    browser_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="发送所用指纹浏览器窗口")
+    content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dm_contents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content_title: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="内容标题快照")
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="私信正文快照")
+    images_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="内容含图片数")
+    text_sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="正文是否发出")
+    images_sent: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="实际发出图片数")

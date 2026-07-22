@@ -11,12 +11,14 @@ from app.core.config import settings
 from app.core.deps import get_current_user, get_db, is_admin
 from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform
+from app.models.dm import DmOutreachLog
 from app.models.influencer import Influencer
 from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
 from app.models.user import User
 from app.schemas.common import Msg, Page
+from app.schemas.dm import DmOutreachLogOut
 from app.schemas.influencer import (
     InfluencerCreate,
     InfluencerDetailOut,
@@ -40,11 +42,11 @@ def _ensure_platform_access(db: Session, owner_id: int, platform_id: int | None)
         return
     exists = (
         db.query(BitBrowserPlatform.id)
-        .filter(BitBrowserPlatform.id == platform_id, BitBrowserPlatform.owner_id == owner_id)
+        .filter(BitBrowserPlatform.id == platform_id)
         .first()
     )
     if not exists:
-        raise HTTPException(status_code=400, detail="达人类型不存在或无权使用")
+        raise HTTPException(status_code=400, detail="达人类型不存在")
 
 
 def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrapeTaskOut:
@@ -231,7 +233,24 @@ def list_influencers(
         .limit(page_size)
         .all()
     )
+    _mark_has_outreach(db, items)
     return Page[InfluencerOut](total=total, page=page, page_size=page_size, items=items)
+
+
+def _mark_has_outreach(db: Session, items: list[Influencer]) -> None:
+    """给列表里的达人标注 has_outreach（是否已私信过）。"""
+    ids = [i.id for i in items]
+    if not ids:
+        return
+    contacted = {
+        row[0]
+        for row in db.query(DmOutreachLog.influencer_id)
+        .filter(DmOutreachLog.influencer_id.in_(ids))
+        .distinct()
+        .all()
+    }
+    for i in items:
+        i.has_outreach = i.id in contacted
 
 
 @router.get("/export")
@@ -377,10 +396,41 @@ def get_influencer(
     post_ids = [
         p.id for p in db.query(Post.id).filter(Post.influencer_id == iid).all()
     ]
+    influencer_service.link_outreach_logs_for_influencer(db, inf)
+    has_outreach = (
+        db.query(DmOutreachLog.id)
+        .filter(DmOutreachLog.influencer_id == iid)
+        .first()
+        is not None
+    )
+    inf.has_outreach = has_outreach
     out = InfluencerDetailOut.model_validate(inf)
     out.social_accounts = [SocialAccountOut.model_validate(s) for s in socials]
     out.source_post_ids = post_ids
     return out
+
+
+@router.get("/{iid}/outreach-logs", response_model=list[DmOutreachLogOut])
+def list_influencer_outreach_logs(
+    iid: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """该达人的私信建联发送记录（各看各的：仅返回当前用户发送的记录）。"""
+    inf = db.get(Influencer, iid)
+    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="influencer not found")
+    influencer_service.link_outreach_logs_for_influencer(db, inf)
+    rows = (
+        db.query(DmOutreachLog)
+        .filter(
+            DmOutreachLog.influencer_id == iid,
+            DmOutreachLog.owner_id == user.id,
+        )
+        .order_by(DmOutreachLog.id.desc())
+        .all()
+    )
+    return rows
 
 
 @router.get("/{iid}/posts")

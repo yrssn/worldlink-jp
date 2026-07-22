@@ -470,7 +470,14 @@ onUnmounted(() => {
 
     <el-table v-loading="loading" :data="list" border>
       <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column prop="display_name" label="昵称" />
+      <el-table-column label="昵称">
+        <template #default="{ row }">
+          <span>{{ row.display_name }}</span>
+          <el-tag v-if="row.has_outreach" size="small" type="success" style="margin-left: 6px">
+            已私信
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="来源" width="90">
         <template #default="{ row }">
           <el-tag size="small" :type="row.source === 'scrape' ? 'warning' : 'info'">

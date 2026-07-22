@@ -31,7 +31,7 @@ def _validate_email_account(
         return None
     row = (
         db.query(EmailAccount)
-        .filter(EmailAccount.id == email_account_id, EmailAccount.owner_id == user.id)
+        .filter(EmailAccount.id == email_account_id)
         .first()
     )
     if not row:

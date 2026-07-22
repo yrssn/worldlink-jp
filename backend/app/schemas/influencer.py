@@ -98,6 +98,7 @@ class InfluencerOut(InfluencerBase):
     source: InfluencerSource
     platform_name: Optional[str] = None
     owner_id: int
+    has_outreach: bool = False
     created_at: datetime
     updated_at: datetime
 

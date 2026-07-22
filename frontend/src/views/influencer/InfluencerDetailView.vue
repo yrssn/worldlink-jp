@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   influencerApi,
+  type DmOutreachLog,
   type InfluencerDetail,
   type InfluencerSourcePost,
   type SocialPlatform
@@ -14,6 +15,7 @@ const router = useRouter()
 const id = computed(() => Number(route.params.id))
 const detail = ref<InfluencerDetail | null>(null)
 const sourcePosts = ref<InfluencerSourcePost[]>([])
+const outreachLogs = ref<DmOutreachLog[]>([])
 
 const socialDialog = ref(false)
 const socialForm = reactive<{
@@ -72,6 +74,7 @@ const hasFb = computed(() => {
 async function refresh() {
   detail.value = await influencerApi.detail(id.value)
   sourcePosts.value = await influencerApi.listPosts(id.value).catch(() => [])
+  outreachLogs.value = await influencerApi.listOutreachLogs(id.value).catch(() => [])
 }
 
 async function addSocial() {
@@ -184,6 +187,29 @@ onMounted(refresh)
       </el-table-column>
     </el-table>
     <el-empty v-else description="暂无来源帖子" />
+
+    <h4 style="margin: 20px 0 8px">私信记录（发给该达人的私信：内容、窗口、时间）</h4>
+    <el-table v-if="outreachLogs.length" :data="outreachLogs" border>
+      <el-table-column prop="created_at" label="时间" width="170" />
+      <el-table-column prop="content_title" label="内容" width="160" />
+      <el-table-column label="正文">
+        <template #default="{ row }">
+          <div style="max-width: 360px; white-space: pre-wrap">
+            {{ (row.content_text || '').slice(0, 140) }}{{ (row.content_text || '').length > 140 ? '…' : '' }}
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="发送" width="140">
+        <template #default="{ row }">
+          <el-tag v-if="row.text_sent" size="small" type="success">正文</el-tag>
+          <el-tag v-if="row.images_sent > 0" size="small" type="warning" style="margin-left: 4px">
+            {{ row.images_sent }} 图
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="browser_id" label="窗口" width="140" />
+    </el-table>
+    <el-empty v-else description="暂无私信记录" />
 
 
     <el-dialog v-model="socialDialog" title="添加社交账号" width="480px">

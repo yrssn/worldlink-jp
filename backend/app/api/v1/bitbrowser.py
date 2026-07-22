@@ -181,7 +181,6 @@ def list_bitbrowser_platforms(
     """当前用户自建平台列表（用于窗口分类）。"""
     rows = (
         db.query(BitBrowserPlatform)
-        .filter(BitBrowserPlatform.owner_id == user.id)
         .order_by(BitBrowserPlatform.sort_order.asc(), BitBrowserPlatform.id.asc())
         .all()
     )
@@ -216,7 +215,7 @@ def update_bitbrowser_platform(
 ):
     row = (
         db.query(BitBrowserPlatform)
-        .filter(BitBrowserPlatform.id == platform_id, BitBrowserPlatform.owner_id == user.id)
+        .filter(BitBrowserPlatform.id == platform_id)
         .first()
     )
     if not row:
@@ -242,7 +241,7 @@ def delete_bitbrowser_platform(
 ):
     row = (
         db.query(BitBrowserPlatform)
-        .filter(BitBrowserPlatform.id == platform_id, BitBrowserPlatform.owner_id == user.id)
+        .filter(BitBrowserPlatform.id == platform_id)
         .first()
     )
     if not row:
@@ -309,7 +308,7 @@ def upsert_window_catalog(
     if "platform_id" in body.model_fields_set and body.platform_id is not None:
         plat = (
             db.query(BitBrowserPlatform)
-            .filter(BitBrowserPlatform.id == body.platform_id, BitBrowserPlatform.owner_id == user.id)
+            .filter(BitBrowserPlatform.id == body.platform_id)
             .first()
         )
         if not plat:
@@ -334,7 +333,7 @@ def upsert_window_catalog(
     db.refresh(cat)
     plat_row = (
         db.query(BitBrowserPlatform)
-        .filter(BitBrowserPlatform.id == cat.platform_id, BitBrowserPlatform.owner_id == user.id)
+        .filter(BitBrowserPlatform.id == cat.platform_id)
         .first()
         if cat.platform_id
         else None

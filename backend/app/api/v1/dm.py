@@ -12,9 +12,11 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.deps import get_current_user, get_db
-from app.models.dm import DmCategory, DmContent
+from app.models.dm import DmCategory, DmContent, DmOutreachLog
+from app.models.influencer import Influencer
 from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.user import User
+from app.services.influencer_service import normalize_fb_url
 from app.schemas.dm import (
     DmCategoryCreate,
     DmCategoryOut,
@@ -49,7 +51,7 @@ def _media_url(owner_id: int, filename: str) -> str:
 def _get_category_or_404(db: Session, user: User, category_id: int) -> DmCategory:
     row = (
         db.query(DmCategory)
-        .filter(DmCategory.id == category_id, DmCategory.owner_id == user.id)
+        .filter(DmCategory.id == category_id)
         .first()
     )
     if not row:
@@ -89,7 +91,7 @@ def list_dm_categories(
     user: User = Depends(get_current_user),
     active_only: bool = Query(False, description="仅返回启用中的分类"),
 ):
-    q = db.query(DmCategory).filter(DmCategory.owner_id == user.id)
+    q = db.query(DmCategory)
     if active_only:
         q = q.filter(DmCategory.is_active.is_(True))
     return q.order_by(DmCategory.sort_order.asc(), DmCategory.id.asc()).all()
@@ -164,7 +166,7 @@ def list_dm_contents(
     active_only: bool = Query(False),
     pinned_only: bool = Query(False),
 ):
-    q = db.query(DmContent).filter(DmContent.owner_id == user.id)
+    q = db.query(DmContent)
     if category_id is not None:
         if category_id == 0:
             q = q.filter(DmContent.category_id.is_(None))
@@ -203,7 +205,7 @@ def get_dm_content(
     row = (
         db.query(DmContent)
         .options(joinedload(DmContent.category))
-        .filter(DmContent.id == content_id, DmContent.owner_id == user.id)
+        .filter(DmContent.id == content_id)
         .first()
     )
     if not row:
@@ -254,7 +256,7 @@ def update_dm_content(
 ):
     row = (
         db.query(DmContent)
-        .filter(DmContent.id == content_id, DmContent.owner_id == user.id)
+        .filter(DmContent.id == content_id)
         .first()
     )
     if not row:
@@ -297,7 +299,7 @@ def delete_dm_content(
 ):
     row = (
         db.query(DmContent)
-        .filter(DmContent.id == content_id, DmContent.owner_id == user.id)
+        .filter(DmContent.id == content_id)
         .first()
     )
     if not row:
@@ -310,6 +312,60 @@ def delete_dm_content(
 # ----- 私信建联自动化 -----
 
 
+def _record_outreach_log(
+    db: Session,
+    user: User,
+    url: str,
+    browser_id: str,
+    content: DmContent,
+    result: dict,
+) -> None:
+    """私信发送成功后记录一条发送日志，并按主页 URL 关联到已入库达人（同一 owner）。"""
+    target = normalize_fb_url(url)
+    influencer_id: int | None = None
+    if target:
+        exact = (
+            db.query(Influencer)
+            .filter(
+                Influencer.owner_id == user.id,
+                Influencer.deleted_at.is_(None),
+                Influencer.fb_page_url == url,
+            )
+            .first()
+        )
+        if exact:
+            influencer_id = exact.id
+        else:
+            candidates = (
+                db.query(Influencer)
+                .filter(
+                    Influencer.owner_id == user.id,
+                    Influencer.deleted_at.is_(None),
+                    Influencer.fb_page_url.isnot(None),
+                )
+                .all()
+            )
+            for c in candidates:
+                if normalize_fb_url(c.fb_page_url) == target:
+                    influencer_id = c.id
+                    break
+    images = content.images if isinstance(content.images, list) else []
+    log = DmOutreachLog(
+        owner_id=user.id,
+        influencer_id=influencer_id,
+        url=url,
+        browser_id=browser_id or None,
+        content_id=content.id,
+        content_title=content.title,
+        content_text=content.content,
+        images_count=len(images),
+        text_sent=bool(result.get("text_sent")),
+        images_sent=int(result.get("images_sent") or 0),
+    )
+    db.add(log)
+    db.commit()
+
+
 @router.post("/outreach/start", response_model=DmOutreachOut)
 def start_dm_outreach(
     body: DmOutreachStart,
@@ -319,7 +375,7 @@ def start_dm_outreach(
     """在指定 BitBrowser 窗口中打开达人主页并点击「发消息」（私信建联第一步）。"""
     content = (
         db.query(DmContent)
-        .filter(DmContent.id == body.content_id, DmContent.owner_id == user.id)
+        .filter(DmContent.id == body.content_id)
         .first()
     )
     if not content:
@@ -361,6 +417,7 @@ def start_dm_outreach(
         raise HTTPException(status_code=502, detail=str(e)) from e
     scrape_task_id: int | None = None
     if result.get("text_sent") or result.get("images_sent"):
+        _record_outreach_log(db, user, body.url.strip(), body.browser_id.strip(), content, result)
         task = InfluencerScrapeTask(
             owner_id=user.id, platform="facebook", url=body.url.strip(), status="pending"
         )

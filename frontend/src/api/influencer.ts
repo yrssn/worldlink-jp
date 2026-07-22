@@ -54,12 +54,27 @@ export interface Influencer {
   notes?: string | null
   tags?: string[] | null
   owner_id: number
+  has_outreach?: boolean
   created_at: string
 }
 
 export interface InfluencerDetail extends Influencer {
   social_accounts: SocialAccount[]
   source_post_ids: number[]
+}
+
+export interface DmOutreachLog {
+  id: number
+  influencer_id?: number | null
+  url: string
+  browser_id?: string | null
+  content_id?: number | null
+  content_title?: string | null
+  content_text?: string | null
+  images_count: number
+  text_sent: boolean
+  images_sent: number
+  created_at: string
 }
 
 export interface InfluencerSourcePost {
@@ -124,6 +139,8 @@ export const influencerApi = {
     http.post<unknown, Influencer>(`/influencers/scrape-profile/${taskId}/save`, { notes }),
   listPosts: (id: number) =>
     http.get<unknown, InfluencerSourcePost[]>(`/influencers/${id}/posts`),
+  listOutreachLogs: (id: number) =>
+    http.get<unknown, DmOutreachLog[]>(`/influencers/${id}/outreach-logs`),
   addSocial: (id: number, data: SocialAccount) =>
     http.post<unknown, SocialAccount>(`/influencers/${id}/social-accounts`, data),
   removeSocial: (iid: number, sid: number) =>

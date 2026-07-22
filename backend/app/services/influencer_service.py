@@ -25,6 +25,43 @@ from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
 
 
+def normalize_fb_url(u: Optional[str]) -> str:
+    """规范化 FB 主页链接用于匹配：去空白、去 query/fragment、去尾部斜杠、转小写。"""
+    s = (u or "").strip()
+    if not s:
+        return ""
+    s = s.split("?", 1)[0].split("#", 1)[0]
+    return s.rstrip("/").lower()
+
+
+def link_outreach_logs_for_influencer(db: Session, influencer: "Influencer") -> int:
+    """把该达人主页 URL 对应、尚未关联的私信记录回填 influencer_id（同一 owner）。
+
+    返回回填条数。达人可能在私信发送之后才入库，故此处补上关联。
+    """
+    from app.models.dm import DmOutreachLog
+
+    target = normalize_fb_url(influencer.fb_page_url)
+    if not target:
+        return 0
+    logs = (
+        db.query(DmOutreachLog)
+        .filter(
+            DmOutreachLog.owner_id == influencer.owner_id,
+            DmOutreachLog.influencer_id.is_(None),
+        )
+        .all()
+    )
+    linked = 0
+    for log in logs:
+        if normalize_fb_url(log.url) == target:
+            log.influencer_id = influencer.id
+            linked += 1
+    if linked:
+        db.commit()
+    return linked
+
+
 def find_duplicate(
     db: Session,
     owner_id: int,
@@ -340,6 +377,7 @@ def create_influencer_from_form(
         email=data.get("email"),
     )
     if existing:
+        link_outreach_logs_for_influencer(db, existing)
         return existing, False
 
     inf = Influencer(**data)
@@ -357,6 +395,7 @@ def create_influencer_from_form(
         )
     db.commit()
     db.refresh(inf)
+    link_outreach_logs_for_influencer(db, inf)
     return inf, True
 
 
