@@ -363,9 +363,19 @@ def delete_window_catalog(
 
 @router.get("/settings", response_model=BitBrowserSettingsOut)
 def get_bitbrowser_settings(user: User = Depends(get_current_user)):
-    """读取当前用户保存的本机 BitBrowser 地址与是否已配置 Token（不返回 Token 明文）。"""
-    url = (user.bitbrowser_local_url or "").strip() or None
-    has_key = bool((user.bitbrowser_api_key or "").strip())
+    """读取生效的本机 BitBrowser 地址与是否已配置 Token（不返回 Token 明文）。
+
+    用户未单独填写时回退用 .env 的 BITBROWSER_LOCAL_API_URL / BITBROWSER_API_KEY。
+    """
+    url = (
+        (user.bitbrowser_local_url or "").strip()
+        or (settings.bitbrowser_local_api_url or "").strip()
+        or None
+    )
+    has_key = bool(
+        (user.bitbrowser_api_key or "").strip()
+        or (settings.bitbrowser_api_key or "").strip()
+    )
     return BitBrowserSettingsOut(local_url=url, has_api_key=has_key)
 
 

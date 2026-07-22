@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # 每个登录用户在「浏览器窗口」页自行配置本机地址与 API Token（存 users 表）
     # 用户未单独配置 Token 时回退用这里的全局 Token（对应客户端「设置 → Local API → API Token」）
     bitbrowser_api_key: Optional[str] = None
+    # BitBrowser Local API 根地址。共享 agent 架构下请求都由 agent 在 BitBrowser 本机解析，
+    # 所以这里固定 127.0.0.1:54345 即可；用户未在「本机连接配置」单独填写时回退用它。
+    bitbrowser_local_api_url: str = "http://127.0.0.1:54345"
     # 共享中继 agent（跑在 BitBrowser 电脑上的 scripts/bitbrowser_relay_agent.py）的连接令牌；
     # 留空则禁用 agent 入口
     bitbrowser_relay_agent_token: Optional[str] = None

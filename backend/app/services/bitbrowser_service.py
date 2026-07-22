@@ -29,14 +29,12 @@ class BitBrowserClientContext:
 
 
 def client_context_from_user(user: User) -> BitBrowserClientContext:
-    raw = (getattr(user, "bitbrowser_local_url", None) or "").strip()
-    if not raw:
-        raise ValueError(
-            "请先在「本机连接配置」中填写 BitBrowser 本地服务地址（与客户端「设置 → 本地 API」中的地址一致，例如 http://127.0.0.1:54345）"
-        )
-    base = raw.rstrip("/")
+    # 用户未单独填写时，回退用 .env 里固定的 BITBROWSER_LOCAL_API_URL（默认 127.0.0.1:54345）。
+    # 共享 agent 架构下这个地址由 agent 在 BitBrowser 本机解析，全体用户共用即可。
+    raw = (user.bitbrowser_local_url or "").strip()
+    base = (raw or (settings.bitbrowser_local_api_url or "").strip() or "http://127.0.0.1:54345").rstrip("/")
     tok = (
-        (getattr(user, "bitbrowser_api_key", None) or "").strip()
+        (user.bitbrowser_api_key or "").strip()
         or (settings.bitbrowser_api_key or "").strip()
         or None
     )
