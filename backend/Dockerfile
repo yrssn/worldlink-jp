@@ -36,5 +36,7 @@ EXPOSE 8009
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# 生产用 uvicorn 直跑（不开 reload），workers 通过环境变量控制
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8009} --workers ${UVICORN_WORKERS:-2}"]
+# 生产用 uvicorn 直跑（不开 reload），workers 通过环境变量控制。
+# 默认单 worker：BitBrowser 中继连接按进程存于内存，多 worker 会导致中继请求
+# 被负载均衡到没有连接的进程而间歇失败。ws ping 保活避免空闲连接被代理掐断。
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8009} --workers ${UVICORN_WORKERS:-1} --ws-ping-interval 20 --ws-ping-timeout 60 --timeout-keep-alive 75"]

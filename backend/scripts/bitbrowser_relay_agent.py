@@ -66,7 +66,14 @@ class Agent:
 
     async def _run_once(self) -> None:
         log.info("连接后端中继入口 ...")
-        async with websockets.connect(self.endpoint, max_size=32 * 1024 * 1024) as ws:
+        # ping 保活：定期发送 ping，既能撑住中间代理的空闲超时，也能快速发现掉线重连
+        async with websockets.connect(
+            self.endpoint,
+            max_size=32 * 1024 * 1024,
+            ping_interval=20,
+            ping_timeout=60,
+            close_timeout=10,
+        ) as ws:
             log.info("已连接，等待任务")
             async for raw in ws:
                 try:

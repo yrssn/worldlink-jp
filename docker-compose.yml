@@ -24,7 +24,10 @@ services:
     environment:
       # 兜底：未在 .env 改时，使用容器内网络
       - REDIS_HOST=${REDIS_HOST:-redis}
-      - UVICORN_WORKERS=${UVICORN_WORKERS:-2}
+      # 注意：BitBrowser 中继连接是「按进程」保存在内存里的，多 worker 会导致
+      # agent 只连到其中一个进程、而 HTTP 转发请求被负载均衡到没有连接的进程，
+      # 表现为「过一会儿就中继未连接/Connection refused」。故默认单 worker。
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
     expose:
       - "8009"
     ports:
