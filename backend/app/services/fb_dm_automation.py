@@ -1,4 +1,8 @@
-"""Facebook 私信建联的浏览器自动化：进主页→点「发消息」→在聊天小窗发送正文与图片。"""
+"""私信建联的浏览器自动化：进主页→点「发消息」→在聊天小窗发送正文与图片。
+
+同时支持 Facebook 与 Instagram（两者的「发消息」按钮文案与聊天输入框结构一致，
+差异主要在发图方式：FB 走粘贴事件注入，IG 走 file input）。
+"""
 from __future__ import annotations
 
 import base64
@@ -15,8 +19,11 @@ from app.models.user import User
 from app.services import bitbrowser_service, cdp_transport
 from app.services.zoho_mail_automation import CdpConnectionClosed, CdpPage
 
-# 「发消息」按钮的多语言文案（简体/繁体/英文/日文）
-_MESSAGE_BUTTON_TEXTS = ("发消息", "發送訊息", "发讯息", "Message", "メッセージ", "メッセージを送信")
+# 「发消息」按钮的多语言文案（简体/繁体/英文/日文，FB 与 IG 通用）
+_MESSAGE_BUTTON_TEXTS = (
+    "发消息", "發送訊息", "发讯息", "发私信", "私信",
+    "Message", "Send message", "メッセージ", "メッセージを送信",
+)
 
 _CLICK_MESSAGE_JS = """
 (() => {
@@ -120,12 +127,34 @@ _PASTE_IMAGE_JS_TEMPLATE = """
 })()
 """
 
+# Instagram 用 file input 发图：找到聊天区可接受图片的 <input type=file>，
+# 用 DataTransfer 直接注入 File 并触发 change（无需真实文件路径，纯页面内完成）。
+_SET_FILE_INPUT_JS_TEMPLATE = """
+(() => {
+  const inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter((i) => {
+    const a = (i.getAttribute('accept') || '').toLowerCase();
+    return a.includes('.png') || a.includes('.jpg') || a.includes('.jpeg') || a.includes('image');
+  });
+  if (!inputs.length) return { set: false, reason: 'no-input' };
+  const input = inputs[inputs.length - 1];
+  const bin = atob(%(b64)s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const file = new File([bytes], %(name)s, { type: %(mime)s });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return { set: true };
+})()
+"""
+
 
 def _message_button_js() -> str:
     return _CLICK_MESSAGE_JS % json.dumps(list(_MESSAGE_BUTTON_TEXTS), ensure_ascii=False)
 
 
-def open_fb_profile_and_message(
+def open_profile_and_message(
     browser_id: str,
     profile_url: str,
     user: User,
@@ -133,20 +162,25 @@ def open_fb_profile_and_message(
     message_text: str | None = None,
     image_paths: "list[Path] | None" = None,
     progress: "Callable[[str], None] | None" = None,
+    platform: str = "facebook",
 ) -> dict[str, object]:
     """在指定 BitBrowser 窗口中打开达人主页、点「发消息」，并在聊天小窗发送正文/图片。
 
+    platform: "facebook" 或 "instagram"，仅影响发图方式与日志文案。
     返回 dict：page_opened / message_clicked / matched_text / text_sent /
     images_sent / final_url。
     """
+    platform = (platform or "facebook").strip().lower()
+    tag = "IG DM" if platform == "instagram" else "FB DM"
+    site_name = "Instagram" if platform == "instagram" else "Facebook"
 
     def _log(message: str) -> None:
-        logger.info("[FB DM] {}", message)
+        logger.info("[{}] {}", tag, message)
         if progress is not None:
             try:
                 progress(message)
             except Exception as e:  # noqa: BLE001
-                logger.debug("[FB DM] progress 回调失败: {}", e)
+                logger.debug("[{}] progress 回调失败: {}", tag, e)
 
     url = (profile_url or "").strip()
     if not url:
@@ -172,7 +206,7 @@ def open_fb_profile_and_message(
     try:
         cdp_transport.activate_target(browser_ws, target_id, user.id)
     except Exception as e:  # noqa: BLE001
-        logger.debug("[FB DM] activate target {} skipped: {}", target_id, e)
+        logger.debug("[{}] activate target {} skipped: {}", tag, target_id, e)
 
     time.sleep(1)
     message_clicked = False
@@ -192,10 +226,10 @@ def open_fb_profile_and_message(
             time.sleep(2)
             if message_text or image_paths:
                 text_sent, images_sent = _send_chat_message(
-                    page, message_text, image_paths or [], _log
+                    page, message_text, image_paths or [], _log, platform
                 )
         else:
-            _log("未找到「发消息」按钮（可能未登录 Facebook，或对方未开放私信）")
+            _log(f"未找到「发消息」按钮（可能未登录 {site_name}，或对方未开放私信）")
         final_url = str(page.evaluate("window.location.href", timeout=5) or url)
     return {
         "page_opened": True,
@@ -208,11 +242,16 @@ def open_fb_profile_and_message(
     }
 
 
+# 兼容旧调用方（历史代码里叫 open_fb_profile_and_message）
+open_fb_profile_and_message = open_profile_and_message
+
+
 def _send_chat_message(
     page: CdpPage,
     message_text: str | None,
     image_paths: "list[Path]",
     _log: "Callable[[str], None]",
+    platform: str = "facebook",
 ) -> tuple[bool, int]:
     """在已打开的聊天小窗里发送正文与图片，返回 (text_sent, images_sent)。"""
     if not _focus_chat_input(page):
@@ -230,6 +269,9 @@ def _send_chat_message(
         remaining = page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5)
         text_sent = not str(remaining or "").strip()
         _log(f"正文发送{'成功' if text_sent else '可能失败（输入框未清空）'}")
+    if platform == "instagram":
+        images_sent = _send_images_ig(page, image_paths, _log)
+        return text_sent, images_sent
     for path in image_paths:
         try:
             raw = path.read_bytes()
@@ -257,6 +299,53 @@ def _send_chat_message(
         else:
             _log(f"图片 {path.name} 发送未确认（附件预览未消失），请在窗口内检查")
     return text_sent, images_sent
+
+
+def _send_images_ig(
+    page: CdpPage,
+    image_paths: "list[Path]",
+    _log: "Callable[[str], None]",
+) -> int:
+    """Instagram 发图：逐张注入 file input → 等预览 → 回车/点发送。返回已发张数。
+
+    IG 聊天区加图后会进入预览态，按回车或点发送按钮即可发出；因无稳定的
+    「附件预览」标识，这里以时间兜底 + 输入框状态做尽力确认。
+    """
+    images_sent = 0
+    for path in image_paths:
+        try:
+            raw = path.read_bytes()
+        except OSError as e:
+            _log(f"读取图片失败，跳过 {path.name}: {e}")
+            continue
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        js = _SET_FILE_INPUT_JS_TEMPLATE % {
+            "b64": json.dumps(base64.b64encode(raw).decode("ascii")),
+            "name": json.dumps(path.name, ensure_ascii=False),
+            "mime": json.dumps(mime),
+        }
+        try:
+            result = page.evaluate(js, timeout=30)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[IG DM] set file input skipped: {}", e)
+            result = None
+        if not (isinstance(result, dict) and result.get("set")):
+            _log(f"未找到图片上传入口，跳过 {path.name}")
+            continue
+        _log(f"已选择图片 {path.name}，等待预览就绪")
+        time.sleep(3)
+        # IG 预览态回车发送；兜底再点「发送」按钮
+        _press_enter(page)
+        time.sleep(1.5)
+        js_send = _CLICK_SEND_JS % json.dumps(list(_SEND_BUTTON_TEXTS), ensure_ascii=False)
+        try:
+            page.evaluate(js_send, timeout=10)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[IG DM] click send button skipped: {}", e)
+        time.sleep(1.5)
+        images_sent += 1
+        _log(f"图片 {path.name} 已发送")
+    return images_sent
 
 
 def _wait_pending_attachment(

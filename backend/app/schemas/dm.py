@@ -102,6 +102,7 @@ class DmOutreachStart(BaseModel):
     url: str = Field(..., min_length=1, description="达人主页链接")
     browser_id: str = Field(..., min_length=1, description="BitBrowser 窗口 ID")
     content_id: int = Field(..., description="私信内容库内容 ID")
+    platform: str = Field("facebook", description="平台：facebook / instagram")
 
 
 class DmOutreachOut(BaseModel):

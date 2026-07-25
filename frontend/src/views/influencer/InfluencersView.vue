@@ -258,14 +258,20 @@ const dmContentId = ref<number | null>(null)
 const dmLoading = ref(false)
 const dmRunning = ref(false)
 const dmUrl = ref('')
+const dmPlatform = ref<ScrapePlatform>('facebook')
 
 async function openDmDialog() {
   const url = taskScrapeUrl.value.trim()
   if (!url) {
-    ElMessage.warning('请先粘贴达人主页链接')
+    ElMessage.warning(
+      taskPlatform.value === 'instagram'
+        ? '请先输入 Instagram 用户名或主页链接'
+        : '请先粘贴达人主页链接',
+    )
     return
   }
   dmUrl.value = url
+  dmPlatform.value = taskPlatform.value
   dmDialogVisible.value = true
   dmLoading.value = true
   try {
@@ -300,6 +306,7 @@ async function startDmOutreach() {
       url: dmUrl.value,
       browser_id: dmBrowserId.value,
       content_id: dmContentId.value,
+      platform: dmPlatform.value,
     })
     if (r.text_sent || r.images_sent > 0) {
       const parts = [
@@ -314,7 +321,8 @@ async function startDmOutreach() {
     } else if (r.message_clicked) {
       ElMessage.warning('已打开聊天窗，但发送未确认成功，请在窗口内检查')
     } else {
-      ElMessage.warning('已进入主页，但未找到「发消息」按钮（请确认窗口内已登录 Facebook）')
+      const site = dmPlatform.value === 'instagram' ? 'Instagram' : 'Facebook'
+      ElMessage.warning(`已进入主页，但未找到「发消息」按钮（请确认窗口内已登录 ${site}）`)
     }
   } catch {
     /* 拦截器已提示 */
@@ -683,6 +691,11 @@ onUnmounted(() => {
 
     <el-dialog v-model="dmDialogVisible" title="私信建联" width="520px">
       <el-form label-width="100px" v-loading="dmLoading">
+        <el-form-item label="平台">
+          <el-tag :type="dmPlatform === 'instagram' ? 'warning' : 'primary'" size="small">
+            {{ PLATFORM_LABEL[dmPlatform] || dmPlatform }}
+          </el-tag>
+        </el-form-item>
         <el-form-item label="主页链接">
           <span style="word-break: break-all">{{ dmUrl }}</span>
         </el-form-item>

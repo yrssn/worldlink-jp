@@ -79,8 +79,12 @@ export const dmApi = {
     http.put<unknown, DmContent>(`/dm/contents/${id}`, data),
   deleteContent: (id: number) => http.delete(`/dm/contents/${id}`),
 
-  startOutreach: (data: { url: string; browser_id: string; content_id: number }) =>
-    http.post<unknown, DmOutreachResult>('/dm/outreach/start', data, { timeout: 300000 }),
+  startOutreach: (data: {
+    url: string
+    browser_id: string
+    content_id: number
+    platform?: string
+  }) => http.post<unknown, DmOutreachResult>('/dm/outreach/start', data, { timeout: 300000 }),
 
   uploadImage: (file: File) => {
     const fd = new FormData()

@@ -34,15 +34,99 @@ def normalize_fb_url(u: Optional[str]) -> str:
     return s.rstrip("/").lower()
 
 
+def build_ig_profile_url(value: Optional[str]) -> str:
+    """把 IG 用户名 / 主页链接归一化为标准主页 URL（打开浏览器 & 匹配用）。
+
+    ``nasa`` / ``@nasa`` / ``https://instagram.com/nasa?hl=en`` →
+    ``https://www.instagram.com/nasa/``；无法识别时原样返回。
+    """
+    from app.services.apify_service import normalize_ig_username
+
+    name = normalize_ig_username(value or "")
+    if not name:
+        return (value or "").strip()
+    return f"https://www.instagram.com/{name}/"
+
+
+def _influencer_profile_urls(db: Session, influencer: "Influencer") -> set[str]:
+    """收集该达人可用于私信匹配的所有主页 URL（FB 主页 + 各社交账号）的规整值。"""
+    urls: set[str] = set()
+    if influencer.fb_page_url:
+        n = normalize_fb_url(influencer.fb_page_url)
+        if n:
+            urls.add(n)
+    if influencer.id is not None:
+        rows = (
+            db.query(InfluencerSocialAccount.url)
+            .filter(InfluencerSocialAccount.influencer_id == influencer.id)
+            .all()
+        )
+        for (u,) in rows:
+            n = normalize_fb_url(u)
+            if n:
+                urls.add(n)
+    return urls
+
+
+def match_influencer_id_by_url(
+    db: Session, owner_id: int, url: Optional[str], platform: str = "facebook"
+) -> Optional[int]:
+    """按主页 URL 在同一 owner 下匹配已入库达人的 id；FB 比 fb_page_url，IG 比社交账号 URL。"""
+    target = normalize_fb_url(url)
+    if not target:
+        return None
+    if (platform or "").strip().lower() == "instagram":
+        rows = (
+            db.query(InfluencerSocialAccount.influencer_id, InfluencerSocialAccount.url)
+            .join(Influencer, Influencer.id == InfluencerSocialAccount.influencer_id)
+            .filter(
+                Influencer.owner_id == owner_id,
+                Influencer.deleted_at.is_(None),
+                InfluencerSocialAccount.platform == SocialPlatform.instagram,
+                InfluencerSocialAccount.url.isnot(None),
+            )
+            .all()
+        )
+        for inf_id, u in rows:
+            if normalize_fb_url(u) == target:
+                return inf_id
+        return None
+    exact = (
+        db.query(Influencer)
+        .filter(
+            Influencer.owner_id == owner_id,
+            Influencer.deleted_at.is_(None),
+            Influencer.fb_page_url == url,
+        )
+        .first()
+    )
+    if exact:
+        return exact.id
+    candidates = (
+        db.query(Influencer)
+        .filter(
+            Influencer.owner_id == owner_id,
+            Influencer.deleted_at.is_(None),
+            Influencer.fb_page_url.isnot(None),
+        )
+        .all()
+    )
+    for c in candidates:
+        if normalize_fb_url(c.fb_page_url) == target:
+            return c.id
+    return None
+
+
 def link_outreach_logs_for_influencer(db: Session, influencer: "Influencer") -> int:
     """把该达人主页 URL 对应、尚未关联的私信记录回填 influencer_id（同一 owner）。
 
     返回回填条数。达人可能在私信发送之后才入库，故此处补上关联。
+    同时匹配 FB 主页链接与各社交账号（含 Instagram）链接。
     """
     from app.models.dm import DmOutreachLog
 
-    target = normalize_fb_url(influencer.fb_page_url)
-    if not target:
+    targets = _influencer_profile_urls(db, influencer)
+    if not targets:
         return 0
     logs = (
         db.query(DmOutreachLog)
@@ -54,7 +138,7 @@ def link_outreach_logs_for_influencer(db: Session, influencer: "Influencer") -> 
     )
     linked = 0
     for log in logs:
-        if normalize_fb_url(log.url) == target:
+        if normalize_fb_url(log.url) in targets:
             log.influencer_id = influencer.id
             linked += 1
     if linked:

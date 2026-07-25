@@ -13,10 +13,12 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.core.deps import get_current_user, get_db
 from app.models.dm import DmCategory, DmContent, DmOutreachLog
-from app.models.influencer import Influencer
 from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.user import User
-from app.services.influencer_service import normalize_fb_url
+from app.services.influencer_service import (
+    build_ig_profile_url,
+    match_influencer_id_by_url,
+)
 from app.schemas.dm import (
     DmCategoryCreate,
     DmCategoryOut,
@@ -30,7 +32,7 @@ from app.schemas.dm import (
     DmUploadOut,
 )
 from app.api.v1.influencer import _run_scrape_profile_bg
-from app.services.fb_dm_automation import open_fb_profile_and_message
+from app.services.fb_dm_automation import open_profile_and_message
 
 router = APIRouter(prefix="/dm", tags=["dm"])
 
@@ -319,36 +321,10 @@ def _record_outreach_log(
     browser_id: str,
     content: DmContent,
     result: dict,
+    platform: str = "facebook",
 ) -> None:
     """私信发送成功后记录一条发送日志，并按主页 URL 关联到已入库达人（同一 owner）。"""
-    target = normalize_fb_url(url)
-    influencer_id: int | None = None
-    if target:
-        exact = (
-            db.query(Influencer)
-            .filter(
-                Influencer.owner_id == user.id,
-                Influencer.deleted_at.is_(None),
-                Influencer.fb_page_url == url,
-            )
-            .first()
-        )
-        if exact:
-            influencer_id = exact.id
-        else:
-            candidates = (
-                db.query(Influencer)
-                .filter(
-                    Influencer.owner_id == user.id,
-                    Influencer.deleted_at.is_(None),
-                    Influencer.fb_page_url.isnot(None),
-                )
-                .all()
-            )
-            for c in candidates:
-                if normalize_fb_url(c.fb_page_url) == target:
-                    influencer_id = c.id
-                    break
+    influencer_id = match_influencer_id_by_url(db, user.id, url, platform)
     images = content.images if isinstance(content.images, list) else []
     log = DmOutreachLog(
         owner_id=user.id,
@@ -380,6 +356,13 @@ def start_dm_outreach(
     )
     if not content:
         raise HTTPException(status_code=404, detail="私信内容不存在")
+    platform = (body.platform or "facebook").strip().lower()
+    if platform not in ("facebook", "instagram"):
+        platform = "facebook"
+    # IG 允许输入用户名/带参数链接，统一成标准主页 URL 再打开与匹配
+    target_url = (
+        build_ig_profile_url(body.url) if platform == "instagram" else body.url.strip()
+    )
     image_paths: list[Path] = []
     images = content.images if isinstance(content.images, list) else []
     upload_root = _dm_upload_root()
@@ -401,13 +384,14 @@ def start_dm_outreach(
         if p.is_file():
             image_paths.append(p)
     try:
-        result = open_fb_profile_and_message(
+        result = open_profile_and_message(
             body.browser_id.strip(),
-            body.url,
+            target_url,
             user,
             db,
             message_text=content.content,
             image_paths=image_paths,
+            platform=platform,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -417,9 +401,11 @@ def start_dm_outreach(
         raise HTTPException(status_code=502, detail=str(e)) from e
     scrape_task_id: int | None = None
     if result.get("text_sent") or result.get("images_sent"):
-        _record_outreach_log(db, user, body.url.strip(), body.browser_id.strip(), content, result)
+        _record_outreach_log(
+            db, user, target_url, body.browser_id.strip(), content, result, platform
+        )
         task = InfluencerScrapeTask(
-            owner_id=user.id, platform="facebook", url=body.url.strip(), status="pending"
+            owner_id=user.id, platform=platform, url=target_url, status="pending"
         )
         db.add(task)
         db.commit()
