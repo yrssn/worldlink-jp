@@ -116,6 +116,24 @@ class InfluencerScrapeTaskCreate(BaseModel):
     platform: str = Field(default="facebook", max_length=32)
 
 
+class InfluencerScrapeBatchCreate(BaseModel):
+    """批量导入链接到暂存区：只保存不跑抓取，按 平台 + 批次名 分组。"""
+
+    urls: list[str] = Field(..., description="链接/用户名列表（前端按行拆分后传入）")
+    platform: str = Field(default="facebook", max_length=32)
+    batch: Optional[str] = Field(default=None, max_length=128, description="批次名")
+
+
+class InfluencerScrapeBatchOut(BaseModel):
+    """批次分组汇总：平台 + 批次名 + 各状态计数。"""
+
+    platform: str
+    batch: Optional[str] = None
+    total: int
+    staged: int
+    done: int
+
+
 class InfluencerScrapeTaskOut(BaseModel):
     """自动抓取任务状态，done 后 result 为可填充表单的达人字段。"""
 
@@ -123,6 +141,7 @@ class InfluencerScrapeTaskOut(BaseModel):
 
     id: int
     platform: str = "facebook"
+    batch: Optional[str] = None
     url: str
     status: str
     error: Optional[str] = None

@@ -193,11 +193,21 @@ def _ensure_influencer_scrape_task_columns() -> None:
     if "influencer_scrape_tasks" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("influencer_scrape_tasks")}
+    patches: list[str] = []
     if "platform" not in cols:
-        sql = (
+        patches.append(
             "ALTER TABLE influencer_scrape_tasks "
             "ADD COLUMN platform VARCHAR(32) NOT NULL DEFAULT 'facebook'"
         )
+    if "batch" not in cols:
+        patches.append(
+            "ALTER TABLE influencer_scrape_tasks ADD COLUMN batch VARCHAR(128) NULL"
+        )
+        patches.append(
+            "ALTER TABLE influencer_scrape_tasks "
+            "ADD INDEX ix_influencer_scrape_tasks_batch (batch)"
+        )
+    for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)
             with engine.begin() as conn:

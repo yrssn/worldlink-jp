@@ -103,6 +103,9 @@ class DmOutreachStart(BaseModel):
     browser_id: str = Field(..., min_length=1, description="BitBrowser 窗口 ID")
     content_id: int = Field(..., description="私信内容库内容 ID")
     platform: str = Field("facebook", description="平台：facebook / instagram")
+    source_task_id: int | None = Field(
+        None, description="来源暂存任务 ID（从暂存列表发起时传入，用于复用同一行并自动入库）"
+    )
 
 
 class DmOutreachOut(BaseModel):

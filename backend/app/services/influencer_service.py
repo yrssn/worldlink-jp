@@ -673,6 +673,7 @@ def create_influencer_from_ig_form(
     )
     db.commit()
     db.refresh(inf)
+    link_outreach_logs_for_influencer(db, inf)
     return inf, created
 
 

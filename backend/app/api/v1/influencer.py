@@ -24,6 +24,8 @@ from app.schemas.influencer import (
     InfluencerDetailOut,
     InfluencerFromScrapeRequest,
     InfluencerOut,
+    InfluencerScrapeBatchCreate,
+    InfluencerScrapeBatchOut,
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
     InfluencerScrapeTaskSaveRequest,
@@ -81,10 +83,29 @@ def _fail_task(db: Session, task: InfluencerScrapeTask, msg: str) -> None:
     db.commit()
 
 
-def _run_scrape_profile_bg(task_id: int) -> None:
+def _auto_save_from_task(db: Session, task: InfluencerScrapeTask) -> None:
+    """抓取完成后自动把结果存入建联达人库（发私信后自动入库用）。"""
+    if not isinstance(task.result, dict) or not task.result:
+        return
+    try:
+        if (task.platform or "facebook") == "instagram":
+            influencer_service.create_influencer_from_ig_form(
+                db, owner_id=task.owner_id, form=task.result
+            )
+        else:
+            influencer_service.create_influencer_from_form(
+                db, owner_id=task.owner_id, form=task.result
+            )
+        logger.info("[InfluencerScrape task#{}] 已自动存入达人库", task.id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[InfluencerScrape task#{}] 自动入库失败：{}", task.id, e)
+
+
+def _run_scrape_profile_bg(task_id: int, auto_save: bool = False) -> None:
     """后台线程：按平台跑对应 Apify actor 抓主页资料，映射成可填充表单字段。
 
     facebook：facebook-pages-scraper；instagram：instagram-profile-scraper。
+    auto_save=True 时（如发私信后触发）抓完自动存入达人库。
     """
     db = SessionLocal()
     try:
@@ -110,6 +131,8 @@ def _run_scrape_profile_bg(task_id: int) -> None:
             task.status = "done"
             task.finished_at = datetime.utcnow()
             db.commit()
+            if auto_save:
+                _auto_save_from_task(db, task)
             logger.info("[InfluencerScrape task#{}] IG done for {}", task_id, task.url)
             return
 
@@ -154,6 +177,8 @@ def _run_scrape_profile_bg(task_id: int) -> None:
         task.status = "done"
         task.finished_at = datetime.utcnow()
         db.commit()
+        if auto_save:
+            _auto_save_from_task(db, task)
         logger.info("[InfluencerScrape task#{}] done for {}", task_id, task.url)
     except Exception as e:  # noqa: BLE001
         logger.exception("[InfluencerScrape task#{}] failed: {}", task_id, e)
@@ -327,18 +352,103 @@ def start_scrape_profile(
     return _scrape_task_out(db, task)
 
 
-@router.get("/scrape-profile", response_model=list[InfluencerScrapeTaskOut])
-def list_scrape_profiles(
-    limit: int = Query(50, ge=1, le=200),
+@router.post("/scrape-profile/batch", response_model=list[InfluencerScrapeTaskOut])
+def batch_stage_scrape_profiles(
+    payload: InfluencerScrapeBatchCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """抓取任务列表：按创建时间倒序返回当前用户最近的自动抓取任务。"""
+    """批量导入链接到暂存区（status=staged）：只保存不跑抓取，按 平台 + 批次名 分组。
+
+    之后可在暂存列表里逐条/整批「抓取」或「私信建联」，私信发出后自动入库。
+    """
+    platform = (payload.platform or "facebook").strip().lower()
+    if platform not in ("facebook", "instagram"):
+        raise HTTPException(status_code=400, detail="不支持的抓取平台")
+    batch = (payload.batch or "").strip() or None
+    # 去重、去空白
+    seen: set[str] = set()
+    urls: list[str] = []
+    for raw in payload.urls or []:
+        u = (raw or "").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        urls.append(u)
+    if not urls:
+        raise HTTPException(status_code=400, detail="没有可导入的链接")
+    created: list[InfluencerScrapeTask] = []
+    for u in urls:
+        task = InfluencerScrapeTask(
+            owner_id=user.id, platform=platform, url=u, batch=batch, status="staged"
+        )
+        db.add(task)
+        created.append(task)
+    db.commit()
+    for t in created:
+        db.refresh(t)
+    return [_scrape_task_out(db, t) for t in created]
+
+
+@router.get("/scrape-profile", response_model=list[InfluencerScrapeTaskOut])
+def list_scrape_profiles(
+    limit: int = Query(100, ge=1, le=500),
+    platform: str | None = None,
+    batch: str | None = None,
+    status_eq: str | None = Query(None, alias="status"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """抓取/暂存任务列表：按创建时间倒序，支持按 平台 / 批次 / 状态 过滤。"""
     q = db.query(InfluencerScrapeTask)
     if not is_admin(user):
         q = q.filter(InfluencerScrapeTask.owner_id == user.id)
+    if platform:
+        q = q.filter(InfluencerScrapeTask.platform == platform.strip().lower())
+    if batch is not None:
+        b = batch.strip()
+        if b == "":
+            q = q.filter(InfluencerScrapeTask.batch.is_(None))
+        else:
+            q = q.filter(InfluencerScrapeTask.batch == b)
+    if status_eq:
+        q = q.filter(InfluencerScrapeTask.status == status_eq)
     tasks = q.order_by(InfluencerScrapeTask.id.desc()).limit(limit).all()
     return [_scrape_task_out(db, t) for t in tasks]
+
+
+@router.get("/scrape-profile-batches", response_model=list[InfluencerScrapeBatchOut])
+def list_scrape_batches(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批次汇总：按 平台 + 批次名 分组，返回总数/暂存数/已抓取数（供筛选下拉）。"""
+    from sqlalchemy import case, func
+
+    q = db.query(
+        InfluencerScrapeTask.platform,
+        InfluencerScrapeTask.batch,
+        func.count(InfluencerScrapeTask.id),
+        func.sum(case((InfluencerScrapeTask.status == "staged", 1), else_=0)),
+        func.sum(case((InfluencerScrapeTask.status == "done", 1), else_=0)),
+    )
+    if not is_admin(user):
+        q = q.filter(InfluencerScrapeTask.owner_id == user.id)
+    rows = (
+        q.group_by(InfluencerScrapeTask.platform, InfluencerScrapeTask.batch)
+        .order_by(InfluencerScrapeTask.platform)
+        .all()
+    )
+    return [
+        InfluencerScrapeBatchOut(
+            platform=p,
+            batch=b,
+            total=int(total or 0),
+            staged=int(staged or 0),
+            done=int(done or 0),
+        )
+        for (p, b, total, staged, done) in rows
+    ]
 
 
 @router.get("/scrape-profile/{task_id}", response_model=InfluencerScrapeTaskOut)
@@ -351,6 +461,31 @@ def get_scrape_profile(
     task = db.get(InfluencerScrapeTask, task_id)
     if not task or (task.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="task not found")
+    return _scrape_task_out(db, task)
+
+
+@router.post("/scrape-profile/{task_id}/run", response_model=InfluencerScrapeTaskOut)
+def run_scrape_profile(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """对暂存/失败的任务发起（重新）抓取：置为 pending 并后台跑对应 actor。"""
+    task = db.get(InfluencerScrapeTask, task_id)
+    if not task or (task.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="task not found")
+    if task.status in ("running", "pending"):
+        raise HTTPException(status_code=400, detail="该任务正在抓取中")
+    task.status = "pending"
+    task.error = None
+    task.result = None
+    task.started_at = None
+    task.finished_at = None
+    db.commit()
+    db.refresh(task)
+    threading.Thread(
+        target=_run_scrape_profile_bg, args=(task.id,), daemon=True
+    ).start()
     return _scrape_task_out(db, task)
 
 

@@ -27,6 +27,9 @@ class InfluencerScrapeTask(Base, TimestampMixin):
         String(32), nullable=False, default="facebook", server_default="facebook"
     )
     url: Mapped[str] = mapped_column(String(512), nullable=False)
+    # 批次名：批量导入链接时用于分组/筛选（如「7月FB第一批」），可空
+    batch: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # status：staged(仅暂存未跑) / pending / running / done / failed / contacted(已私信)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", index=True
     )

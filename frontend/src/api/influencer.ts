@@ -104,13 +104,22 @@ export type ScrapeTaskResult = Partial<Influencer> & {
 export interface InfluencerScrapeTask {
   id: number
   platform: ScrapePlatform
+  batch?: string | null
   url: string
-  status: 'pending' | 'running' | 'done' | 'failed'
+  status: 'staged' | 'pending' | 'running' | 'done' | 'failed' | 'contacted'
   error?: string | null
   result?: ScrapeTaskResult | null
   created_at: string
   finished_at?: string | null
   influencer_id?: number | null
+}
+
+export interface InfluencerScrapeBatch {
+  platform: ScrapePlatform
+  batch?: string | null
+  total: number
+  staged: number
+  done: number
 }
 
 export const influencerApi = {
@@ -133,8 +142,25 @@ export const influencerApi = {
     http.post<unknown, InfluencerScrapeTask>('/influencers/scrape-profile', { url, platform }),
   getScrapeProfile: (taskId: number) =>
     http.get<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}`),
-  listScrapeProfiles: (limit = 50) =>
-    http.get<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile', { params: { limit } }),
+  listScrapeProfiles: (params?: {
+    limit?: number
+    platform?: ScrapePlatform
+    batch?: string
+    status?: string
+  }) =>
+    http.get<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile', {
+      params: { limit: 100, ...(params || {}) },
+    }),
+  batchStageScrapeProfiles: (data: {
+    urls: string[]
+    platform: ScrapePlatform
+    batch?: string | null
+  }) =>
+    http.post<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile/batch', data),
+  listScrapeBatches: () =>
+    http.get<unknown, InfluencerScrapeBatch[]>('/influencers/scrape-profile-batches'),
+  runScrapeProfile: (taskId: number) =>
+    http.post<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}/run`),
   saveScrapeProfile: (taskId: number, notes?: string) =>
     http.post<unknown, Influencer>(`/influencers/scrape-profile/${taskId}/save`, { notes }),
   listPosts: (id: number) =>

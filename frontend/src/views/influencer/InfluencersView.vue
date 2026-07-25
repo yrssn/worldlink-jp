@@ -43,21 +43,25 @@ const form = reactive<Partial<Influencer>>({
 // ─── 自动抓取（手工新增时按主页 URL 异步抓资料填表） ──────────────
 const scrapeUrl = ref('')
 const scrapeTaskId = ref<number | null>(null)
-const scrapeStatus = ref<'' | 'pending' | 'running' | 'done' | 'failed'>('')
+const scrapeStatus = ref<'' | 'staged' | 'pending' | 'running' | 'done' | 'failed' | 'contacted'>('')
 const scrapeError = ref('')
 let scrapeTimer: ReturnType<typeof setTimeout> | null = null
 
 const SCRAPE_STATUS_TEXT: Record<string, string> = {
+  staged: '待处理',
   pending: '排队中…',
   running: '抓取中…',
   done: '抓取完成',
-  failed: '抓取失败'
+  failed: '抓取失败',
+  contacted: '已私信'
 }
 const SCRAPE_STATUS_TAG: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
+  staged: 'info',
   pending: 'info',
   running: 'warning',
   done: 'success',
-  failed: 'danger'
+  failed: 'danger',
+  contacted: 'success'
 }
 
 function stopScrapePolling() {
@@ -145,7 +149,17 @@ const taskStarting = ref(false)
 const tasks = ref<InfluencerScrapeTask[]>([])
 const tasksLoading = ref(false)
 const savingTaskId = ref<number | null>(null)
+const runningTaskId = ref<number | null>(null)
 let taskListTimer: ReturnType<typeof setTimeout> | null = null
+
+// 批量导入（暂存）与筛选
+const batchImportUrls = ref('')
+const batchName = ref('')
+const batchImporting = ref(false)
+const filterPlatform = ref<'' | ScrapePlatform>('')
+const filterBatch = ref<string>('')
+const filterStatus = ref<string>('')
+const batches = ref<{ platform: string; batch?: string | null; total: number; staged: number; done: number }[]>([])
 
 const detailVisible = ref(false)
 const detailTask = ref<InfluencerScrapeTask | null>(null)
@@ -208,18 +222,76 @@ function scheduleTaskPolling() {
 async function loadTasks() {
   tasksLoading.value = true
   try {
-    tasks.value = await influencerApi.listScrapeProfiles(50)
+    tasks.value = await influencerApi.listScrapeProfiles({
+      platform: filterPlatform.value || undefined,
+      batch: filterBatch.value || undefined,
+      status: filterStatus.value || undefined,
+    })
   } finally {
     tasksLoading.value = false
   }
   scheduleTaskPolling()
 }
 
+async function loadBatches() {
+  try {
+    batches.value = await influencerApi.listScrapeBatches()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+function batchLabel(b: { platform: string; batch?: string | null; total: number; staged: number }) {
+  const name = b.batch || '（未分组）'
+  const plat = PLATFORM_LABEL[b.platform] || b.platform
+  return `${plat} · ${name}（${b.total}，待处理 ${b.staged}）`
+}
+
 function openTaskDialog() {
   taskDialogVisible.value = true
   taskScrapeUrl.value = ''
   taskPlatform.value = 'facebook'
+  batchImportUrls.value = ''
   loadTasks()
+  loadBatches()
+}
+
+async function importBatch() {
+  const urls = batchImportUrls.value
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!urls.length) {
+    ElMessage.warning('请粘贴要导入的链接（每行一个）')
+    return
+  }
+  batchImporting.value = true
+  try {
+    const created = await influencerApi.batchStageScrapeProfiles({
+      urls,
+      platform: taskPlatform.value,
+      batch: batchName.value.trim() || null,
+    })
+    batchImportUrls.value = ''
+    ElMessage.success(`已暂存 ${created.length} 条，稍后可逐条/整批抓取或私信`)
+    await Promise.all([loadTasks(), loadBatches()])
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    batchImporting.value = false
+  }
+}
+
+async function runTaskScrape(row: InfluencerScrapeTask) {
+  runningTaskId.value = row.id
+  try {
+    await influencerApi.runScrapeProfile(row.id)
+    await loadTasks()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    runningTaskId.value = null
+  }
 }
 
 function closeTaskDialog() {
@@ -259,19 +331,28 @@ const dmLoading = ref(false)
 const dmRunning = ref(false)
 const dmUrl = ref('')
 const dmPlatform = ref<ScrapePlatform>('facebook')
+const dmSourceTaskId = ref<number | null>(null)
 
-async function openDmDialog() {
-  const url = taskScrapeUrl.value.trim()
+async function openDmDialog(row?: InfluencerScrapeTask) {
+  let url: string
+  if (row) {
+    url = (row.url || '').trim()
+    dmPlatform.value = row.platform
+    dmSourceTaskId.value = row.id
+  } else {
+    url = taskScrapeUrl.value.trim()
+    dmPlatform.value = taskPlatform.value
+    dmSourceTaskId.value = null
+  }
   if (!url) {
     ElMessage.warning(
-      taskPlatform.value === 'instagram'
+      dmPlatform.value === 'instagram'
         ? '请先输入 Instagram 用户名或主页链接'
         : '请先粘贴达人主页链接',
     )
     return
   }
   dmUrl.value = url
-  dmPlatform.value = taskPlatform.value
   dmDialogVisible.value = true
   dmLoading.value = true
   try {
@@ -307,6 +388,7 @@ async function startDmOutreach() {
       browser_id: dmBrowserId.value,
       content_id: dmContentId.value,
       platform: dmPlatform.value,
+      source_task_id: dmSourceTaskId.value ?? undefined,
     })
     if (r.text_sent || r.images_sent > 0) {
       const parts = [
@@ -314,7 +396,7 @@ async function startDmOutreach() {
         r.images_sent > 0 ? `${r.images_sent} 张图片` : '',
       ].filter(Boolean)
       ElMessage.success(
-        `私信已发送（${parts.join(' + ')}）${r.scrape_task_id != null ? '，已自动发起主页抓取' : ''}`,
+        `私信已发送（${parts.join(' + ')}）${r.scrape_task_id != null ? '，已自动抓取并入库' : ''}`,
       )
       dmDialogVisible.value = false
       loadTasks()
@@ -628,9 +710,53 @@ onUnmounted(() => {
           @keyup.enter="startTaskScrape"
         />
         <el-button type="primary" :loading="taskStarting" @click="startTaskScrape">发起抓取</el-button>
-        <el-button type="success" @click="openDmDialog">私信建联</el-button>
+        <el-button type="success" @click="openDmDialog()">私信建联</el-button>
         <el-button :loading="tasksLoading" @click="loadTasks">刷新</el-button>
       </div>
+
+      <!-- 批量导入（只暂存不跑抓取），按 平台 + 批次名 分类 -->
+      <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: flex-start">
+        <el-input
+          v-model="batchImportUrls"
+          type="textarea"
+          :rows="3"
+          placeholder="批量暂存：每行一个链接/用户名（平台跟上方一致）；只保存不抓取"
+          style="flex: 1"
+        />
+        <div style="display: flex; flex-direction: column; gap: 8px; width: 200px">
+          <el-input v-model="batchName" placeholder="批次名，如「7月FB第一批」" clearable />
+          <el-button type="primary" plain :loading="batchImporting" @click="importBatch">
+            批量导入暂存
+          </el-button>
+        </div>
+      </div>
+
+      <!-- 筛选：平台 + 批次 + 状态 -->
+      <div style="display: flex; gap: 8px; margin-bottom: 12px">
+        <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 130px" @change="loadTasks">
+          <el-option
+            v-for="p in SCRAPE_PLATFORMS"
+            :key="p.value"
+            :label="p.label"
+            :value="p.value"
+          />
+        </el-select>
+        <el-select v-model="filterBatch" placeholder="全部批次" clearable filterable style="width: 260px" @change="loadTasks">
+          <el-option
+            v-for="b in batches"
+            :key="`${b.platform}::${b.batch || ''}`"
+            :label="batchLabel(b)"
+            :value="b.batch || ''"
+          />
+        </el-select>
+        <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 130px" @change="loadTasks">
+          <el-option label="待处理" value="staged" />
+          <el-option label="抓取中" value="running" />
+          <el-option label="已完成" value="done" />
+          <el-option label="失败" value="failed" />
+        </el-select>
+      </div>
+
       <el-table v-loading="tasksLoading" :data="tasks" border max-height="420">
         <el-table-column prop="id" label="ID" width="64" />
         <el-table-column label="平台" width="96">
@@ -640,7 +766,12 @@ onUnmounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="主页链接 / 用户名" min-width="220">
+        <el-table-column label="批次" width="130">
+          <template #default="{ row }">
+            <span style="font-size: 12px; color: #606266">{{ row.batch || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="主页链接 / 用户名" min-width="200">
           <template #default="{ row }">
             <a :href="row.url" target="_blank" style="word-break: break-all">{{ row.url }}</a>
           </template>
@@ -658,7 +789,7 @@ onUnmounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="230">
+        <el-table-column label="操作" width="300">
           <template #default="{ row }">
             <template v-if="row.status === 'done'">
               <el-button size="small" @click="viewTask(row)">查看资料</el-button>
@@ -680,9 +811,23 @@ onUnmounted(() => {
                 存入达人库
               </el-button>
             </template>
-            <span v-else-if="row.status === 'failed'" style="color: #f56c6c; font-size: 12px">
-              {{ row.error || '抓取失败' }}
-            </span>
+            <template v-else-if="row.status === 'staged' || row.status === 'failed' || row.status === 'contacted'">
+              <el-button
+                size="small"
+                type="primary"
+                :loading="runningTaskId === row.id"
+                @click="runTaskScrape(row)"
+              >
+                抓取
+              </el-button>
+              <el-button size="small" type="success" @click="openDmDialog(row)">私信建联</el-button>
+              <span
+                v-if="row.status === 'failed'"
+                style="color: #f56c6c; font-size: 12px; margin-left: 4px"
+              >
+                {{ row.error || '抓取失败' }}
+              </span>
+            </template>
             <span v-else style="color: #909399; font-size: 12px">抓取中…</span>
           </template>
         </el-table-column>

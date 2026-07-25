@@ -84,6 +84,7 @@ export const dmApi = {
     browser_id: string
     content_id: number
     platform?: string
+    source_task_id?: number
   }) => http.post<unknown, DmOutreachResult>('/dm/outreach/start', data, { timeout: 300000 }),
 
   uploadImage: (file: File) => {

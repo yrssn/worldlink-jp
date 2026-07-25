@@ -404,15 +404,29 @@ def start_dm_outreach(
         _record_outreach_log(
             db, user, target_url, body.browser_id.strip(), content, result, platform
         )
-        task = InfluencerScrapeTask(
-            owner_id=user.id, platform=platform, url=target_url, status="pending"
-        )
-        db.add(task)
+        # 私信发出后自动抓主页并入库；若来自暂存列表则复用同一行任务，避免重复
+        task: InfluencerScrapeTask | None = None
+        if body.source_task_id:
+            st = db.get(InfluencerScrapeTask, body.source_task_id)
+            if st and st.owner_id == user.id:
+                st.platform = platform
+                st.url = target_url
+                st.status = "pending"
+                st.error = None
+                st.result = None
+                st.started_at = None
+                st.finished_at = None
+                task = st
+        if task is None:
+            task = InfluencerScrapeTask(
+                owner_id=user.id, platform=platform, url=target_url, status="pending"
+            )
+            db.add(task)
         db.commit()
         db.refresh(task)
         scrape_task_id = task.id
         threading.Thread(
-            target=_run_scrape_profile_bg, args=(task.id,), daemon=True
+            target=_run_scrape_profile_bg, args=(task.id, True), daemon=True
         ).start()
     return DmOutreachOut(
         ok=True,
