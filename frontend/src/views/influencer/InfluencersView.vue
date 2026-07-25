@@ -554,8 +554,12 @@ function viewTask(task: InfluencerScrapeTask) {
 async function saveTask(task: InfluencerScrapeTask) {
   savingTaskId.value = task.id
   try {
-    const inf = await influencerApi.saveScrapeProfile(task.id)
-    ElMessage.success(`已存入达人库：${inf.display_name}`)
+    const { influencer, created } = await influencerApi.saveScrapeProfile(task.id)
+    if (created) {
+      ElMessage.success(`已存入达人库：${influencer.display_name}`)
+    } else {
+      ElMessage.warning(`该达人已在库中，已复用未重复创建：${influencer.display_name}`)
+    }
     await loadTasks()
     refresh()
   } catch {

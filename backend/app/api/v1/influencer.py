@@ -26,6 +26,7 @@ from app.schemas.influencer import (
     InfluencerOut,
     InfluencerScrapeBatchCreate,
     InfluencerScrapeBatchOut,
+    InfluencerScrapeSaveResult,
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
     InfluencerScrapeTaskSaveRequest,
@@ -526,14 +527,17 @@ def run_scrape_profile(
     return _scrape_task_out(db, task)
 
 
-@router.post("/scrape-profile/{task_id}/save", response_model=InfluencerOut)
+@router.post("/scrape-profile/{task_id}/save", response_model=InfluencerScrapeSaveResult)
 def save_scrape_profile(
     task_id: int,
     payload: InfluencerScrapeTaskSaveRequest | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """把某个已完成的抓取任务结果存入建联达人库（按主页ID/邮箱去重）。"""
+    """把某个已完成的抓取任务结果存入建联达人库（按主页ID/邮箱去重）。
+
+    命中已有达人时复用、不重复创建，并通过 created=False 告知前端。
+    """
     task = db.get(InfluencerScrapeTask, task_id)
     if not task or (task.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="task not found")
@@ -541,14 +545,14 @@ def save_scrape_profile(
         raise HTTPException(status_code=400, detail="该任务尚未抓取完成，无法存入")
     notes = payload.notes if payload else None
     if (task.platform or "facebook") == "instagram":
-        inf, _created = influencer_service.create_influencer_from_ig_form(
+        inf, created = influencer_service.create_influencer_from_ig_form(
             db, owner_id=task.owner_id, form=task.result, notes=notes
         )
     else:
-        inf, _created = influencer_service.create_influencer_from_form(
+        inf, created = influencer_service.create_influencer_from_form(
             db, owner_id=task.owner_id, form=task.result, notes=notes
         )
-    return inf
+    return InfluencerScrapeSaveResult(influencer=InfluencerOut.model_validate(inf), created=created)
 
 
 @router.get("/{iid}", response_model=InfluencerDetailOut)

@@ -166,7 +166,10 @@ export const influencerApi = {
   deleteScrapeProfile: (taskId: number) =>
     http.delete(`/influencers/scrape-profile/${taskId}`),
   saveScrapeProfile: (taskId: number, notes?: string) =>
-    http.post<unknown, Influencer>(`/influencers/scrape-profile/${taskId}/save`, { notes }),
+    http.post<unknown, { influencer: Influencer; created: boolean }>(
+      `/influencers/scrape-profile/${taskId}/save`,
+      { notes },
+    ),
   listPosts: (id: number) =>
     http.get<unknown, InfluencerSourcePost[]>(`/influencers/${id}/posts`),
   listOutreachLogs: (id: number) =>

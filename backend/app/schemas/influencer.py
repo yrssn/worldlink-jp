@@ -164,6 +164,13 @@ class InfluencerScrapeTaskSaveRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class InfluencerScrapeSaveResult(BaseModel):
+    """存入达人库的结果：created=False 表示库中已存在、已复用未重复创建。"""
+
+    influencer: InfluencerOut
+    created: bool
+
+
 class InfluencerFromScrapeRequest(BaseModel):
     """从抓取"待审核博主"列表点击【建联】时使用。
     传入 post_id 或 author_url，其中任一即可定位。
