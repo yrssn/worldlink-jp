@@ -163,6 +163,8 @@ export const influencerApi = {
     http.post<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}/run`),
   updateScrapeProfile: (taskId: number, data: { platform?: ScrapePlatform }) =>
     http.patch<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}`, data),
+  deleteScrapeProfile: (taskId: number) =>
+    http.delete(`/influencers/scrape-profile/${taskId}`),
   saveScrapeProfile: (taskId: number, notes?: string) =>
     http.post<unknown, Influencer>(`/influencers/scrape-profile/${taskId}/save`, { notes }),
   listPosts: (id: number) =>

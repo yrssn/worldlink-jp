@@ -486,6 +486,21 @@ def update_scrape_profile(
     return _scrape_task_out(db, task)
 
 
+@router.delete("/scrape-profile/{task_id}", response_model=Msg)
+def delete_scrape_profile(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """删除一条暂存/抓取任务（不影响已入库的达人）。"""
+    task = db.get(InfluencerScrapeTask, task_id)
+    if not task or (task.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="task not found")
+    db.delete(task)
+    db.commit()
+    return Msg(msg="deleted")
+
+
 @router.post("/scrape-profile/{task_id}/run", response_model=InfluencerScrapeTaskOut)
 def run_scrape_profile(
     task_id: int,

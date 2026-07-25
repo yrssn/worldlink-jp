@@ -140,6 +140,7 @@ async function startScrape() {
 
 // ─── 抓取任务列表（独立面板：发起抓取 → 看资料 → 存入达人库） ────────
 const taskDialogVisible = ref(false)
+const taskTab = ref<'single' | 'batch'>('single')
 const taskScrapeUrl = ref('')
 const taskPlatform = ref<ScrapePlatform>('facebook')
 const taskPlaceholder = computed(
@@ -171,6 +172,7 @@ async function updateTaskPlatform(row: InfluencerScrapeTask, platform: ScrapePla
 // 批量导入（暂存）与筛选
 const batchImportUrls = ref('')
 const batchName = ref('')
+const batchPlatform = ref<ScrapePlatform>('facebook')
 const batchImporting = ref(false)
 const filterPlatform = ref<'' | ScrapePlatform>('')
 const filterBatch = ref<string>('')
@@ -285,7 +287,7 @@ async function importBatch() {
   try {
     const created = await influencerApi.batchStageScrapeProfiles({
       urls,
-      platform: taskPlatform.value,
+      platform: batchPlatform.value,
       batch: batchName.value.trim() || null,
     })
     batchImportUrls.value = ''
@@ -329,6 +331,48 @@ async function batchRunScrape() {
     }
     ElMessage.success(`已发起 ${rows.length} 条抓取`)
     await loadTasks()
+  } finally {
+    batchRunning.value = false
+  }
+}
+
+async function deleteTask(row: InfluencerScrapeTask) {
+  try {
+    await ElMessageBox.confirm(`确认删除该条暂存/任务？\n${row.url}`, '提示', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await influencerApi.deleteScrapeProfile(row.id)
+    ElMessage.success('已删除')
+    await Promise.all([loadTasks(), loadBatches()])
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+async function batchDelete() {
+  const rows = selectedTasks.value.slice()
+  if (!rows.length) {
+    ElMessage.warning('请先勾选要删除的行')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`确认删除选中的 ${rows.length} 条？`, '提示', { type: 'warning' })
+  } catch {
+    return
+  }
+  batchRunning.value = true
+  try {
+    for (const r of rows) {
+      try {
+        await influencerApi.deleteScrapeProfile(r.id)
+      } catch {
+        /* 单条失败继续 */
+      }
+    }
+    ElMessage.success(`已删除 ${rows.length} 条`)
+    await Promise.all([loadTasks(), loadBatches()])
   } finally {
     batchRunning.value = false
   }
@@ -783,8 +827,60 @@ onUnmounted(() => {
       width="1080px"
       @closed="closeTaskDialog"
     >
-      <div style="display: flex; gap: 8px; margin-bottom: 12px">
-        <el-select v-model="taskPlatform" style="width: 140px">
+      <el-tabs v-model="taskTab" style="margin-bottom: 4px">
+        <!-- 单个：抓取 / 私信 -->
+        <el-tab-pane label="单个操作" name="single">
+          <div style="display: flex; gap: 8px">
+            <el-select v-model="taskPlatform" style="width: 130px">
+              <el-option
+                v-for="p in SCRAPE_PLATFORMS"
+                :key="p.value"
+                :label="p.label"
+                :value="p.value"
+              />
+            </el-select>
+            <el-input
+              v-model="taskScrapeUrl"
+              :placeholder="taskPlaceholder"
+              clearable
+              style="flex: 1"
+              @keyup.enter="startTaskScrape"
+            />
+            <el-button type="primary" :loading="taskStarting" @click="startTaskScrape">
+              发起抓取
+            </el-button>
+            <el-button type="success" @click="openDmDialog()">私信建联</el-button>
+          </div>
+        </el-tab-pane>
+
+        <!-- 批量导入（只暂存不跑抓取） -->
+        <el-tab-pane label="批量导入暂存" name="batch">
+          <div style="display: flex; gap: 8px; margin-bottom: 8px">
+            <el-select v-model="batchPlatform" style="width: 130px">
+              <el-option
+                v-for="p in SCRAPE_PLATFORMS"
+                :key="p.value"
+                :label="p.label"
+                :value="p.value"
+              />
+            </el-select>
+            <el-input v-model="batchName" placeholder="批次名，如「7月FB第一批」" clearable style="width: 240px" />
+            <el-button type="primary" :loading="batchImporting" @click="importBatch">
+              导入暂存（只保存不抓取）
+            </el-button>
+          </div>
+          <el-input
+            v-model="batchImportUrls"
+            type="textarea"
+            :rows="3"
+            placeholder="每行一个链接 / 用户名，导入后只暂存、不抓取，可稍后逐条或整批处理"
+          />
+        </el-tab-pane>
+      </el-tabs>
+
+      <!-- 工具条：筛选 + 刷新 -->
+      <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center">
+        <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 120px" @change="loadTasks">
           <el-option
             v-for="p in SCRAPE_PLATFORMS"
             :key="p.value"
@@ -792,45 +888,7 @@ onUnmounted(() => {
             :value="p.value"
           />
         </el-select>
-        <el-input
-          v-model="taskScrapeUrl"
-          :placeholder="taskPlaceholder"
-          clearable
-          @keyup.enter="startTaskScrape"
-        />
-        <el-button type="primary" :loading="taskStarting" @click="startTaskScrape">发起抓取</el-button>
-        <el-button type="success" @click="openDmDialog()">私信建联</el-button>
-        <el-button :loading="tasksLoading" @click="loadTasks">刷新</el-button>
-      </div>
-
-      <!-- 批量导入（只暂存不跑抓取），按 平台 + 批次名 分类 -->
-      <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: flex-start">
-        <el-input
-          v-model="batchImportUrls"
-          type="textarea"
-          :rows="3"
-          placeholder="批量暂存：每行一个链接/用户名（平台跟上方一致）；只保存不抓取"
-          style="flex: 1"
-        />
-        <div style="display: flex; flex-direction: column; gap: 8px; width: 200px">
-          <el-input v-model="batchName" placeholder="批次名，如「7月FB第一批」" clearable />
-          <el-button type="primary" plain :loading="batchImporting" @click="importBatch">
-            批量导入暂存
-          </el-button>
-        </div>
-      </div>
-
-      <!-- 筛选：平台 + 批次 + 状态 -->
-      <div style="display: flex; gap: 8px; margin-bottom: 12px">
-        <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 130px" @change="loadTasks">
-          <el-option
-            v-for="p in SCRAPE_PLATFORMS"
-            :key="p.value"
-            :label="p.label"
-            :value="p.value"
-          />
-        </el-select>
-        <el-select v-model="filterBatch" placeholder="全部批次" clearable filterable style="width: 260px" @change="loadTasks">
+        <el-select v-model="filterBatch" placeholder="全部批次" clearable filterable style="width: 240px" @change="loadTasks">
           <el-option
             v-for="b in batches"
             :key="`${b.platform}::${b.batch || ''}`"
@@ -838,17 +896,15 @@ onUnmounted(() => {
             :value="b.batch || ''"
           />
         </el-select>
-        <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 130px" @change="loadTasks">
+        <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 120px" @change="loadTasks">
           <el-option label="待处理" value="staged" />
           <el-option label="抓取中" value="running" />
           <el-option label="已完成" value="done" />
           <el-option label="失败" value="failed" />
         </el-select>
-      </div>
-
-      <!-- 批量操作：勾选后可整批抓取 / 整批私信（私信要求所选平台一致） -->
-      <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
-        <span style="font-size: 13px; color: #606266">已选 {{ selectedTasks.length }} 项</span>
+        <el-button :loading="tasksLoading" @click="loadTasks">刷新</el-button>
+        <div style="flex: 1" />
+        <span style="font-size: 13px; color: #909399">已选 {{ selectedTasks.length }} 项</span>
         <el-button
           type="primary"
           plain
@@ -865,7 +921,16 @@ onUnmounted(() => {
           :disabled="selectedTasks.length === 0"
           @click="openDmDialogBatch"
         >
-          批量私信建联
+          批量私信
+        </el-button>
+        <el-button
+          type="danger"
+          plain
+          size="small"
+          :disabled="selectedTasks.length === 0"
+          @click="batchDelete"
+        >
+          批量删除
         </el-button>
       </div>
 
@@ -918,46 +983,51 @@ onUnmounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="300">
+        <el-table-column label="操作" width="270" fixed="right">
           <template #default="{ row }">
             <template v-if="row.status === 'done'">
-              <el-button size="small" @click="viewTask(row)">查看资料</el-button>
+              <el-button link type="primary" size="small" @click="viewTask(row)">查看</el-button>
               <el-button
                 v-if="row.influencer_id"
-                size="small"
+                link
                 type="success"
+                size="small"
                 @click="router.push(`/influencers/${row.influencer_id}`)"
               >
                 已入库
               </el-button>
               <el-button
                 v-else
-                size="small"
+                link
                 type="primary"
+                size="small"
                 :loading="savingTaskId === row.id"
                 @click="saveTask(row)"
               >
-                存入达人库
+                入库
               </el-button>
             </template>
-            <template v-else-if="row.status === 'staged' || row.status === 'failed' || row.status === 'contacted'">
+            <template v-else-if="row.status === 'staged' || row.status === 'failed'">
               <el-button
-                size="small"
+                link
                 type="primary"
+                size="small"
                 :loading="runningTaskId === row.id"
                 @click="runTaskScrape(row)"
               >
-                抓取
+                {{ row.status === 'failed' ? '重抓' : '抓取' }}
               </el-button>
-              <el-button size="small" type="success" @click="openDmDialog(row)">私信建联</el-button>
-              <span
-                v-if="row.status === 'failed'"
-                style="color: #f56c6c; font-size: 12px; margin-left: 4px"
+              <el-button link type="success" size="small" @click="openDmDialog(row)">私信</el-button>
+              <el-tooltip
+                v-if="row.status === 'failed' && row.error"
+                :content="row.error"
+                placement="top"
               >
-                {{ row.error || '抓取失败' }}
-              </span>
+                <span style="color: #f56c6c; font-size: 12px; cursor: help">失败原因</span>
+              </el-tooltip>
             </template>
             <span v-else style="color: #909399; font-size: 12px">抓取中…</span>
+            <el-button link type="danger" size="small" @click="deleteTask(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
