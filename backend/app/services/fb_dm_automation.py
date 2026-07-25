@@ -231,6 +231,13 @@ def open_profile_and_message(
         else:
             _log(f"未找到「发消息」按钮（可能未登录 {site_name}，或对方未开放私信）")
         final_url = str(page.evaluate("window.location.href", timeout=5) or url)
+    # 私信发出后关闭刚打开的标签页，避免窗口内标签堆积卡顿
+    if text_sent or images_sent:
+        try:
+            cdp_transport.close_target(browser_ws, target_id, user.id)
+            _log("已关闭私信标签页")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[{}] close target {} skipped: {}", tag, target_id, e)
     return {
         "page_opened": True,
         "message_clicked": message_clicked,
