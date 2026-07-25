@@ -150,7 +150,23 @@ const tasks = ref<InfluencerScrapeTask[]>([])
 const tasksLoading = ref(false)
 const savingTaskId = ref<number | null>(null)
 const runningTaskId = ref<number | null>(null)
+const selectedTasks = ref<InfluencerScrapeTask[]>([])
+const batchRunning = ref(false)
 let taskListTimer: ReturnType<typeof setTimeout> | null = null
+
+function onTaskSelectionChange(rows: InfluencerScrapeTask[]) {
+  selectedTasks.value = rows
+}
+
+async function updateTaskPlatform(row: InfluencerScrapeTask, platform: ScrapePlatform) {
+  try {
+    await influencerApi.updateScrapeProfile(row.id, { platform })
+    row.platform = platform
+    ElMessage.success('已修改平台')
+  } catch {
+    await loadTasks()
+  }
+}
 
 // 批量导入（暂存）与筛选
 const batchImportUrls = ref('')
@@ -294,6 +310,30 @@ async function runTaskScrape(row: InfluencerScrapeTask) {
   }
 }
 
+async function batchRunScrape() {
+  const rows = selectedTasks.value.filter(
+    (t) => t.status === 'staged' || t.status === 'failed' || t.status === 'done',
+  )
+  if (!rows.length) {
+    ElMessage.warning('请勾选要抓取的行（待处理/失败/已完成可重抓）')
+    return
+  }
+  batchRunning.value = true
+  try {
+    for (const r of rows) {
+      try {
+        await influencerApi.runScrapeProfile(r.id)
+      } catch {
+        /* 单条失败继续 */
+      }
+    }
+    ElMessage.success(`已发起 ${rows.length} 条抓取`)
+    await loadTasks()
+  } finally {
+    batchRunning.value = false
+  }
+}
+
 function closeTaskDialog() {
   stopTaskPolling()
 }
@@ -332,8 +372,24 @@ const dmRunning = ref(false)
 const dmUrl = ref('')
 const dmPlatform = ref<ScrapePlatform>('facebook')
 const dmSourceTaskId = ref<number | null>(null)
+const dmBatchRows = ref<InfluencerScrapeTask[]>([])
+
+async function loadDmOptions() {
+  dmLoading.value = true
+  try {
+    const [windows, contents] = await Promise.all([
+      bitbrowserApi.listWindows(),
+      dmApi.listContents({ active_only: true }),
+    ])
+    dmWindows.value = windows
+    dmContents.value = contents
+  } finally {
+    dmLoading.value = false
+  }
+}
 
 async function openDmDialog(row?: InfluencerScrapeTask) {
+  dmBatchRows.value = []
   let url: string
   if (row) {
     url = (row.url || '').trim()
@@ -354,17 +410,26 @@ async function openDmDialog(row?: InfluencerScrapeTask) {
   }
   dmUrl.value = url
   dmDialogVisible.value = true
-  dmLoading.value = true
-  try {
-    const [windows, contents] = await Promise.all([
-      bitbrowserApi.listWindows(),
-      dmApi.listContents({ active_only: true }),
-    ])
-    dmWindows.value = windows
-    dmContents.value = contents
-  } finally {
-    dmLoading.value = false
+  await loadDmOptions()
+}
+
+async function openDmDialogBatch() {
+  const rows = selectedTasks.value.slice()
+  if (!rows.length) {
+    ElMessage.warning('请先勾选要批量私信的达人')
+    return
   }
+  const platforms = new Set(rows.map((r) => r.platform))
+  if (platforms.size > 1) {
+    ElMessage.warning('批量私信要求所选达人平台一致，请分开操作或在表格内改成同一平台')
+    return
+  }
+  dmBatchRows.value = rows
+  dmPlatform.value = rows[0].platform
+  dmSourceTaskId.value = null
+  dmUrl.value = ''
+  dmDialogVisible.value = true
+  await loadDmOptions()
 }
 
 function windowLabel(w: BitBrowserWindow) {
@@ -383,6 +448,30 @@ async function startDmOutreach() {
   }
   dmRunning.value = true
   try {
+    // 批量：对所选达人依次发送同一内容（同一窗口、同平台）
+    if (dmBatchRows.value.length > 0) {
+      let ok = 0
+      let fail = 0
+      for (const row of dmBatchRows.value) {
+        try {
+          const r = await dmApi.startOutreach({
+            url: row.url,
+            browser_id: dmBrowserId.value,
+            content_id: dmContentId.value,
+            platform: row.platform,
+            source_task_id: row.id,
+          })
+          if (r.text_sent || r.images_sent > 0) ok += 1
+          else fail += 1
+        } catch {
+          fail += 1
+        }
+      }
+      ElMessage.success(`批量私信完成：成功 ${ok}，未成功 ${fail}（成功的已自动抓取入库）`)
+      dmDialogVisible.value = false
+      loadTasks()
+      return
+    }
     const r = await dmApi.startOutreach({
       url: dmUrl.value,
       browser_id: dmBrowserId.value,
@@ -757,13 +846,53 @@ onUnmounted(() => {
         </el-select>
       </div>
 
-      <el-table v-loading="tasksLoading" :data="tasks" border max-height="420">
-        <el-table-column prop="id" label="ID" width="64" />
-        <el-table-column label="平台" width="96">
+      <!-- 批量操作：勾选后可整批抓取 / 整批私信（私信要求所选平台一致） -->
+      <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
+        <span style="font-size: 13px; color: #606266">已选 {{ selectedTasks.length }} 项</span>
+        <el-button
+          type="primary"
+          plain
+          size="small"
+          :loading="batchRunning"
+          :disabled="selectedTasks.length === 0"
+          @click="batchRunScrape"
+        >
+          批量抓取
+        </el-button>
+        <el-button
+          type="success"
+          size="small"
+          :disabled="selectedTasks.length === 0"
+          @click="openDmDialogBatch"
+        >
+          批量私信建联
+        </el-button>
+      </div>
+
+      <el-table
+        v-loading="tasksLoading"
+        :data="tasks"
+        border
+        max-height="420"
+        @selection-change="onTaskSelectionChange"
+      >
+        <el-table-column type="selection" width="44" />
+        <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column label="平台" width="118">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.platform === 'instagram' ? 'danger' : 'primary'" effect="plain">
-              {{ PLATFORM_LABEL[row.platform] || row.platform }}
-            </el-tag>
+            <el-select
+              :model-value="row.platform"
+              size="small"
+              style="width: 100px"
+              @change="(v: 'facebook' | 'instagram') => updateTaskPlatform(row, v)"
+            >
+              <el-option
+                v-for="p in SCRAPE_PLATFORMS"
+                :key="p.value"
+                :label="p.label"
+                :value="p.value"
+              />
+            </el-select>
           </template>
         </el-table-column>
         <el-table-column label="批次" width="130">
@@ -841,7 +970,10 @@ onUnmounted(() => {
             {{ PLATFORM_LABEL[dmPlatform] || dmPlatform }}
           </el-tag>
         </el-form-item>
-        <el-form-item label="主页链接">
+        <el-form-item v-if="dmBatchRows.length > 0" label="批量对象">
+          <span style="font-size: 13px">将对选中的 {{ dmBatchRows.length }} 个达人依次发送同一内容</span>
+        </el-form-item>
+        <el-form-item v-else label="主页链接">
           <span style="word-break: break-all">{{ dmUrl }}</span>
         </el-form-item>
         <el-form-item label="浏览器窗口">

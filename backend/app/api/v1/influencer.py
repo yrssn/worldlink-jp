@@ -29,6 +29,7 @@ from app.schemas.influencer import (
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
     InfluencerScrapeTaskSaveRequest,
+    InfluencerScrapeTaskUpdate,
     InfluencerUpdate,
     SocialAccountCreate,
     SocialAccountOut,
@@ -461,6 +462,27 @@ def get_scrape_profile(
     task = db.get(InfluencerScrapeTask, task_id)
     if not task or (task.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="task not found")
+    return _scrape_task_out(db, task)
+
+
+@router.patch("/scrape-profile/{task_id}", response_model=InfluencerScrapeTaskOut)
+def update_scrape_profile(
+    task_id: int,
+    payload: InfluencerScrapeTaskUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """修改暂存任务字段（目前支持改平台，纠正批量导入时选错的平台）。"""
+    task = db.get(InfluencerScrapeTask, task_id)
+    if not task or (task.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="task not found")
+    if payload.platform is not None:
+        platform = payload.platform.strip().lower()
+        if platform not in ("facebook", "instagram"):
+            raise HTTPException(status_code=400, detail="不支持的抓取平台")
+        task.platform = platform
+    db.commit()
+    db.refresh(task)
     return _scrape_task_out(db, task)
 
 

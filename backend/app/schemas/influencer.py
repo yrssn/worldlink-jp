@@ -152,6 +152,12 @@ class InfluencerScrapeTaskOut(BaseModel):
     influencer_id: Optional[int] = None
 
 
+class InfluencerScrapeTaskUpdate(BaseModel):
+    """在暂存列表内修改任务字段（目前支持改平台，纠正批量导入时选错的平台）。"""
+
+    platform: Optional[str] = Field(default=None, max_length=32)
+
+
 class InfluencerScrapeTaskSaveRequest(BaseModel):
     """把某个抓取任务的结果存入建联达人库时的可选备注。"""
 
