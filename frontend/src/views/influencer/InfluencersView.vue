@@ -824,7 +824,8 @@ onUnmounted(() => {
     <el-dialog
       v-model="taskDialogVisible"
       title="自动抓取任务"
-      width="1080px"
+      width="90%"
+      top="5vh"
       @closed="closeTaskDialog"
     >
       <el-tabs v-model="taskTab" style="margin-bottom: 4px">
@@ -938,7 +939,7 @@ onUnmounted(() => {
         v-loading="tasksLoading"
         :data="tasks"
         border
-        max-height="420"
+        max-height="60vh"
         @selection-change="onTaskSelectionChange"
       >
         <el-table-column type="selection" width="44" />
