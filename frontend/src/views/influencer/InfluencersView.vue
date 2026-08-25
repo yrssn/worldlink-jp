@@ -16,6 +16,7 @@ import {
   type BitBrowserWindow,
 } from '@/api/bitbrowser'
 import { dmApi, type DmContent } from '@/api/dm'
+import { countryApi, type Country } from '@/api/country'
 
 // 可自动抓资料的平台（对应 Apify actor）
 const SCRAPE_PLATFORMS: { value: ScrapePlatform; label: string; placeholder: string }[] = [
@@ -33,9 +34,6 @@ const ALL_PLATFORMS = (Object.keys(PLATFORM_LABELS) as ScrapePlatform[]).map((va
 }))
 const PLATFORM_LABEL: Record<string, string> = { ...PLATFORM_LABELS }
 
-// 国家分类备选（可手输新值，库里已用过的会自动并入候选）
-const COUNTRY_PRESETS = ['JP', 'CN', 'US', 'KR', 'TW', 'HK', 'SG', 'TH', 'VN', 'MY', 'ID', 'OTHER']
-
 const router = useRouter()
 const list = ref<Influencer[]>([])
 const total = ref(0)
@@ -43,17 +41,22 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const statusFilter = ref<string>('')
-const countryFilter = ref<string>('')
+/** 国家筛选：0 = 未关联 */
+const countryFilter = ref<number | undefined>(undefined)
 const platformFilter = ref<number | undefined>(undefined)
 const loading = ref(false)
 
-// 关联平台字典（「平台管理」里维护的平台 + 代码）与国家候选
+// 关联平台字典（「平台管理」）与国家字典（「国家管理」）
 const platforms = ref<BitBrowserPlatform[]>([])
-const countryOptions = ref<string[]>([])
+const countries = ref<Country[]>([])
 
-const countryChoices = computed(() =>
-  Array.from(new Set([...COUNTRY_PRESETS, ...countryOptions.value])),
-)
+/** 达人行上展示的国家文案：优先用关联国家的「中文 / English」，否则回退旧文本 */
+function countryLabel(row: Influencer): string {
+  if (row.country_name) {
+    return row.country_name_en ? `${row.country_name} / ${row.country_name_en}` : row.country_name
+  }
+  return row.country || ''
+}
 
 async function loadPlatforms() {
   try {
@@ -65,16 +68,21 @@ async function loadPlatforms() {
 
 async function loadCountries() {
   try {
-    countryOptions.value = await influencerApi.listCountries()
+    countries.value = await countryApi.list()
   } catch {
     /* 拦截器已提示 */
   }
 }
 
+/** 默认国家：日本（JP），没有则不预选 */
+const defaultCountryId = computed<number | undefined>(
+  () => countries.value.find((c) => (c.code || '').toUpperCase() === 'JP')?.id,
+)
+
 const dialogVisible = ref(false)
 const form = reactive<Partial<Influencer>>({
   display_name: '',
-  country: 'JP',
+  country_id: undefined,
   status: 'pre_contact'
 })
 
@@ -778,7 +786,7 @@ async function patchInfluencer(row: Influencer, patch: Partial<Influencer>) {
     const updated = await influencerApi.update(row.id, patch)
     Object.assign(row, updated)
     ElMessage.success('已保存')
-    if (patch.country !== undefined) loadCountries()
+
   } catch {
     refresh()
   }
@@ -792,7 +800,7 @@ async function refresh() {
       page_size: pageSize.value,
       keyword: keyword.value || undefined,
       status: statusFilter.value || undefined,
-      country: countryFilter.value || undefined,
+      country_id: countryFilter.value ?? undefined,
       platform_id: platformFilter.value ?? undefined
     })
     list.value = r.items
@@ -810,7 +818,7 @@ function openCreate() {
     phone: '',
     website: '',
     messenger: '',
-    country: 'JP',
+    country_id: defaultCountryId.value,
     region: '',
     city: '',
     address: '',
@@ -847,7 +855,7 @@ async function exportList() {
   await influencerApi.exportList({
     keyword: keyword.value || undefined,
     status: statusFilter.value || undefined,
-    country: countryFilter.value || undefined,
+    country_id: countryFilter.value ?? undefined,
     platform_id: platformFilter.value ?? undefined,
   })
 }
@@ -894,8 +902,8 @@ onUnmounted(() => {
         filterable
         style="width: 130px"
       >
-        <el-option label="未填" value="__none__" />
-        <el-option v-for="c in countryChoices" :key="c" :label="c" :value="c" />
+        <el-option label="未关联" :value="0" />
+        <el-option v-for="c in countries" :key="c.id" :label="c.label" :value="c.id" />
       </el-select>
       <el-select
         v-model="platformFilter"
@@ -945,20 +953,18 @@ onUnmounted(() => {
           </el-select>
         </template>
       </el-table-column>
-      <el-table-column label="国家" width="120">
+      <el-table-column label="国家" width="180">
         <template #default="{ row }">
           <el-select
-            :model-value="row.country || undefined"
+            :model-value="row.country_id ?? undefined"
             size="small"
             clearable
             filterable
-            allow-create
-            default-first-option
-            placeholder="未填"
-            style="width: 100px"
-            @change="(v: string | undefined) => patchInfluencer(row, { country: v || null })"
+            :placeholder="countryLabel(row) || '未关联'"
+            style="width: 160px"
+            @change="(v: number | undefined) => patchInfluencer(row, { country_id: v ?? null })"
           >
-            <el-option v-for="c in countryChoices" :key="c" :label="c" :value="c" />
+            <el-option v-for="c in countries" :key="c.id" :label="c.label" :value="c.id" />
           </el-select>
         </template>
       </el-table-column>
@@ -1069,17 +1075,15 @@ onUnmounted(() => {
         <el-form-item label="网站">
           <el-input v-model="form.website" />
         </el-form-item>
-        <el-form-item label="国家分类">
+        <el-form-item label="国家">
           <el-select
-            v-model="form.country"
+            v-model="form.country_id"
             filterable
-            allow-create
-            default-first-option
             clearable
-            placeholder="选择或直接输入"
+            placeholder="在「国家管理」里维护"
             style="width: 100%"
           >
-            <el-option v-for="c in countryChoices" :key="c" :label="c" :value="c" />
+            <el-option v-for="c in countries" :key="c.id" :label="c.label" :value="c.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="关联平台">

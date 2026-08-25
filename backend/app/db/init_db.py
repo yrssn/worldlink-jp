@@ -18,6 +18,7 @@ from app.models import scrape as _scrape_model  # noqa: F401
 from app.models import post as _post_model  # noqa: F401
 from app.models import influencer as _influencer_model  # noqa: F401
 from app.models import bitbrowser as _bitbrowser_model  # noqa: F401
+from app.models import country as _country_model  # noqa: F401
 from app.models import social_account as _social_account_model  # noqa: F401
 from app.models import dm as _dm_model  # noqa: F401
 from app.models import fb_group_scrape as _fb_group_scrape_model  # noqa: F401
@@ -39,6 +40,7 @@ def create_all() -> None:
     _ensure_fb_group_posts_columns()
     _ensure_fb_group_pull_task_columns()
     _ensure_influencer_platform_column()
+    _ensure_influencer_country_column()
     _ensure_influencer_scrape_task_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
@@ -180,6 +182,28 @@ def _ensure_influencer_platform_column() -> None:
     if "progress" not in cols:
         statements.append("ALTER TABLE influencers ADD COLUMN progress VARCHAR(255) NULL")
     for sql in statements:
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_influencer_country_column() -> None:
+    """为 influencers 补上关联国家的 country_id（与 alembic 012 对应）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "influencers" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("influencers")}
+    if "country_id" in cols:
+        return
+    for sql in (
+        "ALTER TABLE influencers ADD COLUMN country_id INT NULL",
+        "CREATE INDEX ix_influencers_country_id ON influencers (country_id)",
+    ):
         try:
             logger.info("[schema-patch] {}", sql)
             with engine.begin() as conn:
@@ -330,11 +354,17 @@ def ensure_default_admin(db: Session) -> None:
 
 
 def init_db() -> None:
-    from app.services import rbac_service
+    from app.services import country_service, rbac_service
 
     create_all()
     with SessionLocal() as db:
         ensure_default_admin(db)
+        # 国家字典：内置常用国家 + 存量达人国家文本回填到关联（幂等）
+        try:
+            country_service.seed_countries(db)
+            country_service.backfill_influencer_country(db)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[countries] seed/backfill failed: {}", e)
         # RBAC：内置菜单 / 内置角色 / 存量用户角色补齐（幂等）
         rbac_service.seed_rbac(db)
         rbac_service.sync_legacy_admin_roles(db)

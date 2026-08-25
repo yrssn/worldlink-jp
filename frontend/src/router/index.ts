@@ -121,6 +121,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '达人详情', code: 'influencer:detail' }
       },
       {
+        path: 'countries',
+        name: 'countries',
+        component: () => import('@/views/country/CountriesView.vue'),
+        meta: { title: '国家管理', code: 'countries' }
+      },
+      {
         path: 'system/users',
         name: 'system-users',
         component: () => import('@/views/system/UsersView.vue'),

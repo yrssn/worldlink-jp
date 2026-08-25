@@ -110,7 +110,11 @@ onMounted(refresh)
         </el-tag>
       </el-descriptions-item>
       <el-descriptions-item label="类型">{{ detail.platform_name || '—' }}</el-descriptions-item>
-      <el-descriptions-item label="国家/地区">{{ detail.country }}</el-descriptions-item>
+      <el-descriptions-item label="国家/地区">
+        {{ detail.country_name
+          ? [detail.country_name, detail.country_name_en].filter(Boolean).join(' / ')
+          : detail.country || '—' }}
+      </el-descriptions-item>
       <el-descriptions-item label="城市">{{ detail.city }}</el-descriptions-item>
       <el-descriptions-item label="邮箱">{{ detail.email }}</el-descriptions-item>
       <el-descriptions-item label="电话">{{ detail.phone }}</el-descriptions-item>

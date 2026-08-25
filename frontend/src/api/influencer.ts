@@ -35,6 +35,10 @@ export interface Influencer {
   website?: string | null
   messenger?: string | null
   country?: string | null
+  country_id?: number | null
+  country_name?: string | null
+  country_name_en?: string | null
+  country_code?: string | null
   region?: string | null
   city?: string | null
   language?: string | null
@@ -168,6 +172,7 @@ export const influencerApi = {
     keyword?: string
     status?: string
     country?: string
+    country_id?: number
     platform_id?: number
   }) => http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
   listCountries: () => http.get<unknown, string[]>('/influencers/countries'),
@@ -246,6 +251,7 @@ export const influencerApi = {
     keyword?: string
     status?: string
     country?: string
+    country_id?: number
     platform_id?: number
   }) =>
     download(

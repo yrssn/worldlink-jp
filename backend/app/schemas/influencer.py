@@ -37,6 +37,7 @@ class InfluencerBase(BaseModel):
     cover_url: Optional[str] = None
 
     country: Optional[str] = "JP"
+    country_id: Optional[int] = Field(default=None, description="关联「国家管理」里的国家 id")
     region: Optional[str] = None
     city: Optional[str] = None
     language: Optional[str] = None
@@ -78,6 +79,7 @@ class InfluencerUpdate(BaseModel):
     avatar_url: Optional[str] = None
     cover_url: Optional[str] = None
     country: Optional[str] = None
+    country_id: Optional[int] = None
     region: Optional[str] = None
     city: Optional[str] = None
     language: Optional[str] = None
@@ -100,6 +102,9 @@ class InfluencerOut(InfluencerBase):
     source: InfluencerSource
     platform_name: Optional[str] = None
     platform_code: Optional[str] = None
+    country_name: Optional[str] = None
+    country_name_en: Optional[str] = None
+    country_code: Optional[str] = None
     owner_id: int
     owner_name: Optional[str] = None
     has_outreach: bool = False

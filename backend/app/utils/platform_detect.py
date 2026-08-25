@@ -39,13 +39,13 @@ PLATFORM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("line", _domain_pattern("line.me")),
 )
 
-#: 平台规范名 -> 「平台管理」里常见的平台代码别名（小写）
+#: 平台规范名 -> 「平台管理」里常见的平台代码/名称别名（小写，按顺序优先匹配）
 PLATFORM_CODE_ALIASES: dict[str, tuple[str, ...]] = {
     "instagram": ("ig", "instagram", "insta"),
-    "facebook": ("fb", "facebook"),
-    "tiktok": ("tk", "tiktok", "douyin"),
-    "xiaohongshu": ("rednote", "xhs", "xiaohongshu"),
-    "youtube": ("yt", "youtube"),
+    "facebook": ("fb", "facebook", "脸书"),
+    "tiktok": ("tk", "tiktok", "tiktop", "douyin", "抖音"),
+    "xiaohongshu": ("rednote", "xhs", "xiaohongshu", "小红书"),
+    "youtube": ("yt", "youtube", "油管"),
     "twitter": ("x", "tw", "twitter"),
     "line": ("line",),
 }

@@ -4,6 +4,7 @@ from app.api.v1 import (
     apify_key,
     auth,
     bitbrowser,
+    country,
     dm,
     email_account,
     fb_group_scrape,
@@ -21,6 +22,7 @@ api_router = APIRouter(
 )
 api_router.include_router(auth.router)
 api_router.include_router(bitbrowser.router)
+api_router.include_router(country.router)
 api_router.include_router(dm.router)
 api_router.include_router(llm.router)
 api_router.include_router(prompt.router)

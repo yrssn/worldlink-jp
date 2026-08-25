@@ -25,7 +25,8 @@ SHARED_TABLES: set[str] = {
     "prompt_templates",  # 提示词模板
     "dm_categories",  # 私信分类
     "dm_contents",  # 私信内容库
-    "bitbrowser_platforms",  # 自建平台（窗口分类字典）
+    "bitbrowser_platforms",  # 自建平台（窗口分类字典 + 达人关联平台）
+    "countries",  # 国家字典
     "email_accounts",  # 注册用邮箱池
     "apify_keys",  # Apify Key 池（本身就没有 owner_id）
 }
@@ -208,6 +209,14 @@ MENU_SEEDS: list[MenuSeed] = [
         path="/influencers/:id",
         is_hidden=True,
         api_enforce_mode=ApiEnforceMode.off,
+    ),
+    MenuSeed(
+        "countries",
+        "国家管理",
+        path="/countries",
+        icon="LocationInformation",
+        api_prefixes=["/api/v1/countries"],
+        api_enforce_mode=ApiEnforceMode.write,
     ),
     MenuSeed(
         "system",

@@ -44,7 +44,11 @@ class Influencer(Base, TimestampMixin):
     cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # 地区 / 语言
+    #: 兼容字段：国家代码/名称的自由文本，新数据由 ``country_id`` 关联的国家代码同步写入
     country: Mapped[str | None] = mapped_column(String(64), nullable=True, default="JP")
+    country_id: Mapped[int | None] = mapped_column(
+        ForeignKey("countries.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     region: Mapped[str | None] = mapped_column(String(64), nullable=True)
     city: Mapped[str | None] = mapped_column(String(64), nullable=True)
     language: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -101,6 +105,7 @@ class Influencer(Base, TimestampMixin):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
     platform = relationship("BitBrowserPlatform")
+    country_ref = relationship("Country")
     owner = relationship("User", foreign_keys=[owner_id])
 
     # 非持久化：由接口按需标注「是否已私信过」，默认 False 便于 from_attributes 序列化
@@ -113,6 +118,20 @@ class Influencer(Base, TimestampMixin):
     @property
     def platform_code(self) -> str | None:
         return self.platform.code if self.platform else None
+
+    @property
+    def country_name(self) -> str | None:
+        return self.country_ref.name_zh if self.country_ref else None
+
+    @property
+    def country_name_en(self) -> str | None:
+        return self.country_ref.name_en if self.country_ref else None
+
+    @property
+    def country_code(self) -> str | None:
+        if self.country_ref:
+            return self.country_ref.code
+        return (self.country or None)
 
     @property
     def owner_name(self) -> str | None:

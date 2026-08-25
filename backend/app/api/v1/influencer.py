@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.deps import get_current_user, get_db, is_admin
 from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform
+from app.models.country import Country
 from app.models.dm import DmOutreachLog
 from app.models.influencer import Influencer
 from app.models.influencer_scrape_task import InfluencerScrapeTask
@@ -63,6 +64,15 @@ def _ensure_platform_access(db: Session, owner_id: int, platform_id: int | None)
         raise HTTPException(status_code=400, detail="达人类型不存在")
 
 
+def _country_or_400(db: Session, country_id: int | None) -> Country | None:
+    if country_id is None:
+        return None
+    row = db.query(Country).filter(Country.id == country_id).first()
+    if not row:
+        raise HTTPException(status_code=400, detail="国家不存在")
+    return row
+
+
 def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrapeTaskOut:
     """把任务序列化为输出，并补上「该主页是否已入库达人」的 influencer_id。"""
     out = InfluencerScrapeTaskOut.model_validate(task)
@@ -89,9 +99,22 @@ def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrap
 
 
 def _platform_id_by_code(db: Session) -> dict[str, int]:
-    """「平台管理」里的 {平台代码小写: id}，用于按链接识别结果关联平台。"""
-    rows = db.query(BitBrowserPlatform.id, BitBrowserPlatform.code).all()
-    return {(code or "").strip().lower(): pid for pid, code in rows if (code or "").strip()}
+    """「平台管理」里的 {平台代码/名称小写: id}，用于按链接识别结果关联平台。
+
+    以「代码」为主（用户可自行改代码来决定自动识别对齐到哪条平台），
+    代码没填时退化用平台名称，避免新建平台忘了填代码就识别不出来。
+    """
+    rows = db.query(BitBrowserPlatform.id, BitBrowserPlatform.name, BitBrowserPlatform.code).all()
+    mapping: dict[str, int] = {}
+    for pid, name, code in rows:
+        key = (name or "").strip().lower()
+        if key:
+            mapping.setdefault(key, pid)
+    for pid, _name, code in rows:
+        key = (code or "").strip().lower()
+        if key:
+            mapping[key] = pid
+    return mapping
 
 
 def _bind_platform_by_name(db: Session, inf: Influencer, platform: str | None) -> None:
@@ -252,7 +275,9 @@ INFLUENCER_CSV_COLUMNS = [
     ("名称", "display_name"),
     ("真实姓名", "real_name"),
     ("简介", "bio"),
-    ("国家", "country"),
+    ("国家", lambda r: r.country_name or r.country or ""),
+    ("国家（英文）", lambda r: r.country_name_en or ""),
+    ("国家代码", lambda r: r.country_code or ""),
     ("地区", "region"),
     ("城市", "city"),
     ("语言", "language"),
@@ -289,6 +314,7 @@ def _apply_influencer_filters(
     status_eq: str | None,
     country: str | None,
     platform_id: int | None,
+    country_id: int | None = None,
 ):
     """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台）。"""
     if keyword:
@@ -307,6 +333,11 @@ def _apply_influencer_filters(
             q = q.filter(Influencer.country.is_(None))
         elif c:
             q = q.filter(Influencer.country == c)
+    if country_id is not None:
+        if country_id == 0:
+            q = q.filter(Influencer.country_id.is_(None))
+        else:
+            q = q.filter(Influencer.country_id == country_id)
     if platform_id is not None:
         if platform_id == 0:
             q = q.filter(Influencer.platform_id.is_(None))
@@ -321,17 +352,20 @@ def list_influencers(
     page_size: int = Query(20, ge=1, le=200),
     keyword: str | None = None,
     status_eq: str | None = Query(None, alias="status"),
-    country: str | None = Query(None, description="国家分类，__none__ = 未填"),
+    country: str | None = Query(None, description="国家代码（兼容旧参数），__none__ = 未填"),
+    country_id: int | None = Query(None, description="关联国家 id，0 = 未关联"),
     platform_id: int | None = Query(None, description="关联平台 id，0 = 未关联"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     q = db.query(Influencer).options(
-        joinedload(Influencer.platform), joinedload(Influencer.owner)
+        joinedload(Influencer.platform),
+        joinedload(Influencer.country_ref),
+        joinedload(Influencer.owner),
     )
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
-    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id)
+    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id, country_id)
     total = q.count()
     items = (
         q.order_by(Influencer.id.desc())
@@ -364,17 +398,20 @@ def export_influencers(
     keyword: str | None = None,
     status_eq: str | None = Query(None, alias="status"),
     country: str | None = None,
+    country_id: int | None = None,
     platform_id: int | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """按当前过滤条件导出达人列表（CSV）。"""
     q = db.query(Influencer).options(
-        joinedload(Influencer.platform), joinedload(Influencer.owner)
+        joinedload(Influencer.platform),
+        joinedload(Influencer.country_ref),
+        joinedload(Influencer.owner),
     )
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
-    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id)
+    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id, country_id)
     rows = q.order_by(Influencer.id.desc()).all()
     data = build_csv(rows, INFLUENCER_CSV_COLUMNS)
     return csv_response("influencers.csv", data)
@@ -431,6 +468,9 @@ def create_influencer(
 ):
     data = payload.model_dump(exclude={"social_accounts"})
     _ensure_platform_access(db, user.id, data.get("platform_id"))
+    country = _country_or_400(db, data.get("country_id"))
+    if country is not None:
+        data["country"] = country.code
     inf = Influencer(**data, owner_id=user.id)
     db.add(inf)
     db.flush()
@@ -859,6 +899,10 @@ def update_influencer(
         raise HTTPException(status_code=404, detail="influencer not found")
     data = payload.model_dump(exclude_unset=True)
     _ensure_platform_access(db, inf.owner_id, data.get("platform_id"))
+    if "country_id" in data:
+        country = _country_or_400(db, data["country_id"])
+        # 兼容字段跟着关联国家走，导出/旧筛选才对得上
+        data["country"] = country.code if country else None
     for k, v in data.items():
         setattr(inf, k, v)
     db.commit()
