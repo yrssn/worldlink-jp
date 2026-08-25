@@ -226,6 +226,14 @@ class InfluencerScrapeTaskSaveRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class AvatarCacheResult(BaseModel):
+    """存量头像本地化结果：total 为本次处理条数，failed 的仍保留远端地址。"""
+
+    total: int
+    cached: int
+    failed: int
+
+
 class InfluencerScrapeSaveResult(BaseModel):
     """存入达人库的结果：created=False 表示库中已存在、已复用未重复创建。"""
 

@@ -134,6 +134,13 @@ export interface PlatformOption {
   scrapable: boolean
 }
 
+/** 存量头像本地化结果 */
+export interface AvatarCacheResult {
+  total: number
+  cached: number
+  failed: number
+}
+
 export interface PlatformDetectItem {
   url: string
   platform?: ScrapePlatform | null
@@ -192,6 +199,11 @@ export const influencerApi = {
   }) => http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
   listPlatformOptions: () =>
     http.get<unknown, PlatformOption[]>('/influencers/platform-options'),
+  /** 把存量达人的远端头像下载到服务器（国内免代理看图） */
+  cacheAvatars: (limit = 200) =>
+    http.post<unknown, AvatarCacheResult>('/influencers/avatars/cache', null, {
+      params: { limit },
+    }),
   detectPlatforms: (urls: string[]) =>
     http.post<unknown, PlatformDetectItem[]>('/influencers/detect-platforms', { urls }),
   create: (data: Partial<Influencer> & { social_accounts?: SocialAccount[] }) =>

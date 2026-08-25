@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # ===== 私信内容图片上传目录（相对 backend 根目录）=====
     dm_upload_dir: str = "uploads/dm"
 
+    # ===== 达人头像本地缓存目录（抓到的远端头像下载到本机，免代理也能看图）=====
+    avatar_cache_dir: str = "uploads/avatars"
+
     # ===== Default admin =====
     default_admin_username: str = "admin"
     default_admin_password: str = "admin123"

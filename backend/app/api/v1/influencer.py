@@ -4,6 +4,7 @@ import threading
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from loguru import logger
 from sqlalchemy.orm import Session, joinedload
 
@@ -21,6 +22,7 @@ from app.models.user import User
 from app.schemas.common import Msg, Page
 from app.schemas.dm import DmOutreachLogOut
 from app.schemas.influencer import (
+    AvatarCacheResult,
     InfluencerCreate,
     InfluencerDetailOut,
     InfluencerFromScrapeRequest,
@@ -41,7 +43,7 @@ from app.schemas.influencer import (
     SocialAccountCreate,
     SocialAccountOut,
 )
-from app.services import apify_service, influencer_service
+from app.services import apify_service, avatar_cache, influencer_service
 from app.utils.csv_export import build_csv, csv_response
 from app.utils.platform_detect import (
     KNOWN_PLATFORMS,
@@ -204,7 +206,9 @@ def _run_scrape_profile_bg(task_id: int, auto_save: bool = False) -> None:
             if not items or not isinstance(items[0], dict):
                 _fail_task(db, task, "未抓取到 Instagram 主页资料，请确认用户名/链接是否有效")
                 return
-            task.result = influencer_service.ig_profile_to_form(items[0])
+            task.result = avatar_cache.localize_form_avatar(
+                influencer_service.ig_profile_to_form(items[0])
+            )
             task.status = "done"
             task.finished_at = datetime.utcnow()
             db.commit()
@@ -250,7 +254,7 @@ def _run_scrape_profile_bg(task_id: int, auto_save: bool = False) -> None:
         form["fb_page_url"] = influencer_service.normalize_fb_profile_url(
             form.get("fb_page_url") or scrape_url
         )
-        task.result = form
+        task.result = avatar_cache.localize_form_avatar(form)
         task.status = "done"
         task.finished_at = datetime.utcnow()
         db.commit()
@@ -493,6 +497,39 @@ def list_platform_options(
             for name in KNOWN_PLATFORMS
         ]
     return options
+
+
+@router.get("/avatars/{filename}")
+def get_influencer_avatar(filename: str):
+    """返回已缓存到本机的达人头像（文件名是原地址 sha1，供 <img> 直接加载）。"""
+    path = avatar_cache.avatar_path(filename)
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="头像不存在")
+    return FileResponse(path)
+
+
+@router.post("/avatars/cache", response_model=AvatarCacheResult)
+def cache_influencer_avatars(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    limit: int = Query(200, ge=1, le=1000, description="本次最多处理多少条"),
+):
+    """把存量达人的远端头像下载到本机（国内免代理看图）。"""
+    q = db.query(Influencer).filter(Influencer.avatar_url.like("http%"))
+    if not is_admin(user):
+        q = q.filter(Influencer.owner_id == user.id)
+    rows = q.order_by(Influencer.id.desc()).limit(limit).all()
+    cached = 0
+    failed = 0
+    for row in rows:
+        local = avatar_cache.localize_avatar(row.avatar_url)
+        if avatar_cache.is_local_avatar(local):
+            row.avatar_url = local
+            cached += 1
+        else:
+            failed += 1
+    db.commit()
+    return AvatarCacheResult(total=len(rows), cached=cached, failed=failed)
 
 
 @router.post("/detect-platforms", response_model=list[PlatformDetectItem])

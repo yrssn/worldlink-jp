@@ -888,6 +888,24 @@ async function exportList() {
   })
 }
 
+const cachingAvatars = ref(false)
+
+/** 把存量达人的远端头像下载到服务器，避免国内看图要挂代理 */
+async function cacheAvatars() {
+  cachingAvatars.value = true
+  try {
+    const r = await influencerApi.cacheAvatars()
+    ElMessage.success(
+      r.total
+        ? `已缓存 ${r.cached} 张头像${r.failed ? `，失败 ${r.failed} 张` : ''}`
+        : '没有需要缓存的远端头像',
+    )
+    refresh()
+  } finally {
+    cachingAvatars.value = false
+  }
+}
+
 async function remove(row: Influencer) {
   await ElMessageBox.confirm(`确认删除「${row.display_name}」？`, '提示', { type: 'warning' })
   await influencerApi.remove(row.id)
@@ -915,6 +933,7 @@ onUnmounted(() => {
         <el-button type="success" :icon="'Download'" @click="exportList">
           导出（CSV）
         </el-button>
+        <el-button :loading="cachingAvatars" @click="cacheAvatars">缓存头像到本机</el-button>
         <el-button @click="openTaskDialog">抓取任务</el-button>
         <el-button type="primary" @click="openCreate">手工新增</el-button>
       </div>

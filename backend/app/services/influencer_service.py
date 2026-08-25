@@ -23,6 +23,7 @@ from app.models.fb_group_scrape import FbGroupPost
 from app.models.influencer import Influencer, InfluencerSource
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
+from app.services import avatar_cache
 
 
 def normalize_fb_url(u: Optional[str]) -> str:
@@ -472,7 +473,7 @@ def create_influencer_from_form(
         link_outreach_logs_for_influencer(db, existing)
         return existing, False
 
-    inf = Influencer(**data)
+    inf = Influencer(**avatar_cache.localize_form_avatar(data))
     db.add(inf)
     db.flush()
     if inf.fb_page_url or inf.fb_page_id:
@@ -600,7 +601,7 @@ def _create_from_ig_profile(
     if notes:
         profile_data["notes"] = notes
 
-    inf = Influencer(**profile_data)
+    inf = Influencer(**avatar_cache.localize_form_avatar(profile_data))
     db.add(inf)
     db.flush()
 
@@ -730,7 +731,7 @@ def create_from_scrape(
         _attach_posts(db, existing.id, post, source_post_ids)
         return existing
 
-    inf = Influencer(**profile_data)
+    inf = Influencer(**avatar_cache.localize_form_avatar(profile_data))
     db.add(inf)
     db.flush()
 
@@ -820,7 +821,7 @@ def create_from_group_post(
         db.commit()
         return existing, False
 
-    inf = Influencer(**profile_data)
+    inf = Influencer(**avatar_cache.localize_form_avatar(profile_data))
     db.add(inf)
     db.flush()
 
