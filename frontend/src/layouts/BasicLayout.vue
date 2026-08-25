@@ -1,16 +1,27 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
+import { usePermissionStore } from '@/store/permission'
+import { systemApi } from '@/api/system'
 import { useBitBrowserRelay } from '@/composables/useBitBrowserRelay'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const perm = usePermissionStore()
 
 const activeMenu = computed(() => route.path)
-const defaultOpeneds = ['llm', 'bitbrowser', 'automation', 'scraper', 'dm']
-const { connect: relayConnect, disconnect: relayDisconnect, relayConnected } = useBitBrowserRelay()
+// 侧边栏由后端「我的权限」返回的菜单树渲染，未授权的路由不会出现
+const menus = computed(() => perm.sidebarMenus)
+const defaultOpeneds = computed(() =>
+  menus.value.filter((m) => m.type === 'catalog').map((m) => String(m.id))
+)
+const { connect: relayConnect, disconnect: relayDisconnect } = useBitBrowserRelay()
+
+const pwdVisible = ref(false)
+const pwdForm = reactive({ old_password: '', new_password: '', confirm: '' })
 
 onMounted(() => relayConnect())
 onUnmounted(() => relayDisconnect())
@@ -18,7 +29,33 @@ onUnmounted(() => relayDisconnect())
 async function handleLogout() {
   relayDisconnect()
   await auth.logout()
+  perm.clear()
   router.push('/login')
+}
+
+function openPwd() {
+  pwdForm.old_password = ''
+  pwdForm.new_password = ''
+  pwdForm.confirm = ''
+  pwdVisible.value = true
+}
+
+async function submitPwd() {
+  if (pwdForm.new_password.length < 6) {
+    ElMessage.warning('新密码至少 6 位')
+    return
+  }
+  if (pwdForm.new_password !== pwdForm.confirm) {
+    ElMessage.warning('两次输入的新密码不一致')
+    return
+  }
+  try {
+    await systemApi.changeMyPassword(pwdForm.old_password, pwdForm.new_password)
+    ElMessage.success('密码已修改')
+    pwdVisible.value = false
+  } catch {
+    /* 拦截器已提示 */
+  }
 }
 </script>
 
@@ -44,52 +81,21 @@ async function handleLogout() {
         active-text-color="#ffffff"
         router
       >
-        <el-sub-menu index="llm">
-          <template #title>
-            <el-icon><Cpu /></el-icon>
-            <span>大模型</span>
-          </template>
-          <el-menu-item index="/llm/providers">厂商配置</el-menu-item>
-          <el-menu-item index="/llm/prompts">提示词模板</el-menu-item>
-        </el-sub-menu>
-        <el-sub-menu index="bitbrowser">
-          <template #title>
-            <el-icon><Monitor /></el-icon>
-            <span>比特抓取</span>
-          </template>
-          <el-menu-item index="/bitbrowser/connect">本机连接</el-menu-item>
-          <el-menu-item index="/bitbrowser/windows">浏览器窗口</el-menu-item>
-          <el-menu-item index="/bitbrowser/saved">系统登记</el-menu-item>
-          <el-menu-item index="/bitbrowser/platforms">平台管理</el-menu-item>
-        </el-sub-menu>
-        <el-sub-menu index="automation">
-          <template #title>
-            <el-icon><Message /></el-icon>
-            <span>账号自动化</span>
-          </template>
-          <el-menu-item index="/email/accounts">邮箱管理</el-menu-item>
-        </el-sub-menu>
-        <el-sub-menu index="scraper">
-          <template #title>
-            <el-icon><Search /></el-icon>
-            <span>抓取器</span>
-          </template>
-          <el-menu-item index="/scraper/tasks">抓取任务</el-menu-item>
-          <el-menu-item index="/scraper/facebook-groups">Facebook群组维度</el-menu-item>
-          <el-menu-item index="/scraper/apify-keys">Apify Key 管理</el-menu-item>
-        </el-sub-menu>
-        <el-sub-menu index="dm">
-          <template #title>
-            <el-icon><ChatDotRound /></el-icon>
-            <span>私信内容</span>
-          </template>
-          <el-menu-item index="/dm/contents">内容库</el-menu-item>
-          <el-menu-item index="/dm/categories">分类管理</el-menu-item>
-        </el-sub-menu>
-        <el-menu-item index="/influencers">
-          <el-icon><User /></el-icon>
-          <span>建联达人</span>
-        </el-menu-item>
+        <template v-for="m in menus" :key="m.id">
+          <el-sub-menu v-if="m.type === 'catalog'" :index="String(m.id)">
+            <template #title>
+              <el-icon v-if="m.icon"><component :is="m.icon" /></el-icon>
+              <span>{{ m.title }}</span>
+            </template>
+            <el-menu-item v-for="c in m.children" :key="c.id" :index="c.path || ''">
+              {{ c.title }}
+            </el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else :index="m.path || ''">
+            <el-icon v-if="m.icon"><component :is="m.icon" /></el-icon>
+            <span>{{ m.title }}</span>
+          </el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
 
@@ -108,13 +114,14 @@ async function handleLogout() {
           <span style="cursor: pointer">
             <el-icon><UserFilled /></el-icon>
             {{ auth.user?.username }}
-            <el-tag v-if="auth.isAdmin" size="small" type="warning" style="margin-left: 6px">
-              admin
+            <el-tag v-if="perm.isSuperAdmin" size="small" type="warning" style="margin-left: 6px">
+              超级管理员
             </el-tag>
           </span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item @click="handleLogout">退出登录</el-dropdown-item>
+              <el-dropdown-item @click="openPwd">修改密码</el-dropdown-item>
+              <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -125,4 +132,22 @@ async function handleLogout() {
       </el-main>
     </el-container>
   </el-container>
+
+  <el-dialog v-model="pwdVisible" title="修改密码" width="420px">
+    <el-form label-width="90px">
+      <el-form-item label="原密码">
+        <el-input v-model="pwdForm.old_password" type="password" show-password />
+      </el-form-item>
+      <el-form-item label="新密码">
+        <el-input v-model="pwdForm.new_password" type="password" show-password />
+      </el-form-item>
+      <el-form-item label="确认新密码">
+        <el-input v-model="pwdForm.confirm" type="password" show-password />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="pwdVisible = false">取消</el-button>
+      <el-button type="primary" @click="submitPwd">保存</el-button>
+    </template>
+  </el-dialog>
 </template>

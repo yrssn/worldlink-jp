@@ -10,6 +10,7 @@ from app.db.base import Base
 from app.db.session import SessionLocal, engine
 
 # 导入所有模型以注册到 Base.metadata
+from app.models import rbac as _rbac_model  # noqa: F401
 from app.models import user as _user_model  # noqa: F401
 from app.models import llm as _llm_model  # noqa: F401
 from app.models import prompt as _prompt_model  # noqa: F401
@@ -327,6 +328,11 @@ def ensure_default_admin(db: Session) -> None:
 
 
 def init_db() -> None:
+    from app.services import rbac_service
+
     create_all()
     with SessionLocal() as db:
         ensure_default_admin(db)
+        # RBAC：内置菜单 / 内置角色 / 存量用户角色补齐（幂等）
+        rbac_service.seed_rbac(db)
+        rbac_service.sync_legacy_admin_roles(db)

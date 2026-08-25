@@ -3,13 +3,15 @@ import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
+import { usePermissionStore } from '@/store/permission'
 
-const form = reactive({ username: 'admin', password: '' })
+const form = reactive({ username: '', password: '' })
 const formRef = ref<FormInstance>()
 const loading = ref(false)
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const perm = usePermissionStore()
 
 async function handleSubmit() {
   if (!formRef.value) return
@@ -19,7 +21,7 @@ async function handleSubmit() {
   try {
     await auth.login(form.username, form.password)
     ElMessage.success('登录成功')
-    const redirect = (route.query.redirect as string) || '/'
+    const redirect = (route.query.redirect as string) || perm.landingPath
     router.push(redirect)
   } finally {
     loading.value = false

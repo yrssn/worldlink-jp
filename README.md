@@ -101,13 +101,58 @@ npm run dev
 
 ## 五、关键约定
 
-- **权限**：每张业务表都有 `owner_id`；普通用户只能看到自己创建/抓取入库的数据，admin 可看全部。
+- **权限**：见下方「六、RBAC 权限（路由级）」。业务表的 `owner_id` 决定数据归属，角色的数据范围决定能看谁的数据。
 - **建联查重**：从抓取入库时，按 `fb_page_id` / `fb_page_url` / `email` 任一命中即视为重复，命中后只把新的 `Post` 关联到已有达人，不再新增。
 - **AI 过滤**：在抓帖子时启用，调用 `LangChain` 适配的大模型，对每条帖子返回 `passed/score/reason`，前端可只看通过项再决定是否建联。
 - **抓取执行**：当前使用 FastAPI `BackgroundTasks` 异步执行；后续可平滑替换为 Celery / RQ。
 - **API Key 加密**：通过 `FERNET_KEY` 对 `llm_providers.api_key` 做对称加密；未配置时退化为明文（仅限本地开发）。
 
-## 六、Docker 部署
+## 六、RBAC 权限（路由级）
+
+权限对象就是「路由（菜单）」，一条路由 = 一个前端页面 + 一组后端 API 前缀：
+
+- 用户可有多个**角色**，角色勾选**路由**，用户可访问的路由 = 各角色路由的并集；
+- 前端登录后拉 `GET /api/v1/system/profile/permissions`，用它渲染侧边栏并做路由守卫；
+- 后端在 `api_router` 上挂了统一依赖（`app/core/permission_guard.py`），按请求路径反查
+  `menus.api_prefixes` 再校验，所以**前端隐藏不等于能绕过**；
+- 每条路由可配置接口校验强度：`读写都校验` / `只校验写操作`（读接口放开给别的页面引用）/ `不校验`；
+- 按钮级权限暂未实现（`menus.type` 已预留 `button`）。
+
+管理入口（仅超级管理员可见）：
+
+| 页面 | 入口 | 说明 |
+|------|------|------|
+| 用户列表 | `/system/users` | 新建用户、分配角色、重置/随机生成密码、启停用（不做物理删除，避免级联删业务数据） |
+| 角色权限 | `/system/roles` | 勾选路由树、设置数据范围（仅本人 / 全部数据） |
+| 路由列表 | `/system/menus` | 维护路由、权限编码、接口前缀与校验强度；权限编码需与前端 `router/index.ts` 的 `meta.code` 一致 |
+
+内置角色：`super_admin`（全部路由 + 全部数据，不可删）、`normal_user`（抓取/达人/私信/比特浏览器，数据范围仅本人）。
+启动时 `init_db()` 会幂等写入内置路由与角色，并给历史用户按 `users.role` 补齐角色。
+
+### 数据归属：共享模块 vs 私有模块
+
+- **共享模块**（所有登录用户共用一份，见 `app/core/rbac.py` 的 `SHARED_TABLES`）：
+  大模型厂商配置、提示词模板、私信分类与内容库、比特浏览器平台字典、邮箱池、Apify Key。
+- **私有模块**（谁创建谁可见，`data_scope=all` 的角色可看全部）：
+  抓取任务与帖子、FB 群组抓取、达人与社交账号、达人抓取任务、私信发送记录、
+  比特浏览器窗口缓存与系统登记、Apify 注册任务。
+
+### 存量数据归集到一个账号
+
+```bash
+cd backend
+# 建 RBAC 表 + 写内置路由/角色，创建超级管理员 yankai（随机密码，执行完打印一次）
+# 并把所有含 owner_id / created_by_id 的表的存量数据改成归属 yankai
+python -m scripts.rbac_bootstrap --username yankai --random-password
+
+# 只想先看会改哪些表、多少行（不落库）
+python -m scripts.rbac_bootstrap --username yankai --claim-only --dry-run
+
+# 指定密码 / 只重置密码不归集数据
+python -m scripts.rbac_bootstrap --username yankai --password 'xxxxxx' --no-claim
+```
+
+## 七、Docker 部署
 
 > 镜像组成：`backend`（FastAPI/uvicorn）、`frontend`（nginx + 反代 `/api`）、`redis`（compose 内置）。
 > MySQL 走 **外部容器**（你已有），通过外部网络 `mysql-net` 互通，不在本 compose 内启动。
@@ -183,7 +228,7 @@ docker-compose down -v
 
 改宿主端口即可，例如 `19278:80`。
 
-## 七、后续可扩展
+## 八、后续可扩展
 
 - 多平台抓取（Instagram / TikTok 等）：新增 `ScrapeTaskType` 与对应 service 即可，业务模型不动。
 - 抓取调度：把 `scrape_service.run_scrape_task` 接到 Celery + Redis 即可拿到重试 / 进度。

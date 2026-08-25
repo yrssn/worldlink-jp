@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { authApi, type UserOut } from '@/api/auth'
+import { usePermissionStore } from '@/store/permission'
 
 interface AuthState {
   accessToken: string
@@ -22,6 +23,7 @@ export const useAuthStore = defineStore('auth', {
       const r = await authApi.login({ username, password })
       this.setTokens(r.access_token, r.refresh_token)
       await this.fetchMe()
+      await usePermissionStore().load(true)
     },
     setTokens(access: string, refresh: string) {
       this.accessToken = access
@@ -41,6 +43,7 @@ export const useAuthStore = defineStore('auth', {
       this.clear()
     },
     clear() {
+      usePermissionStore().clear()
       this.accessToken = ''
       this.refreshToken = ''
       this.user = null

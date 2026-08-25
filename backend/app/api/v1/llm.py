@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_user, get_db, is_admin
+from app.core.deps import can_access, get_current_user, get_db, scope_query
 from app.core.security import encrypt_secret
 from app.models.llm import LlmProvider
 from app.models.user import User
@@ -31,9 +31,7 @@ def list_providers(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = db.query(LlmProvider)
-    if not is_admin(user):
-        q = q.filter(LlmProvider.owner_id == user.id)
+    q = scope_query(db.query(LlmProvider), LlmProvider, user)
     return [_to_out(p) for p in q.order_by(LlmProvider.id.desc()).all()]
 
 
@@ -66,7 +64,7 @@ def update_provider(
     user: User = Depends(get_current_user),
 ):
     p = db.get(LlmProvider, pid)
-    if not p or (p.owner_id != user.id and not is_admin(user)):
+    if not can_access(p, user):
         raise HTTPException(status_code=404, detail="provider not found")
     data = payload.model_dump(exclude_unset=True)
     if "api_key" in data:
@@ -91,7 +89,7 @@ def delete_provider(
     user: User = Depends(get_current_user),
 ):
     p = db.get(LlmProvider, pid)
-    if not p or (p.owner_id != user.id and not is_admin(user)):
+    if not can_access(p, user):
         raise HTTPException(status_code=404, detail="provider not found")
     db.delete(p)
     db.commit()
@@ -106,7 +104,7 @@ def test_provider(
     user: User = Depends(get_current_user),
 ):
     p = db.get(LlmProvider, pid)
-    if not p or (p.owner_id != user.id and not is_admin(user)):
+    if not can_access(p, user):
         raise HTTPException(status_code=404, detail="provider not found")
     ok, output, err = llm_service.test_provider(p, payload.prompt)
     return LlmTestResponse(ok=ok, output=output, error=err)

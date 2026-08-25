@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_user, get_db, is_admin
+from app.core.deps import can_access, get_current_user, get_db, scope_query
 from app.models.prompt import PromptTemplate
 from app.models.user import User
 from app.schemas.common import Msg
@@ -21,9 +21,7 @@ def list_prompts(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = db.query(PromptTemplate)
-    if not is_admin(user):
-        q = q.filter(PromptTemplate.owner_id == user.id)
+    q = scope_query(db.query(PromptTemplate), PromptTemplate, user)
     return q.order_by(PromptTemplate.id.desc()).all()
 
 
@@ -48,7 +46,7 @@ def update_prompt(
     user: User = Depends(get_current_user),
 ):
     p = db.get(PromptTemplate, pid)
-    if not p or (p.owner_id != user.id and not is_admin(user)):
+    if not can_access(p, user):
         raise HTTPException(status_code=404, detail="prompt not found")
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(p, k, v)
@@ -64,7 +62,7 @@ def delete_prompt(
     user: User = Depends(get_current_user),
 ):
     p = db.get(PromptTemplate, pid)
-    if not p or (p.owner_id != user.id and not is_admin(user)):
+    if not can_access(p, user):
         raise HTTPException(status_code=404, detail="prompt not found")
     db.delete(p)
     db.commit()

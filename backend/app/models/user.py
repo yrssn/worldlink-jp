@@ -4,9 +4,10 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+from app.models.rbac import Role, user_roles
 
 
 class UserRole(str, enum.Enum):
@@ -31,3 +32,8 @@ class User(Base, TimestampMixin):
     bitbrowser_api_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     #: 该用户最近一次从 BitBrowser 本地服务拉取并写入 ``bitbrowser_windows`` 的时间（UTC 存库）
     bitbrowser_last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    #: RBAC 角色（多对多）；``role`` 字段保留作为兼容字段（admin 视为超级管理员）
+    roles: Mapped[list[Role]] = relationship(
+        "Role", secondary=user_roles, back_populates="users", lazy="selectin"
+    )
