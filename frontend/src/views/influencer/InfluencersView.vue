@@ -953,7 +953,15 @@ onUnmounted(() => {
           <el-popover placement="right" :width="340" trigger="hover">
             <template #reference>
               <div style="display: flex; align-items: center; gap: 8px; cursor: default">
-                <el-avatar :size="32" :src="row.avatar_url || undefined">
+                <el-image
+                  v-if="row.avatar_url"
+                  :src="row.avatar_url"
+                  :preview-src-list="[row.avatar_url]"
+                  preview-teleported
+                  fit="cover"
+                  style="width: 48px; height: 48px; border-radius: 50%; flex: none; cursor: zoom-in"
+                />
+                <el-avatar v-else :size="48">
                   {{ (row.display_name || '?').slice(0, 1) }}
                 </el-avatar>
                 <div>
@@ -963,6 +971,18 @@ onUnmounted(() => {
               </div>
             </template>
             <div style="font-size: 12px; line-height: 1.7">
+              <div
+                v-if="row.avatar_url"
+                style="display: flex; justify-content: center; margin-bottom: 6px"
+              >
+                <el-image
+                  :src="row.avatar_url"
+                  :preview-src-list="[row.avatar_url]"
+                  preview-teleported
+                  fit="cover"
+                  style="width: 120px; height: 120px; border-radius: 8px; cursor: zoom-in"
+                />
+              </div>
               <div style="font-weight: 600; margin-bottom: 4px">关联账号</div>
               <div v-if="!accountRows(row).length" style="color: #909399">暂无关联账号</div>
               <div v-for="(a, idx) in accountRows(row)" :key="idx">
@@ -1378,7 +1398,15 @@ onUnmounted(() => {
         <el-table-column label="抓到的昵称" min-width="160">
           <template #default="{ row }">
             <div v-if="row.result" style="display: flex; align-items: center; gap: 6px">
-              <el-avatar :size="26" :src="row.result?.avatar_url || undefined">
+              <el-image
+                v-if="row.result?.avatar_url"
+                :src="row.result.avatar_url"
+                :preview-src-list="[row.result.avatar_url]"
+                preview-teleported
+                fit="cover"
+                style="width: 32px; height: 32px; border-radius: 50%; flex: none; cursor: zoom-in"
+              />
+              <el-avatar v-else :size="32">
                 {{ (row.result?.display_name || '?').slice(0, 1) }}
               </el-avatar>
               <span>{{ row.result?.display_name || '—' }}</span>

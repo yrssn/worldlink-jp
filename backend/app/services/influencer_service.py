@@ -310,7 +310,12 @@ def _map_page_profile(profile: dict[str, Any]) -> dict[str, Any]:
         "fb_page_created_at": _parse_fb_creation_date(profile.get("creation_date") or profile.get("pageCreatedAt")),
         "fb_ad_library_id": (page_ad_library.get("id") if page_ad_library else None) or profile.get("adLibraryId"),
         "fb_ad_status": profile.get("ad_status") or profile.get("adStatus"),
-        "avatar_url": profile.get("profilePictureUrl") or profile.get("profilePhoto") or profile.get("profileImage"),
+        # 优先高清头像，避免列表里显示模糊小图
+        "avatar_url": profile.get("profilePictureUrlHD")
+        or profile.get("profilePhotoHD")
+        or profile.get("profilePictureUrl")
+        or profile.get("profilePhoto")
+        or profile.get("profileImage"),
         "cover_url": profile.get("coverPhotoUrl") or profile.get("coverImage"),
         "raw_profile": profile,
     }
@@ -375,7 +380,10 @@ def _map_fb_profile_scraper(profile: dict[str, Any]) -> dict[str, Any]:
             or profile.get("followersCount")
         ),
         "fb_likes": _to_int(profile.get("likeCount") or profile.get("likes")),
-        "avatar_url": profile.get("avatarUrl") or profile.get("profilePictureUrl"),
+        "avatar_url": profile.get("avatarUrlHD")
+        or profile.get("profilePictureUrlHD")
+        or profile.get("avatarUrl")
+        or profile.get("profilePictureUrl"),
         "cover_url": profile.get("coverUrl") or profile.get("coverPhotoUrl"),
     }
     return {k: v for k, v in mapped.items() if v not in (None, "")}

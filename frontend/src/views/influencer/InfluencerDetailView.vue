@@ -100,7 +100,15 @@ onMounted(refresh)
     <el-descriptions :column="3" border style="margin-top: 16px">
       <el-descriptions-item label="昵称">
         <div style="display: flex; align-items: center; gap: 8px">
-          <el-avatar :size="40" :src="detail.avatar_url || undefined">
+          <el-image
+            v-if="detail.avatar_url"
+            :src="detail.avatar_url"
+            :preview-src-list="[detail.avatar_url]"
+            preview-teleported
+            fit="cover"
+            style="width: 64px; height: 64px; border-radius: 50%; flex: none; cursor: zoom-in"
+          />
+          <el-avatar v-else :size="64">
             {{ (detail.display_name || '?').slice(0, 1) }}
           </el-avatar>
           <span>{{ detail.display_name }}</span>
