@@ -7,6 +7,7 @@ import {
   type DmOutreachLog,
   type InfluencerDetail,
   type InfluencerSourcePost,
+  type PlatformOption,
   type SocialPlatform
 } from '@/api/influencer'
 
@@ -46,7 +47,8 @@ const SOURCE_LABELS: Record<string, string> = {
   manual: '手工'
 }
 
-const PLATFORMS: { label: string; value: SocialPlatform }[] = [
+// 平台选项统一读「平台管理」，接口没数据时才用内置名单兜底
+const FALLBACK_PLATFORMS: { label: string; value: SocialPlatform }[] = [
   { label: 'Facebook', value: 'facebook' },
   { label: 'Instagram', value: 'instagram' },
   { label: 'TikTok', value: 'tiktok' },
@@ -57,6 +59,16 @@ const PLATFORMS: { label: string; value: SocialPlatform }[] = [
   { label: 'LINE', value: 'line' },
   { label: '其他', value: 'other' }
 ]
+
+const platformOptions = ref<PlatformOption[]>([])
+const platformSelectOptions = computed<{ label: string; value: SocialPlatform }[]>(() =>
+  platformOptions.value.length
+    ? platformOptions.value.map((p) => ({ label: p.name, value: p.platform }))
+    : FALLBACK_PLATFORMS
+)
+const platformNameMap = computed<Record<string, string>>(() =>
+  Object.fromEntries(platformSelectOptions.value.map((p) => [p.value, p.label]))
+)
 
 const hasFb = computed(() => {
   const d = detail.value
@@ -70,6 +82,14 @@ const hasFb = computed(() => {
     d.fb_rating_count
   )
 })
+
+async function loadPlatformOptions() {
+  platformOptions.value = await influencerApi.listPlatformOptions().catch(() => [])
+  const values = platformSelectOptions.value.map((p) => p.value)
+  if (values.length && !values.includes(socialForm.platform)) {
+    socialForm.platform = values[0]
+  }
+}
 
 async function refresh() {
   detail.value = await influencerApi.detail(id.value)
@@ -91,7 +111,10 @@ async function removeSocial(sid: number) {
   refresh()
 }
 
-onMounted(refresh)
+onMounted(() => {
+  loadPlatformOptions()
+  refresh()
+})
 </script>
 
 <template>
@@ -156,7 +179,9 @@ onMounted(refresh)
       <el-button type="primary" size="small" @click="socialDialog = true">添加账号</el-button>
     </div>
     <el-table :data="detail.social_accounts" border>
-      <el-table-column prop="platform" label="平台" width="120" />
+      <el-table-column label="平台" width="120">
+        <template #default="{ row }">{{ platformNameMap[row.platform] || row.platform }}</template>
+      </el-table-column>
       <el-table-column prop="handle" label="账号/Handle" />
       <el-table-column label="链接">
         <template #default="{ row }">
@@ -235,7 +260,12 @@ onMounted(refresh)
       <el-form :model="socialForm" label-width="100px">
         <el-form-item label="平台">
           <el-select v-model="socialForm.platform" style="width: 100%">
-            <el-option v-for="p in PLATFORMS" :key="p.value" :label="p.label" :value="p.value" />
+            <el-option
+              v-for="p in platformSelectOptions"
+              :key="p.value"
+              :label="p.label"
+              :value="p.value"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="账号">
