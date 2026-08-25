@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
+import io
 import threading
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from loguru import logger
 from sqlalchemy.orm import Session, joinedload
@@ -14,7 +17,7 @@ from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform
 from app.models.country import Country
 from app.models.dm import DmOutreachLog
-from app.models.influencer import Influencer
+from app.models.influencer import Influencer, InfluencerStatus
 from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
@@ -31,6 +34,7 @@ from app.schemas.influencer import (
     InfluencerScrapeBatchCreate,
     InfluencerScrapeBatchOut,
     InfluencerScrapeBatchRunRequest,
+    InfluencerScrapeRunRequest,
     InfluencerScrapeSaveResult,
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
@@ -158,26 +162,44 @@ def _fail_task(db: Session, task: InfluencerScrapeTask, msg: str) -> None:
     db.commit()
 
 
-def _auto_save_from_task(db: Session, task: InfluencerScrapeTask) -> None:
-    """抓取完成后自动把结果存入建联达人库（发私信后自动入库用）。"""
+def _parse_save_status(value: str | None) -> InfluencerStatus | None:
+    """把前端传来的建联状态字符串转成枚举，非法值直接 400。"""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        return InfluencerStatus(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"不支持的建联状态：{raw}")
+
+
+def _auto_save_from_task(
+    db: Session, task: InfluencerScrapeTask, save_status: str | None = None
+) -> None:
+    """抓取完成后自动把结果存入建联达人库（发私信后 / 勾选「抓完直接入库」时用）。"""
     if not isinstance(task.result, dict) or not task.result:
         return
     try:
         if (task.platform or "facebook") == "instagram":
-            inf, _created = influencer_service.create_influencer_from_ig_form(
+            inf, created = influencer_service.create_influencer_from_ig_form(
                 db, owner_id=task.owner_id, form=task.result
             )
         else:
-            inf, _created = influencer_service.create_influencer_from_form(
+            inf, created = influencer_service.create_influencer_from_form(
                 db, owner_id=task.owner_id, form=task.result
             )
+        if created and save_status:
+            inf.status = InfluencerStatus(save_status)
+            db.commit()
         _bind_platform_by_name(db, inf, task.platform)
         logger.info("[InfluencerScrape task#{}] 已自动存入达人库", task.id)
     except Exception as e:  # noqa: BLE001
         logger.warning("[InfluencerScrape task#{}] 自动入库失败：{}", task.id, e)
 
 
-def _run_scrape_profile_bg(task_id: int, auto_save: bool = False) -> None:
+def _run_scrape_profile_bg(
+    task_id: int, auto_save: bool = False, save_status: str | None = None
+) -> None:
     """后台线程：按平台跑对应 Apify actor 抓主页资料，映射成可填充表单字段。
 
     facebook：facebook-pages-scraper；instagram：instagram-profile-scraper。
@@ -213,7 +235,7 @@ def _run_scrape_profile_bg(task_id: int, auto_save: bool = False) -> None:
             task.finished_at = datetime.utcnow()
             db.commit()
             if auto_save:
-                _auto_save_from_task(db, task)
+                _auto_save_from_task(db, task, save_status)
             logger.info("[InfluencerScrape task#{}] IG done for {}", task_id, task.url)
             return
 
@@ -259,7 +281,7 @@ def _run_scrape_profile_bg(task_id: int, auto_save: bool = False) -> None:
         task.finished_at = datetime.utcnow()
         db.commit()
         if auto_save:
-            _auto_save_from_task(db, task)
+            _auto_save_from_task(db, task, save_status)
         logger.info("[InfluencerScrape task#{}] done for {}", task_id, task.url)
     except Exception as e:  # noqa: BLE001
         logger.exception("[InfluencerScrape task#{}] failed: {}", task_id, e)
@@ -618,6 +640,88 @@ def start_scrape_profile(
     return _scrape_task_out(db, task)
 
 
+#: 上传的链接表格大小上限
+_MAX_IMPORT_BYTES = 5 * 1024 * 1024
+
+
+def _looks_like_profile_value(value: str) -> bool:
+    """单元格内容是否像主页链接 / 用户名（用于忽略表头和无关列）。"""
+    s = value.strip()
+    if not s or len(s) > 500 or " " in s:
+        return False
+    return s.startswith(("http://", "https://", "www.", "@")) or "." in s
+
+
+def _extract_urls_from_upload(filename: str, content: bytes) -> list[str]:
+    """从上传的 xlsx / csv / txt 里取出所有像主页链接 / 用户名的单元格。"""
+    suffix = Path(filename).suffix.lower()
+    values: list[str] = []
+    if suffix in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        try:
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    values.extend(str(c) for c in row if isinstance(c, str))
+        finally:
+            wb.close()
+    else:
+        text = content.decode("utf-8-sig", errors="ignore")
+        if suffix == ".csv" or "," in text or "\t" in text:
+            for row in csv.reader(io.StringIO(text), delimiter="\t" if "\t" in text else ","):
+                values.extend(row)
+        else:
+            values.extend(text.splitlines())
+    return [v.strip() for v in values if _looks_like_profile_value(v)]
+
+
+def _stage_urls(
+    db: Session,
+    user: User,
+    raw_urls: list[str],
+    platform: str | None,
+    fallback_platform: str | None,
+    batch: str | None,
+) -> list[InfluencerScrapeTaskOut]:
+    """把一批链接去重后写入暂存区（status=staged），逐条按链接识别平台。"""
+    plat = (platform or "auto").strip().lower()
+    if plat != "auto" and plat not in KNOWN_PLATFORMS:
+        raise HTTPException(status_code=400, detail="不支持的抓取平台")
+    fallback = (fallback_platform or "facebook").strip().lower()
+    if fallback not in KNOWN_PLATFORMS:
+        raise HTTPException(status_code=400, detail="不支持的兼容平台")
+    seen: set[str] = set()
+    urls: list[str] = []
+    for raw in raw_urls:
+        u = (raw or "").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        urls.append(u)
+    if not urls:
+        raise HTTPException(status_code=400, detail="没有可导入的链接")
+    batch_name = (batch or "").strip() or _default_batch_name(db, user.id)
+    created: list[InfluencerScrapeTask] = []
+    for u in urls:
+        row_platform = plat
+        if row_platform == "auto":
+            row_platform = detect_platform(u) or fallback
+        task = InfluencerScrapeTask(
+            owner_id=user.id,
+            platform=row_platform,
+            url=u,
+            batch=batch_name,
+            status="staged",
+        )
+        db.add(task)
+        created.append(task)
+    db.commit()
+    for t in created:
+        db.refresh(t)
+    return [_scrape_task_out(db, t) for t in created]
+
+
 @router.post("/scrape-profile/batch", response_model=list[InfluencerScrapeTaskOut])
 def batch_stage_scrape_profiles(
     payload: InfluencerScrapeBatchCreate,
@@ -628,38 +732,44 @@ def batch_stage_scrape_profiles(
 
     之后可在暂存列表里逐条/整批「抓取」或「私信建联」，私信发出后自动入库。
     """
-    platform = (payload.platform or "auto").strip().lower()
-    if platform != "auto" and platform not in KNOWN_PLATFORMS:
-        raise HTTPException(status_code=400, detail="不支持的抓取平台")
-    fallback = (payload.fallback_platform or "facebook").strip().lower()
-    if fallback not in KNOWN_PLATFORMS:
-        raise HTTPException(status_code=400, detail="不支持的兼容平台")
-    # 去重、去空白
-    seen: set[str] = set()
-    urls: list[str] = []
-    for raw in payload.urls or []:
-        u = (raw or "").strip()
-        if not u or u in seen:
-            continue
-        seen.add(u)
-        urls.append(u)
+    return _stage_urls(
+        db,
+        user,
+        payload.urls or [],
+        platform=payload.platform,
+        fallback_platform=payload.fallback_platform,
+        batch=payload.batch,
+    )
+
+
+@router.post("/scrape-profile/batch/upload", response_model=list[InfluencerScrapeTaskOut])
+async def upload_scrape_profile_batch(
+    file: UploadFile = File(..., description="主页链接表格：xlsx / csv / txt"),
+    platform: str = Form("auto"),
+    fallback_platform: str = Form("facebook"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """上传主页链接表格（xlsx / csv / txt）批量导入到暂存区。
+
+    表格里所有单元格中形如链接 / @用户名 的内容都会被取出（表头会被自动忽略）。
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件是空的")
+    if len(content) > _MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=400, detail="文件过大（上限 5MB）")
+    urls = _extract_urls_from_upload(file.filename or "", content)
     if not urls:
-        raise HTTPException(status_code=400, detail="没有可导入的链接")
-    batch = (payload.batch or "").strip() or _default_batch_name(db, user.id)
-    created: list[InfluencerScrapeTask] = []
-    for u in urls:
-        row_platform = platform
-        if row_platform == "auto":
-            row_platform = detect_platform(u) or fallback
-        task = InfluencerScrapeTask(
-            owner_id=user.id, platform=row_platform, url=u, batch=batch, status="staged"
-        )
-        db.add(task)
-        created.append(task)
-    db.commit()
-    for t in created:
-        db.refresh(t)
-    return [_scrape_task_out(db, t) for t in created]
+        raise HTTPException(status_code=400, detail="表格里没有识别到主页链接 / 用户名")
+    return _stage_urls(
+        db,
+        user,
+        urls,
+        platform=platform,
+        fallback_platform=fallback_platform,
+        batch=None,
+    )
 
 
 @router.get("/scrape-profile", response_model=list[InfluencerScrapeTaskOut])
@@ -744,15 +854,16 @@ def list_scrape_batches(
 
 
 def _batch_task_query(db: Session, user: User, batch: str | None, platform: str | None):
-    """按批次（可选平台）定位当前用户可见的抓取任务。"""
+    """定位当前用户可见的抓取任务：batch=None 为不限批次，"" 为未分组。"""
     q = db.query(InfluencerScrapeTask)
     if not is_admin(user):
         q = q.filter(InfluencerScrapeTask.owner_id == user.id)
-    b = (batch or "").strip()
-    if b:
-        q = q.filter(InfluencerScrapeTask.batch == b)
-    else:
-        q = q.filter(InfluencerScrapeTask.batch.is_(None))
+    if batch is not None:
+        b = batch.strip()
+        if b:
+            q = q.filter(InfluencerScrapeTask.batch == b)
+        else:
+            q = q.filter(InfluencerScrapeTask.batch.is_(None))
     if platform:
         q = q.filter(InfluencerScrapeTask.platform == platform.strip().lower())
     return q
@@ -764,9 +875,10 @@ def run_scrape_batch(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """整批抓取：把该批次里暂存（可选含失败）的任务一次性丢进抓取队列。
+    """批量抓取：把暂存（可选含失败）的任务一次性丢进抓取队列。
 
-    暂不支持自动抓资料的平台（如 TikTok / 小红书）计入 skipped，不会报错中断整批。
+    auto_save=True 时抓完直接入库，save_status 指定入库后的建联状态；
+    暂不支持自动抓资料的平台（如 TikTok / 小红书）计入 skipped，不会报错中断。
     """
     statuses = ["staged"] + (["failed"] if payload.include_failed else [])
     tasks = (
@@ -775,6 +887,7 @@ def run_scrape_batch(
         .all()
     )
     runnable = [t for t in tasks if (t.platform or "facebook") in SCRAPABLE_PLATFORMS]
+    status = _parse_save_status(payload.save_status)
     for t in runnable:
         t.status = "pending"
         t.error = None
@@ -784,7 +897,9 @@ def run_scrape_batch(
     db.commit()
     for t in runnable:
         threading.Thread(
-            target=_run_scrape_profile_bg, args=(t.id,), daemon=True
+            target=_run_scrape_profile_bg,
+            args=(t.id, payload.auto_save, status.value if status else None),
+            daemon=True,
         ).start()
     return InfluencerScrapeBatchActionResult(
         affected=len(runnable), skipped=len(tasks) - len(runnable)
@@ -797,7 +912,7 @@ def delete_scrape_batch(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """整批删除抓取任务（正在抓取中的跳过），不影响已入库达人。"""
+    """批量删除抓取任务（正在抓取中的跳过），不影响已入库达人。"""
     tasks = _batch_task_query(db, user, payload.batch, payload.platform).all()
     deletable = [t for t in tasks if t.status not in ("pending", "running")]
     for t in deletable:
@@ -860,10 +975,14 @@ def delete_scrape_profile(
 @router.post("/scrape-profile/{task_id}/run", response_model=InfluencerScrapeTaskOut)
 def run_scrape_profile(
     task_id: int,
+    payload: InfluencerScrapeRunRequest | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """对暂存/失败的任务发起（重新）抓取：置为 pending 并后台跑对应 actor。"""
+    """对暂存/失败的任务发起（重新）抓取：置为 pending 并后台跑对应 actor。
+
+    payload.auto_save=True 时抓完直接入库，save_status 指定入库后的建联状态。
+    """
     task = db.get(InfluencerScrapeTask, task_id)
     if not task or (task.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="task not found")
@@ -878,10 +997,14 @@ def run_scrape_profile(
     task.result = None
     task.started_at = None
     task.finished_at = None
+    auto_save = bool(payload and payload.auto_save)
+    status = _parse_save_status(payload.save_status if payload else None)
     db.commit()
     db.refresh(task)
     threading.Thread(
-        target=_run_scrape_profile_bg, args=(task.id,), daemon=True
+        target=_run_scrape_profile_bg,
+        args=(task.id, auto_save, status.value if status else None),
+        daemon=True,
     ).start()
     return _scrape_task_out(db, task)
 

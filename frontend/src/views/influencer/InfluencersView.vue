@@ -6,7 +6,6 @@ import {
   influencerApi,
   PLATFORM_LABELS,
   type Influencer,
-  type InfluencerScrapeBatch,
   type InfluencerScrapeTask,
   type PlatformDetectItem,
   type PlatformOption,
@@ -252,27 +251,13 @@ async function updateTaskPlatform(row: InfluencerScrapeTask, platform: ScrapePla
 
 // 批量导入（暂存）与筛选
 const batchImportUrls = ref('')
-const batchName = ref<string>('')
 // 'auto' = 后端按链接正则逐条识别平台
 const batchPlatform = ref<ScrapePlatform | 'auto'>('auto')
 const batchImporting = ref(false)
+const uploading = ref(false)
 const filterPlatform = ref<'' | ScrapePlatform>('')
-// '' = 全部批次；'__none__' = 未分组
-const filterBatch = ref<string>('')
 const filterStatus = ref<string>('')
-const batches = ref<InfluencerScrapeBatch[]>([])
 const batchActing = ref(false)
-
-/** 已有批次名（去重），导入时可下拉选已有批次，也可直接输入新批次名 */
-const batchNameOptions = computed(() => {
-  const seen = new Map<string, string>()
-  for (const b of batches.value) {
-    const name = (b.batch || '').trim()
-    if (!name || seen.has(name)) continue
-    seen.set(name, b.owner_name ? `${name}（${b.owner_name}）` : name)
-  }
-  return [...seen.entries()].map(([value, label]) => ({ value, label }))
-})
 
 // 导入前预分类：按链接正则识别每条链接的平台
 const detectItems = ref<PlatformDetectItem[]>([])
@@ -314,12 +299,6 @@ async function previewDetect() {
     detecting.value = false
   }
 }
-
-/** 筛选条件下传给接口的批次参数：undefined=不限，''=未分组 */
-const batchParam = computed(() => {
-  if (filterBatch.value === '') return undefined
-  return filterBatch.value === '__none__' ? '' : filterBatch.value
-})
 
 const detailVisible = ref(false)
 const detailTask = ref<InfluencerScrapeTask | null>(null)
@@ -384,28 +363,12 @@ async function loadTasks() {
   try {
     tasks.value = await influencerApi.listScrapeProfiles({
       platform: filterPlatform.value || undefined,
-      batch: batchParam.value,
       status: filterStatus.value || undefined,
     })
   } finally {
     tasksLoading.value = false
   }
   scheduleTaskPolling()
-}
-
-async function loadBatches() {
-  try {
-    batches.value = await influencerApi.listScrapeBatches()
-  } catch {
-    /* 拦截器已提示 */
-  }
-}
-
-function batchLabel(b: InfluencerScrapeBatch) {
-  const name = b.batch || '（未分组）'
-  const plat = platformNameMap.value[b.platform] || b.platform
-  const owner = b.owner_name ? ` · ${b.owner_name}` : ''
-  return `${plat} · ${name}${owner}（共 ${b.total}，待抓 ${b.staged}，已完成 ${b.done}）`
 }
 
 function openTaskDialog() {
@@ -416,63 +379,109 @@ function openTaskDialog() {
   detectItems.value = []
   loadPlatformOptions()
   loadTasks()
-  loadBatches()
 }
 
-/** 整批抓取：对当前选中批次里所有待抓/失败的行一键发起 */
-async function runWholeBatch() {
-  if (batchParam.value === undefined) {
-    ElMessage.warning('请先在上方选一个批次')
+// ─── 抓取选项弹窗（抓完是否直接入库 / 入库状态）────────────────────
+const scrapeOptVisible = ref(false)
+const scrapeOptAutoSave = ref(true)
+const scrapeOptStatus = ref('pre_contact')
+/** row=单条，selected=勾选的行，all=当前筛选下全部待处理/失败 */
+const scrapeOptMode = ref<'row' | 'selected' | 'all'>('row')
+const scrapeOptRow = ref<InfluencerScrapeTask | null>(null)
+
+const scrapeOptCount = computed(() => {
+  if (scrapeOptMode.value === 'row') return 1
+  if (scrapeOptMode.value === 'selected') return runnableSelected.value.length
+  return tasks.value.filter((t) => t.status === 'staged' || t.status === 'failed').length
+})
+
+const runnableSelected = computed(() =>
+  selectedTasks.value.filter(
+    (t) => t.status === 'staged' || t.status === 'failed' || t.status === 'done',
+  ),
+)
+
+function openScrapeOptions(mode: 'row' | 'selected' | 'all', row?: InfluencerScrapeTask) {
+  if (mode === 'selected' && !runnableSelected.value.length) {
+    ElMessage.warning('请勾选要抓取的行（待处理/失败/已完成可重抓）')
     return
   }
-  batchActing.value = true
-  try {
-    const r = await influencerApi.runScrapeBatch({
-      batch: batchParam.value,
-      platform: filterPlatform.value || null,
-    })
-    if (r.affected === 0 && r.skipped === 0) {
-      ElMessage.info('该批次没有待抓取的行')
-    } else {
-      ElMessage.success(
-        `已发起 ${r.affected} 条抓取` +
-          (r.skipped ? `，${r.skipped} 条平台暂不支持自动抓取已跳过` : ''),
-      )
+  scrapeOptMode.value = mode
+  scrapeOptRow.value = row || null
+  scrapeOptVisible.value = true
+}
+
+/** 弹窗确认后按选项发起抓取 */
+async function confirmScrape() {
+  const opts = {
+    auto_save: scrapeOptAutoSave.value,
+    save_status: scrapeOptAutoSave.value ? scrapeOptStatus.value : null,
+  }
+  scrapeOptVisible.value = false
+  if (scrapeOptMode.value === 'all') {
+    batchActing.value = true
+    try {
+      const r = await influencerApi.runScrapeBatch({
+        platform: filterPlatform.value || null,
+        ...opts,
+      })
+      if (r.affected === 0 && r.skipped === 0) {
+        ElMessage.info('没有待抓取的任务')
+      } else {
+        ElMessage.success(
+          `已发起 ${r.affected} 条抓取` +
+            (r.skipped ? `，${r.skipped} 条平台暂不支持自动抓取已跳过` : ''),
+        )
+      }
+      await loadTasks()
+    } catch {
+      /* 拦截器已提示 */
+    } finally {
+      batchActing.value = false
     }
-    await Promise.all([loadTasks(), loadBatches()])
-  } catch {
-    /* 拦截器已提示 */
+    return
+  }
+  const rows =
+    scrapeOptMode.value === 'row' && scrapeOptRow.value
+      ? [scrapeOptRow.value]
+      : runnableSelected.value
+  if (rows.length === 1) {
+    runningTaskId.value = rows[0].id
+  } else {
+    batchRunning.value = true
+  }
+  try {
+    for (const r of rows) {
+      try {
+        await influencerApi.runScrapeProfile(r.id, opts)
+      } catch {
+        /* 单条失败继续 */
+      }
+    }
+    if (rows.length > 1) ElMessage.success(`已发起 ${rows.length} 条抓取`)
+    await loadTasks()
   } finally {
-    batchActing.value = false
+    runningTaskId.value = null
+    batchRunning.value = false
   }
 }
 
-/** 整批删除：删掉当前选中批次里的全部行（抓取中的除外） */
-async function deleteWholeBatch() {
-  if (batchParam.value === undefined) {
-    ElMessage.warning('请先在上方选一个批次')
-    return
-  }
+/** 删除当前筛选下的全部任务（抓取中的除外） */
+async function deleteAllTasks() {
   try {
-    await ElMessageBox.confirm(
-      `确认删除批次「${filterBatch.value === '__none__' ? '（未分组）' : filterBatch.value}」的全部任务？已入库达人不受影响。`,
-      '提示',
-      { type: 'warning' },
-    )
+    await ElMessageBox.confirm('确认删除当前列表里的全部任务？已入库达人不受影响。', '提示', {
+      type: 'warning',
+    })
   } catch {
     return
   }
   batchActing.value = true
   try {
-    const r = await influencerApi.deleteScrapeBatch({
-      batch: batchParam.value,
-      platform: filterPlatform.value || null,
-    })
+    const r = await influencerApi.deleteScrapeBatch({ platform: filterPlatform.value || null })
     ElMessage.success(
       `已删除 ${r.affected} 条` + (r.skipped ? `，${r.skipped} 条正在抓取中已跳过` : ''),
     )
-    filterBatch.value = ''
-    await Promise.all([loadTasks(), loadBatches()])
+    await loadTasks()
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -491,17 +500,13 @@ async function importBatch() {
     const created = await influencerApi.batchStageScrapeProfiles({
       urls,
       platform: batchPlatform.value,
-      batch: (batchName.value || '').trim() || null,
     })
     batchImportUrls.value = ''
     detectItems.value = []
-    batchName.value = ''
-    const batch = created[0]?.batch || ''
-    ElMessage.success(`已暂存 ${created.length} 条到批次「${batch || '未分组'}」`)
-    // 直接把筛选定到新导入的批次，方便接着整批抓取
+    ElMessage.success(`已导入 ${created.length} 条到待处理列表`)
     filterPlatform.value = ''
-    filterBatch.value = batch || '__none__'
-    await Promise.all([loadTasks(), loadBatches()])
+    filterStatus.value = ''
+    await loadTasks()
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -509,40 +514,21 @@ async function importBatch() {
   }
 }
 
-async function runTaskScrape(row: InfluencerScrapeTask) {
-  runningTaskId.value = row.id
+/** 上传主页链接表格（xlsx / csv / txt）批量导入；返回 false 阻止 el-upload 自己发请求 */
+async function onPickImportFile(file: File) {
+  uploading.value = true
   try {
-    await influencerApi.runScrapeProfile(row.id)
+    const created = await influencerApi.uploadScrapeBatch(file, batchPlatform.value)
+    ElMessage.success(`已从表格导入 ${created.length} 条到待处理列表`)
+    filterPlatform.value = ''
+    filterStatus.value = ''
     await loadTasks()
   } catch {
     /* 拦截器已提示 */
   } finally {
-    runningTaskId.value = null
+    uploading.value = false
   }
-}
-
-async function batchRunScrape() {
-  const rows = selectedTasks.value.filter(
-    (t) => t.status === 'staged' || t.status === 'failed' || t.status === 'done',
-  )
-  if (!rows.length) {
-    ElMessage.warning('请勾选要抓取的行（待处理/失败/已完成可重抓）')
-    return
-  }
-  batchRunning.value = true
-  try {
-    for (const r of rows) {
-      try {
-        await influencerApi.runScrapeProfile(r.id)
-      } catch {
-        /* 单条失败继续 */
-      }
-    }
-    ElMessage.success(`已发起 ${rows.length} 条抓取`)
-    await loadTasks()
-  } finally {
-    batchRunning.value = false
-  }
+  return false
 }
 
 async function deleteTask(row: InfluencerScrapeTask) {
@@ -554,7 +540,7 @@ async function deleteTask(row: InfluencerScrapeTask) {
   try {
     await influencerApi.deleteScrapeProfile(row.id)
     ElMessage.success('已删除')
-    await Promise.all([loadTasks(), loadBatches()])
+    await loadTasks()
   } catch {
     /* 拦截器已提示 */
   }
@@ -581,7 +567,7 @@ async function batchDelete() {
       }
     }
     ElMessage.success(`已删除 ${rows.length} 条`)
-    await Promise.all([loadTasks(), loadBatches()])
+    await loadTasks()
   } finally {
     batchRunning.value = false
   }
@@ -1257,32 +1243,23 @@ onUnmounted(() => {
                 :value="p.platform"
               />
             </el-select>
-            <el-select
-              v-model="batchName"
-              filterable
-              allow-create
-              default-first-option
-              clearable
-              placeholder="选已有批次或直接输入新批次名，留空自动编号"
-              style="width: 320px"
-            >
-              <el-option
-                v-for="b in batchNameOptions"
-                :key="b.value"
-                :label="b.label"
-                :value="b.value"
-              />
-            </el-select>
             <el-button :loading="detecting" @click="previewDetect">识别平台</el-button>
             <el-button type="primary" :loading="batchImporting" @click="importBatch">
-              导入暂存（{{ parsedBatchUrls.length }} 条）
+              导入（{{ parsedBatchUrls.length }} 条）
             </el-button>
+            <el-upload
+              :show-file-list="false"
+              :before-upload="onPickImportFile"
+              accept=".xlsx,.xlsm,.csv,.txt"
+            >
+              <el-button :loading="uploading">上传表格（Excel / CSV）</el-button>
+            </el-upload>
           </div>
           <el-input
             v-model="batchImportUrls"
             type="textarea"
             :rows="4"
-            placeholder="每行一个链接 / 用户名，默认按链接自动识别平台（FB / IG / TikTok / 小红书…）；导入后只暂存，可整批抓取"
+            placeholder="每行一个链接 / 用户名，默认按链接自动识别平台（FB / IG / TikTok / 小红书…）；导入后先放在下方列表，勾选后再抓取"
             @change="previewDetect"
           />
           <div
@@ -1315,14 +1292,6 @@ onUnmounted(() => {
             :value="p.platform"
           />
         </el-select>
-        <el-select v-model="filterBatch" placeholder="全部批次" clearable filterable style="width: 300px" @change="loadTasks">
-          <el-option
-            v-for="b in batches"
-            :key="`${b.platform}::${b.batch || ''}`"
-            :label="batchLabel(b)"
-            :value="b.batch || '__none__'"
-          />
-        </el-select>
         <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 120px" @change="loadTasks">
           <el-option label="待处理" value="staged" />
           <el-option label="抓取中" value="running" />
@@ -1333,19 +1302,17 @@ onUnmounted(() => {
         <el-button
           type="primary"
           :loading="batchActing"
-          :disabled="filterBatch === ''"
-          @click="runWholeBatch"
+          @click="openScrapeOptions('all')"
         >
-          整批抓取
+          抓取全部待处理
         </el-button>
         <el-button
           type="danger"
           plain
           :loading="batchActing"
-          :disabled="filterBatch === ''"
-          @click="deleteWholeBatch"
+          @click="deleteAllTasks"
         >
-          整批删除
+          删除全部
         </el-button>
         <div style="flex: 1" />
         <span style="font-size: 13px; color: #909399">已选 {{ selectedTasks.length }} 项</span>
@@ -1355,7 +1322,7 @@ onUnmounted(() => {
           size="small"
           :loading="batchRunning"
           :disabled="selectedTasks.length === 0"
-          @click="batchRunScrape"
+          @click="openScrapeOptions('selected')"
         >
           批量抓取
         </el-button>
@@ -1402,11 +1369,6 @@ onUnmounted(() => {
                 :value="p.platform"
               />
             </el-select>
-          </template>
-        </el-table-column>
-        <el-table-column label="批次" width="150">
-          <template #default="{ row }">
-            <span style="font-size: 12px; color: #606266">{{ row.batch || '—' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="主页链接 / 用户名" min-width="200">
@@ -1473,7 +1435,7 @@ onUnmounted(() => {
                 type="primary"
                 size="small"
                 :loading="runningTaskId === row.id"
-                @click="runTaskScrape(row)"
+                @click="openScrapeOptions('row', row)"
               >
                 {{ row.status === 'failed' ? '重抓' : '抓取' }}
               </el-button>
@@ -1491,6 +1453,29 @@ onUnmounted(() => {
           </template>
         </el-table-column>
       </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="scrapeOptVisible" title="抓取选项" width="460px">
+      <el-form label-width="120px">
+        <el-form-item label="本次抓取">
+          <span style="font-size: 13px">共 {{ scrapeOptCount }} 条</span>
+        </el-form-item>
+        <el-form-item label="抓完直接入库">
+          <el-switch v-model="scrapeOptAutoSave" />
+        </el-form-item>
+        <el-form-item v-if="scrapeOptAutoSave" label="入库状态">
+          <el-select v-model="scrapeOptStatus" style="width: 100%">
+            <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </el-form-item>
+        <div style="color: #909399; font-size: 12px; margin-left: 120px">
+          抓到的头像会自动下载到服务器；不勾选直接入库时，结果留在列表里可先查看再手动入库
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="scrapeOptVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmScrape">开始抓取</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="dmDialogVisible" title="私信建联" width="520px">

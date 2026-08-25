@@ -246,6 +246,9 @@ export const influencerApi = {
     batch?: string | null
     platform?: ScrapePlatform | null
     include_failed?: boolean
+    /** 抓完直接入库 + 入库后的建联状态 */
+    auto_save?: boolean
+    save_status?: string | null
   }) =>
     http.post<unknown, ScrapeBatchActionResult>(
       '/influencers/scrape-profile-batches/run',
@@ -256,8 +259,21 @@ export const influencerApi = {
       '/influencers/scrape-profile-batches/delete',
       data,
     ),
-  runScrapeProfile: (taskId: number) =>
-    http.post<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}/run`),
+  runScrapeProfile: (taskId: number, data?: { auto_save?: boolean; save_status?: string | null }) =>
+    http.post<unknown, InfluencerScrapeTask>(
+      `/influencers/scrape-profile/${taskId}/run`,
+      data || {},
+    ),
+  /** 上传主页链接表格（xlsx / csv / txt）批量导入暂存 */
+  uploadScrapeBatch: (file: File, platform: ScrapePlatform | 'auto') => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('platform', platform)
+    return http.post<unknown, InfluencerScrapeTask[]>(
+      '/influencers/scrape-profile/batch/upload',
+      fd,
+    )
+  },
   updateScrapeProfile: (taskId: number, data: { platform?: ScrapePlatform }) =>
     http.patch<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}`, data),
   deleteScrapeProfile: (taskId: number) =>

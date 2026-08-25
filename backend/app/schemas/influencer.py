@@ -205,6 +205,9 @@ class InfluencerScrapeBatchRunRequest(BaseModel):
     batch: Optional[str] = Field(default=None, max_length=128)
     platform: Optional[str] = Field(default=None, max_length=32)
     include_failed: bool = True
+    #: 抓完是否直接入库达人库；save_status 为入库后的建联状态（默认预建联）
+    auto_save: bool = False
+    save_status: Optional[str] = Field(default=None, max_length=32)
 
 
 class InfluencerScrapeBatchActionResult(BaseModel):
@@ -218,6 +221,13 @@ class InfluencerScrapeTaskUpdate(BaseModel):
     """在暂存列表内修改任务字段（目前支持改平台，纠正批量导入时选错的平台）。"""
 
     platform: Optional[str] = Field(default=None, max_length=32)
+
+
+class InfluencerScrapeRunRequest(BaseModel):
+    """发起抓取时的选项：抓完是否直接入库、入库后的建联状态。"""
+
+    auto_save: bool = False
+    save_status: Optional[str] = Field(default=None, max_length=32)
 
 
 class InfluencerScrapeTaskSaveRequest(BaseModel):
