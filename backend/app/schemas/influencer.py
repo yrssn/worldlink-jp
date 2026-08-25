@@ -62,6 +62,7 @@ class InfluencerBase(BaseModel):
 
     tags: Optional[list[str]] = None
     notes: Optional[str] = None
+    progress: Optional[str] = Field(default=None, max_length=255, description="建联进度")
     status: InfluencerStatus = InfluencerStatus.pre_contact
     platform_id: Optional[int] = None
 
@@ -87,6 +88,7 @@ class InfluencerUpdate(BaseModel):
     website: Optional[str] = None
     tags: Optional[list[str]] = None
     notes: Optional[str] = None
+    progress: Optional[str] = Field(default=None, max_length=255)
     status: Optional[InfluencerStatus] = None
     platform_id: Optional[int] = None
 
@@ -97,7 +99,9 @@ class InfluencerOut(InfluencerBase):
     id: int
     source: InfluencerSource
     platform_name: Optional[str] = None
+    platform_code: Optional[str] = None
     owner_id: int
+    owner_name: Optional[str] = None
     has_outreach: bool = False
     created_at: datetime
     updated_at: datetime
@@ -120,8 +124,26 @@ class InfluencerScrapeBatchCreate(BaseModel):
     """批量导入链接到暂存区：只保存不跑抓取，按 平台 + 批次名 分组。"""
 
     urls: list[str] = Field(..., description="链接/用户名列表（前端按行拆分后传入）")
-    platform: str = Field(default="facebook", max_length=32)
-    batch: Optional[str] = Field(default=None, max_length=128, description="批次名")
+    #: ``auto`` = 按链接正则逐条自动识别平台；识别不出时用 fallback_platform
+    platform: str = Field(default="auto", max_length=32)
+    fallback_platform: str = Field(default="facebook", max_length=32)
+    batch: Optional[str] = Field(default=None, max_length=128, description="批次名，不传则自动生成")
+
+
+class PlatformDetectRequest(BaseModel):
+    """按链接正则预分类（导入前预览）。"""
+
+    urls: list[str]
+
+
+class PlatformDetectItem(BaseModel):
+    """单条链接的识别结果。platform=None 表示没识别出来。"""
+
+    url: str
+    platform: Optional[str] = None
+    platform_id: Optional[int] = None
+    platform_name: Optional[str] = None
+    scrapable: bool = False
 
 
 class InfluencerScrapeBatchOut(BaseModel):
@@ -131,6 +153,8 @@ class InfluencerScrapeBatchOut(BaseModel):
     batch: Optional[str] = None
     total: int
     staged: int
+    running: int = 0
+    failed: int = 0
     done: int
 
 
@@ -150,6 +174,21 @@ class InfluencerScrapeTaskOut(BaseModel):
     finished_at: Optional[datetime] = None
     # 该任务抓到的主页是否已入库建联达人（命中则为达人 id，便于前端展示「已存入」）
     influencer_id: Optional[int] = None
+
+
+class InfluencerScrapeBatchRunRequest(BaseModel):
+    """整批操作：按批次名（可选限定平台）把暂存/失败的任务一次性丢进抓取队列。"""
+
+    batch: Optional[str] = Field(default=None, max_length=128)
+    platform: Optional[str] = Field(default=None, max_length=32)
+    include_failed: bool = True
+
+
+class InfluencerScrapeBatchActionResult(BaseModel):
+    """整批操作结果。"""
+
+    affected: int
+    skipped: int = 0
 
 
 class InfluencerScrapeTaskUpdate(BaseModel):

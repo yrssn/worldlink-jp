@@ -177,6 +177,8 @@ def _ensure_influencer_platform_column() -> None:
             "ALTER TABLE influencers ADD COLUMN deleted_at DATETIME NULL",
             "CREATE INDEX ix_influencers_deleted_at ON influencers (deleted_at)",
         ]
+    if "progress" not in cols:
+        statements.append("ALTER TABLE influencers ADD COLUMN progress VARCHAR(255) NULL")
     for sql in statements:
         try:
             logger.info("[schema-patch] {}", sql)

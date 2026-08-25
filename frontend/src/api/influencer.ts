@@ -51,9 +51,12 @@ export interface Influencer {
   source: InfluencerSource
   platform_id?: number | null
   platform_name?: string | null
+  platform_code?: string | null
   notes?: string | null
+  progress?: string | null
   tags?: string[] | null
   owner_id: number
+  owner_name?: string | null
   has_outreach?: boolean
   created_at: string
 }
@@ -92,7 +95,36 @@ export interface InfluencerSourcePost {
   published_at: string | null
 }
 
-export type ScrapePlatform = 'facebook' | 'instagram'
+/** 可暂存的平台（facebook / instagram 之外的暂不支持自动抓资料，只做预分类暂存） */
+export type ScrapePlatform =
+  | 'facebook'
+  | 'instagram'
+  | 'tiktok'
+  | 'xiaohongshu'
+  | 'youtube'
+  | 'twitter'
+  | 'line'
+
+/** 支持自动抓取资料的平台 */
+export const SCRAPABLE_PLATFORMS: ScrapePlatform[] = ['facebook', 'instagram']
+
+export const PLATFORM_LABELS: Record<ScrapePlatform, string> = {
+  facebook: 'Facebook',
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  xiaohongshu: '小红书',
+  youtube: 'YouTube',
+  twitter: 'X / Twitter',
+  line: 'LINE',
+}
+
+export interface PlatformDetectItem {
+  url: string
+  platform?: ScrapePlatform | null
+  platform_id?: number | null
+  platform_name?: string | null
+  scrapable: boolean
+}
 
 export type ScrapeTaskResult = Partial<Influencer> & {
   platform?: string
@@ -119,12 +151,28 @@ export interface InfluencerScrapeBatch {
   batch?: string | null
   total: number
   staged: number
+  running: number
+  failed: number
   done: number
 }
 
+export interface ScrapeBatchActionResult {
+  affected: number
+  skipped: number
+}
+
 export const influencerApi = {
-  list: (params?: { page?: number; page_size?: number; keyword?: string; status?: string }) =>
-    http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
+  list: (params?: {
+    page?: number
+    page_size?: number
+    keyword?: string
+    status?: string
+    country?: string
+    platform_id?: number
+  }) => http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
+  listCountries: () => http.get<unknown, string[]>('/influencers/countries'),
+  detectPlatforms: (urls: string[]) =>
+    http.post<unknown, PlatformDetectItem[]>('/influencers/detect-platforms', { urls }),
   create: (data: Partial<Influencer> & { social_accounts?: SocialAccount[] }) =>
     http.post<unknown, Influencer>('/influencers', data),
   detail: (id: number) => http.get<unknown, InfluencerDetail>(`/influencers/${id}`),
@@ -153,12 +201,28 @@ export const influencerApi = {
     }),
   batchStageScrapeProfiles: (data: {
     urls: string[]
-    platform: ScrapePlatform
+    /** 'auto' = 后端按链接正则逐条识别平台 */
+    platform: ScrapePlatform | 'auto'
+    fallback_platform?: ScrapePlatform
     batch?: string | null
   }) =>
     http.post<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile/batch', data),
   listScrapeBatches: () =>
     http.get<unknown, InfluencerScrapeBatch[]>('/influencers/scrape-profile-batches'),
+  runScrapeBatch: (data: {
+    batch?: string | null
+    platform?: ScrapePlatform | null
+    include_failed?: boolean
+  }) =>
+    http.post<unknown, ScrapeBatchActionResult>(
+      '/influencers/scrape-profile-batches/run',
+      data,
+    ),
+  deleteScrapeBatch: (data: { batch?: string | null; platform?: ScrapePlatform | null }) =>
+    http.post<unknown, ScrapeBatchActionResult>(
+      '/influencers/scrape-profile-batches/delete',
+      data,
+    ),
   runScrapeProfile: (taskId: number) =>
     http.post<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}/run`),
   updateScrapeProfile: (taskId: number, data: { platform?: ScrapePlatform }) =>
@@ -178,7 +242,12 @@ export const influencerApi = {
     http.post<unknown, SocialAccount>(`/influencers/${id}/social-accounts`, data),
   removeSocial: (iid: number, sid: number) =>
     http.delete(`/influencers/${iid}/social-accounts/${sid}`),
-  exportList: (params?: { keyword?: string; status?: string }) =>
+  exportList: (params?: {
+    keyword?: string
+    status?: string
+    country?: string
+    platform_id?: number
+  }) =>
     download(
       { url: '/influencers/export', method: 'GET', params },
       'influencers.csv',

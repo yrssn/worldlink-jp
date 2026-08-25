@@ -4,14 +4,20 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   influencerApi,
+  PLATFORM_LABELS,
   type Influencer,
   type InfluencerScrapeTask,
+  type PlatformDetectItem,
   type ScrapePlatform,
 } from '@/api/influencer'
-import { bitbrowserApi, type BitBrowserWindow } from '@/api/bitbrowser'
+import {
+  bitbrowserApi,
+  type BitBrowserPlatform,
+  type BitBrowserWindow,
+} from '@/api/bitbrowser'
 import { dmApi, type DmContent } from '@/api/dm'
 
-// 抓取平台（为以后更多平台预留，只需在此追加一项）
+// 可自动抓资料的平台（对应 Apify actor）
 const SCRAPE_PLATFORMS: { value: ScrapePlatform; label: string; placeholder: string }[] = [
   { value: 'facebook', label: 'Facebook', placeholder: '粘贴 Facebook 主页链接，发起后台抓取任务' },
   {
@@ -20,9 +26,15 @@ const SCRAPE_PLATFORMS: { value: ScrapePlatform; label: string; placeholder: str
     placeholder: '输入 Instagram 用户名或主页链接，如 nasa 或 https://www.instagram.com/nasa/',
   },
 ]
-const PLATFORM_LABEL: Record<string, string> = Object.fromEntries(
-  SCRAPE_PLATFORMS.map((p) => [p.value, p.label]),
-)
+// 可预分类/暂存的全部平台（非 FB/IG 的只能暂存，不能自动抓资料）
+const ALL_PLATFORMS = (Object.keys(PLATFORM_LABELS) as ScrapePlatform[]).map((value) => ({
+  value,
+  label: PLATFORM_LABELS[value],
+}))
+const PLATFORM_LABEL: Record<string, string> = { ...PLATFORM_LABELS }
+
+// 国家分类备选（可手输新值，库里已用过的会自动并入候选）
+const COUNTRY_PRESETS = ['JP', 'CN', 'US', 'KR', 'TW', 'HK', 'SG', 'TH', 'VN', 'MY', 'ID', 'OTHER']
 
 const router = useRouter()
 const list = ref<Influencer[]>([])
@@ -31,7 +43,33 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const statusFilter = ref<string>('')
+const countryFilter = ref<string>('')
+const platformFilter = ref<number | undefined>(undefined)
 const loading = ref(false)
+
+// 关联平台字典（「平台管理」里维护的平台 + 代码）与国家候选
+const platforms = ref<BitBrowserPlatform[]>([])
+const countryOptions = ref<string[]>([])
+
+const countryChoices = computed(() =>
+  Array.from(new Set([...COUNTRY_PRESETS, ...countryOptions.value])),
+)
+
+async function loadPlatforms() {
+  try {
+    platforms.value = await bitbrowserApi.listPlatforms()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+async function loadCountries() {
+  try {
+    countryOptions.value = await influencerApi.listCountries()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
 
 const dialogVisible = ref(false)
 const form = reactive<Partial<Influencer>>({
@@ -140,7 +178,7 @@ async function startScrape() {
 
 // ─── 抓取任务列表（独立面板：发起抓取 → 看资料 → 存入达人库） ────────
 const taskDialogVisible = ref(false)
-const taskTab = ref<'single' | 'batch'>('single')
+const taskTab = ref<'single' | 'batch'>('batch')
 const taskScrapeUrl = ref('')
 const taskPlatform = ref<ScrapePlatform>('facebook')
 const taskPlaceholder = computed(
@@ -159,6 +197,10 @@ function onTaskSelectionChange(rows: InfluencerScrapeTask[]) {
   selectedTasks.value = rows
 }
 
+function platformLabel(p?: string | null) {
+  return (p && PLATFORM_LABEL[p]) || p || '—'
+}
+
 async function updateTaskPlatform(row: InfluencerScrapeTask, platform: ScrapePlatform) {
   try {
     await influencerApi.updateScrapeProfile(row.id, { platform })
@@ -172,12 +214,72 @@ async function updateTaskPlatform(row: InfluencerScrapeTask, platform: ScrapePla
 // 批量导入（暂存）与筛选
 const batchImportUrls = ref('')
 const batchName = ref('')
-const batchPlatform = ref<ScrapePlatform>('facebook')
+// 'auto' = 后端按链接正则逐条识别平台
+const batchPlatform = ref<ScrapePlatform | 'auto'>('auto')
 const batchImporting = ref(false)
 const filterPlatform = ref<'' | ScrapePlatform>('')
+// '' = 全部批次；'__none__' = 未分组
 const filterBatch = ref<string>('')
 const filterStatus = ref<string>('')
-const batches = ref<{ platform: string; batch?: string | null; total: number; staged: number; done: number }[]>([])
+const batches = ref<
+  {
+    platform: string
+    batch?: string | null
+    total: number
+    staged: number
+    running: number
+    failed: number
+    done: number
+  }[]
+>([])
+const batchActing = ref(false)
+
+// 导入前预分类：按链接正则识别每条链接的平台
+const detectItems = ref<PlatformDetectItem[]>([])
+const detecting = ref(false)
+
+const parsedBatchUrls = computed(() =>
+  batchImportUrls.value
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean),
+)
+
+const detectSummary = computed(() => {
+  const counts = new Map<string, number>()
+  for (const it of detectItems.value) {
+    const key = it.platform || '__unknown__'
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return Array.from(counts.entries()).map(([key, count]) => ({
+    key,
+    count,
+    label: key === '__unknown__' ? '未识别' : PLATFORM_LABEL[key] || key,
+    scrapable: key === 'facebook' || key === 'instagram',
+  }))
+})
+
+async function previewDetect() {
+  const urls = parsedBatchUrls.value
+  if (!urls.length) {
+    detectItems.value = []
+    return
+  }
+  detecting.value = true
+  try {
+    detectItems.value = await influencerApi.detectPlatforms(urls)
+  } catch {
+    detectItems.value = []
+  } finally {
+    detecting.value = false
+  }
+}
+
+/** 筛选条件下传给接口的批次参数：undefined=不限，''=未分组 */
+const batchParam = computed(() => {
+  if (filterBatch.value === '') return undefined
+  return filterBatch.value === '__none__' ? '' : filterBatch.value
+})
 
 const detailVisible = ref(false)
 const detailTask = ref<InfluencerScrapeTask | null>(null)
@@ -242,7 +344,7 @@ async function loadTasks() {
   try {
     tasks.value = await influencerApi.listScrapeProfiles({
       platform: filterPlatform.value || undefined,
-      batch: filterBatch.value || undefined,
+      batch: batchParam.value,
       status: filterStatus.value || undefined,
     })
   } finally {
@@ -259,10 +361,16 @@ async function loadBatches() {
   }
 }
 
-function batchLabel(b: { platform: string; batch?: string | null; total: number; staged: number }) {
+function batchLabel(b: {
+  platform: string
+  batch?: string | null
+  total: number
+  staged: number
+  done: number
+}) {
   const name = b.batch || '（未分组）'
   const plat = PLATFORM_LABEL[b.platform] || b.platform
-  return `${plat} · ${name}（${b.total}，待处理 ${b.staged}）`
+  return `${plat} · ${name}（共 ${b.total}，待抓 ${b.staged}，已完成 ${b.done}）`
 }
 
 function openTaskDialog() {
@@ -270,15 +378,74 @@ function openTaskDialog() {
   taskScrapeUrl.value = ''
   taskPlatform.value = 'facebook'
   batchImportUrls.value = ''
+  detectItems.value = []
   loadTasks()
   loadBatches()
 }
 
+/** 整批抓取：对当前选中批次里所有待抓/失败的行一键发起 */
+async function runWholeBatch() {
+  if (batchParam.value === undefined) {
+    ElMessage.warning('请先在上方选一个批次')
+    return
+  }
+  batchActing.value = true
+  try {
+    const r = await influencerApi.runScrapeBatch({
+      batch: batchParam.value,
+      platform: filterPlatform.value || null,
+    })
+    if (r.affected === 0 && r.skipped === 0) {
+      ElMessage.info('该批次没有待抓取的行')
+    } else {
+      ElMessage.success(
+        `已发起 ${r.affected} 条抓取` +
+          (r.skipped ? `，${r.skipped} 条平台暂不支持自动抓取已跳过` : ''),
+      )
+    }
+    await Promise.all([loadTasks(), loadBatches()])
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    batchActing.value = false
+  }
+}
+
+/** 整批删除：删掉当前选中批次里的全部行（抓取中的除外） */
+async function deleteWholeBatch() {
+  if (batchParam.value === undefined) {
+    ElMessage.warning('请先在上方选一个批次')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除批次「${filterBatch.value === '__none__' ? '（未分组）' : filterBatch.value}」的全部任务？已入库达人不受影响。`,
+      '提示',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  batchActing.value = true
+  try {
+    const r = await influencerApi.deleteScrapeBatch({
+      batch: batchParam.value,
+      platform: filterPlatform.value || null,
+    })
+    ElMessage.success(
+      `已删除 ${r.affected} 条` + (r.skipped ? `，${r.skipped} 条正在抓取中已跳过` : ''),
+    )
+    filterBatch.value = ''
+    await Promise.all([loadTasks(), loadBatches()])
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    batchActing.value = false
+  }
+}
+
 async function importBatch() {
-  const urls = batchImportUrls.value
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)
+  const urls = parsedBatchUrls.value
   if (!urls.length) {
     ElMessage.warning('请粘贴要导入的链接（每行一个）')
     return
@@ -291,7 +458,13 @@ async function importBatch() {
       batch: batchName.value.trim() || null,
     })
     batchImportUrls.value = ''
-    ElMessage.success(`已暂存 ${created.length} 条，稍后可逐条/整批抓取或私信`)
+    detectItems.value = []
+    batchName.value = ''
+    const batch = created[0]?.batch || ''
+    ElMessage.success(`已暂存 ${created.length} 条到批次「${batch || '未分组'}」`)
+    // 直接把筛选定到新导入的批次，方便接着整批抓取
+    filterPlatform.value = ''
+    filterBatch.value = batch || '__none__'
     await Promise.all([loadTasks(), loadBatches()])
   } catch {
     /* 拦截器已提示 */
@@ -572,7 +745,7 @@ async function saveTask(task: InfluencerScrapeTask) {
 const STATUS_OPTIONS = [
   { label: '预建联', value: 'pre_contact' },
   { label: '建联中', value: 'contacting' },
-  { label: '已签约', value: 'signed' },
+  { label: '建联成功', value: 'signed' },
   { label: '已放弃', value: 'dropped' }
 ]
 
@@ -599,6 +772,18 @@ async function changeStatus(row: Influencer, status: string) {
   }
 }
 
+/** 列表内直接改字段（备注 / 建联进度 / 国家 / 关联平台）。 */
+async function patchInfluencer(row: Influencer, patch: Partial<Influencer>) {
+  try {
+    const updated = await influencerApi.update(row.id, patch)
+    Object.assign(row, updated)
+    ElMessage.success('已保存')
+    if (patch.country !== undefined) loadCountries()
+  } catch {
+    refresh()
+  }
+}
+
 async function refresh() {
   loading.value = true
   try {
@@ -606,7 +791,9 @@ async function refresh() {
       page: page.value,
       page_size: pageSize.value,
       keyword: keyword.value || undefined,
-      status: statusFilter.value || undefined
+      status: statusFilter.value || undefined,
+      country: countryFilter.value || undefined,
+      platform_id: platformFilter.value ?? undefined
     })
     list.value = r.items
     total.value = r.total
@@ -629,6 +816,8 @@ function openCreate() {
     address: '',
     bio: '',
     notes: '',
+    progress: '',
+    platform_id: undefined,
     status: 'pre_contact',
     fb_page_url: '',
     fb_page_id: '',
@@ -658,6 +847,8 @@ async function exportList() {
   await influencerApi.exportList({
     keyword: keyword.value || undefined,
     status: statusFilter.value || undefined,
+    country: countryFilter.value || undefined,
+    platform_id: platformFilter.value ?? undefined,
   })
 }
 
@@ -668,7 +859,11 @@ async function remove(row: Influencer) {
   refresh()
 }
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  loadPlatforms()
+  loadCountries()
+})
 onUnmounted(() => {
   stopScrapePolling()
   stopTaskPolling()
@@ -687,10 +882,29 @@ onUnmounted(() => {
         <el-button type="primary" @click="openCreate">手工新增</el-button>
       </div>
     </div>
-    <div style="display: flex; gap: 8px; margin-bottom: 12px">
+    <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap">
       <el-input v-model="keyword" placeholder="名称 / 邮箱 / 主页 URL" style="width: 280px" clearable />
-      <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 160px">
+      <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 140px">
         <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+      </el-select>
+      <el-select
+        v-model="countryFilter"
+        placeholder="国家"
+        clearable
+        filterable
+        style="width: 130px"
+      >
+        <el-option label="未填" value="__none__" />
+        <el-option v-for="c in countryChoices" :key="c" :label="c" :value="c" />
+      </el-select>
+      <el-select
+        v-model="platformFilter"
+        placeholder="关联平台"
+        clearable
+        style="width: 150px"
+      >
+        <el-option label="未关联" :value="0" />
+        <el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" />
       </el-select>
       <el-button type="primary" @click="(page = 1), refresh()">搜索</el-button>
     </div>
@@ -705,11 +919,47 @@ onUnmounted(() => {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="来源" width="90">
+      <el-table-column label="来源" width="80">
         <template #default="{ row }">
           <el-tag size="small" :type="row.source === 'scrape' ? 'warning' : 'info'">
             {{ row.source === 'scrape' ? '抓取' : '手工' }}
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="建联用户" width="110">
+        <template #default="{ row }">
+          <span>{{ row.owner_name || `#${row.owner_id}` }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="关联平台" width="140">
+        <template #default="{ row }">
+          <el-select
+            :model-value="row.platform_id ?? undefined"
+            size="small"
+            clearable
+            placeholder="未关联"
+            style="width: 120px"
+            @change="(v: number | undefined) => patchInfluencer(row, { platform_id: v ?? null })"
+          >
+            <el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </template>
+      </el-table-column>
+      <el-table-column label="国家" width="120">
+        <template #default="{ row }">
+          <el-select
+            :model-value="row.country || undefined"
+            size="small"
+            clearable
+            filterable
+            allow-create
+            default-first-option
+            placeholder="未填"
+            style="width: 100px"
+            @change="(v: string | undefined) => patchInfluencer(row, { country: v || null })"
+          >
+            <el-option v-for="c in countryChoices" :key="c" :label="c" :value="c" />
+          </el-select>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="130">
@@ -727,14 +977,34 @@ onUnmounted(() => {
           </el-select>
         </template>
       </el-table-column>
-      <el-table-column prop="email" label="邮箱" />
-      <el-table-column prop="fb_followers" label="FB 粉丝" width="100" />
-      <el-table-column label="FB 主页" min-width="220">
+      <el-table-column label="建联进度" min-width="150">
+        <template #default="{ row }">
+          <el-input
+            :model-value="row.progress || ''"
+            size="small"
+            placeholder="可直接填，如「已报价待回」"
+            @change="(v: string) => patchInfluencer(row, { progress: v.trim() || null })"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column label="备注" min-width="170">
+        <template #default="{ row }">
+          <el-input
+            :model-value="row.notes || ''"
+            size="small"
+            placeholder="可直接填"
+            @change="(v: string) => patchInfluencer(row, { notes: v.trim() || null })"
+          />
+        </template>
+      </el-table-column>
+      <el-table-column prop="email" label="邮箱" min-width="150" />
+      <el-table-column prop="fb_followers" label="FB 粉丝" width="90" />
+      <el-table-column label="FB 主页" min-width="200">
         <template #default="{ row }">
           <a v-if="row.fb_page_url" :href="row.fb_page_url" target="_blank">{{ row.fb_page_url }}</a>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="180">
+      <el-table-column label="操作" width="170" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="router.push(`/influencers/${row.id}`)">详情</el-button>
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
@@ -795,8 +1065,28 @@ onUnmounted(() => {
         <el-form-item label="网站">
           <el-input v-model="form.website" />
         </el-form-item>
-        <el-form-item label="国家/地区">
-          <el-input v-model="form.country" />
+        <el-form-item label="国家分类">
+          <el-select
+            v-model="form.country"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="选择或直接输入"
+            style="width: 100%"
+          >
+            <el-option v-for="c in countryChoices" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="关联平台">
+          <el-select v-model="form.platform_id" clearable placeholder="选择平台" style="width: 100%">
+            <el-option
+              v-for="p in platforms"
+              :key="p.id"
+              :label="`${p.name}（${p.code}）`"
+              :value="p.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="城市">
           <el-input v-model="form.city" />
@@ -812,6 +1102,9 @@ onUnmounted(() => {
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.notes" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="建联进度">
+          <el-input v-model="form.progress" placeholder="如「已报价待回」，列表里也可直接改" />
         </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="form.status" style="width: 100%">
@@ -860,26 +1153,51 @@ onUnmounted(() => {
 
         <!-- 批量导入（只暂存不跑抓取） -->
         <el-tab-pane label="批量导入暂存" name="batch">
-          <div style="display: flex; gap: 8px; margin-bottom: 8px">
-            <el-select v-model="batchPlatform" style="width: 130px">
+          <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
+            <el-select v-model="batchPlatform" style="width: 150px">
+              <el-option label="自动识别平台" value="auto" />
               <el-option
-                v-for="p in SCRAPE_PLATFORMS"
+                v-for="p in ALL_PLATFORMS"
                 :key="p.value"
                 :label="p.label"
                 :value="p.value"
               />
             </el-select>
-            <el-input v-model="batchName" placeholder="批次名，如「7月FB第一批」" clearable style="width: 240px" />
+            <el-input
+              v-model="batchName"
+              placeholder="批次名，留空自动编号（如 20260825-第1批）"
+              clearable
+              style="width: 280px"
+            />
+            <el-button :loading="detecting" @click="previewDetect">识别平台</el-button>
             <el-button type="primary" :loading="batchImporting" @click="importBatch">
-              导入暂存（只保存不抓取）
+              导入暂存（{{ parsedBatchUrls.length }} 条）
             </el-button>
           </div>
           <el-input
             v-model="batchImportUrls"
             type="textarea"
-            :rows="3"
-            placeholder="每行一个链接 / 用户名，导入后只暂存、不抓取，可稍后逐条或整批处理"
+            :rows="4"
+            placeholder="每行一个链接 / 用户名，默认按链接自动识别平台（FB / IG / TikTok / 小红书…）；导入后只暂存，可整批抓取"
+            @change="previewDetect"
           />
+          <div
+            v-if="detectSummary.length"
+            style="margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap"
+          >
+            <span style="font-size: 12px; color: #909399">预分类：</span>
+            <el-tag
+              v-for="s in detectSummary"
+              :key="s.key"
+              size="small"
+              :type="s.key === '__unknown__' ? 'danger' : s.scrapable ? 'success' : 'warning'"
+            >
+              {{ s.label }} {{ s.count }}
+            </el-tag>
+            <span style="font-size: 12px; color: #909399">
+              暂只有 Facebook / Instagram 可自动抓资料，其余平台只入暂存；未识别的按上方选择的平台归类（默认 Facebook）
+            </span>
+          </div>
         </el-tab-pane>
       </el-tabs>
 
@@ -887,18 +1205,18 @@ onUnmounted(() => {
       <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center">
         <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 120px" @change="loadTasks">
           <el-option
-            v-for="p in SCRAPE_PLATFORMS"
+            v-for="p in ALL_PLATFORMS"
             :key="p.value"
             :label="p.label"
             :value="p.value"
           />
         </el-select>
-        <el-select v-model="filterBatch" placeholder="全部批次" clearable filterable style="width: 240px" @change="loadTasks">
+        <el-select v-model="filterBatch" placeholder="全部批次" clearable filterable style="width: 300px" @change="loadTasks">
           <el-option
             v-for="b in batches"
             :key="`${b.platform}::${b.batch || ''}`"
             :label="batchLabel(b)"
-            :value="b.batch || ''"
+            :value="b.batch || '__none__'"
           />
         </el-select>
         <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 120px" @change="loadTasks">
@@ -908,6 +1226,23 @@ onUnmounted(() => {
           <el-option label="失败" value="failed" />
         </el-select>
         <el-button :loading="tasksLoading" @click="loadTasks">刷新</el-button>
+        <el-button
+          type="primary"
+          :loading="batchActing"
+          :disabled="filterBatch === ''"
+          @click="runWholeBatch"
+        >
+          整批抓取
+        </el-button>
+        <el-button
+          type="danger"
+          plain
+          :loading="batchActing"
+          :disabled="filterBatch === ''"
+          @click="deleteWholeBatch"
+        >
+          整批删除
+        </el-button>
         <div style="flex: 1" />
         <span style="font-size: 13px; color: #909399">已选 {{ selectedTasks.length }} 项</span>
         <el-button
@@ -948,16 +1283,16 @@ onUnmounted(() => {
       >
         <el-table-column type="selection" width="44" />
         <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column label="平台" width="118">
+        <el-table-column label="平台" width="130">
           <template #default="{ row }">
             <el-select
               :model-value="row.platform"
               size="small"
-              style="width: 100px"
-              @change="(v: 'facebook' | 'instagram') => updateTaskPlatform(row, v)"
+              style="width: 112px"
+              @change="(v: ScrapePlatform) => updateTaskPlatform(row, v)"
             >
               <el-option
-                v-for="p in SCRAPE_PLATFORMS"
+                v-for="p in ALL_PLATFORMS"
                 :key="p.value"
                 :label="p.label"
                 :value="p.value"
@@ -965,7 +1300,7 @@ onUnmounted(() => {
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column label="批次" width="130">
+        <el-table-column label="批次" width="150">
           <template #default="{ row }">
             <span style="font-size: 12px; color: #606266">{{ row.batch || '—' }}</span>
           </template>
@@ -1042,7 +1377,7 @@ onUnmounted(() => {
       <el-form label-width="100px" v-loading="dmLoading">
         <el-form-item label="平台">
           <el-tag :type="dmPlatform === 'instagram' ? 'warning' : 'primary'" size="small">
-            {{ PLATFORM_LABEL[dmPlatform] || dmPlatform }}
+            {{ platformLabel(dmPlatform) }}
           </el-tag>
         </el-form-item>
         <el-form-item v-if="dmBatchRows.length > 0" label="批量对象">

@@ -21,7 +21,7 @@ from app.db.base import Base, TimestampMixin
 class InfluencerStatus(str, enum.Enum):
     pre_contact = "pre_contact"     # 预建联（默认）
     contacting = "contacting"       # 建联中
-    signed = "signed"               # 已签约
+    signed = "signed"               # 建联成功
     dropped = "dropped"             # 已放弃
 
 
@@ -76,6 +76,9 @@ class Influencer(Base, TimestampMixin):
     tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # 建联进展（列表里可直接编辑的自由文本）
+    progress: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # 状态 & 来源
     status: Mapped[InfluencerStatus] = mapped_column(
         Enum(InfluencerStatus), default=InfluencerStatus.pre_contact, nullable=False
@@ -98,6 +101,7 @@ class Influencer(Base, TimestampMixin):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
     platform = relationship("BitBrowserPlatform")
+    owner = relationship("User", foreign_keys=[owner_id])
 
     # 非持久化：由接口按需标注「是否已私信过」，默认 False 便于 from_attributes 序列化
     has_outreach: bool = False
@@ -105,3 +109,11 @@ class Influencer(Base, TimestampMixin):
     @property
     def platform_name(self) -> str | None:
         return self.platform.name if self.platform else None
+
+    @property
+    def platform_code(self) -> str | None:
+        return self.platform.code if self.platform else None
+
+    @property
+    def owner_name(self) -> str | None:
+        return self.owner.username if self.owner else None

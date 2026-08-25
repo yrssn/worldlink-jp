@@ -24,19 +24,29 @@ from app.schemas.influencer import (
     InfluencerDetailOut,
     InfluencerFromScrapeRequest,
     InfluencerOut,
+    InfluencerScrapeBatchActionResult,
     InfluencerScrapeBatchCreate,
     InfluencerScrapeBatchOut,
+    InfluencerScrapeBatchRunRequest,
     InfluencerScrapeSaveResult,
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
     InfluencerScrapeTaskSaveRequest,
     InfluencerScrapeTaskUpdate,
     InfluencerUpdate,
+    PlatformDetectItem,
+    PlatformDetectRequest,
     SocialAccountCreate,
     SocialAccountOut,
 )
 from app.services import apify_service, influencer_service
 from app.utils.csv_export import build_csv, csv_response
+from app.utils.platform_detect import (
+    KNOWN_PLATFORMS,
+    SCRAPABLE_PLATFORMS,
+    detect_platform,
+    match_platform_code,
+)
 
 router = APIRouter(prefix="/influencers", tags=["influencer"])
 
@@ -78,6 +88,42 @@ def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrap
     return out
 
 
+def _platform_id_by_code(db: Session) -> dict[str, int]:
+    """「平台管理」里的 {平台代码小写: id}，用于按链接识别结果关联平台。"""
+    rows = db.query(BitBrowserPlatform.id, BitBrowserPlatform.code).all()
+    return {(code or "").strip().lower(): pid for pid, code in rows if (code or "").strip()}
+
+
+def _bind_platform_by_name(db: Session, inf: Influencer, platform: str | None) -> None:
+    """按平台规范名（facebook/instagram/...）给达人补上关联平台，已关联则不动。"""
+    if inf.platform_id is not None or not platform:
+        return
+    pid = match_platform_code(platform, _platform_id_by_code(db))
+    if pid is None:
+        return
+    inf.platform_id = pid
+    db.commit()
+
+
+def _default_batch_name(db: Session, owner_id: int) -> str:
+    """不传批次名时自动生成：``YYYYMMDD-第N批``（按当天已有批次数递增）。"""
+    prefix = datetime.now().strftime("%Y%m%d")
+    used = {
+        row[0]
+        for row in db.query(InfluencerScrapeTask.batch)
+        .filter(
+            InfluencerScrapeTask.owner_id == owner_id,
+            InfluencerScrapeTask.batch.like(f"{prefix}-%"),
+        )
+        .distinct()
+        .all()
+    }
+    seq = 1
+    while f"{prefix}-第{seq}批" in used:
+        seq += 1
+    return f"{prefix}-第{seq}批"
+
+
 def _fail_task(db: Session, task: InfluencerScrapeTask, msg: str) -> None:
     task.status = "failed"
     task.error = msg
@@ -91,13 +137,14 @@ def _auto_save_from_task(db: Session, task: InfluencerScrapeTask) -> None:
         return
     try:
         if (task.platform or "facebook") == "instagram":
-            influencer_service.create_influencer_from_ig_form(
+            inf, _created = influencer_service.create_influencer_from_ig_form(
                 db, owner_id=task.owner_id, form=task.result
             )
         else:
-            influencer_service.create_influencer_from_form(
+            inf, _created = influencer_service.create_influencer_from_form(
                 db, owner_id=task.owner_id, form=task.result
             )
+        _bind_platform_by_name(db, inf, task.platform)
         logger.info("[InfluencerScrape task#{}] 已自动存入达人库", task.id)
     except Exception as e:  # noqa: BLE001
         logger.warning("[InfluencerScrape task#{}] 自动入库失败：{}", task.id, e)
@@ -119,6 +166,9 @@ def _run_scrape_profile_bg(task_id: int, auto_save: bool = False) -> None:
         db.commit()
 
         platform = (task.platform or "facebook").lower()
+        if platform not in SCRAPABLE_PLATFORMS:
+            _fail_task(db, task, f"平台 {platform} 暂不支持自动抓取资料，请手工录入")
+            return
         if platform == "instagram":
             username = apify_service.normalize_ig_username(task.url)
             if not username:
@@ -225,24 +275,22 @@ INFLUENCER_CSV_COLUMNS = [
     ("状态", lambda r: r.status.value if r.status else ""),
     ("来源", lambda r: r.source.value if r.source else ""),
     ("类型", lambda r: r.platform_name or ""),
+    ("建联进度", "progress"),
+    ("建联用户", lambda r: r.owner_name or ""),
     ("标签", "tags"),
     ("备注", "notes"),
     ("创建时间", "created_at"),
 ]
 
 
-@router.get("", response_model=Page[InfluencerOut])
-def list_influencers(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-    keyword: str | None = None,
-    status_eq: str | None = Query(None, alias="status"),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+def _apply_influencer_filters(
+    q,
+    keyword: str | None,
+    status_eq: str | None,
+    country: str | None,
+    platform_id: int | None,
 ):
-    q = db.query(Influencer).options(joinedload(Influencer.platform))
-    if not is_admin(user):
-        q = q.filter(Influencer.owner_id == user.id)
+    """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台）。"""
     if keyword:
         like = f"%{keyword}%"
         q = q.filter(
@@ -253,6 +301,37 @@ def list_influencers(
         )
     if status_eq:
         q = q.filter(Influencer.status == status_eq)
+    if country:
+        c = country.strip()
+        if c == "__none__":
+            q = q.filter(Influencer.country.is_(None))
+        elif c:
+            q = q.filter(Influencer.country == c)
+    if platform_id is not None:
+        if platform_id == 0:
+            q = q.filter(Influencer.platform_id.is_(None))
+        else:
+            q = q.filter(Influencer.platform_id == platform_id)
+    return q
+
+
+@router.get("", response_model=Page[InfluencerOut])
+def list_influencers(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    keyword: str | None = None,
+    status_eq: str | None = Query(None, alias="status"),
+    country: str | None = Query(None, description="国家分类，__none__ = 未填"),
+    platform_id: int | None = Query(None, description="关联平台 id，0 = 未关联"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = db.query(Influencer).options(
+        joinedload(Influencer.platform), joinedload(Influencer.owner)
+    )
+    if not is_admin(user):
+        q = q.filter(Influencer.owner_id == user.id)
+    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id)
     total = q.count()
     items = (
         q.order_by(Influencer.id.desc())
@@ -284,26 +363,64 @@ def _mark_has_outreach(db: Session, items: list[Influencer]) -> None:
 def export_influencers(
     keyword: str | None = None,
     status_eq: str | None = Query(None, alias="status"),
+    country: str | None = None,
+    platform_id: int | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """按当前过滤条件导出达人列表（CSV）。"""
-    q = db.query(Influencer).options(joinedload(Influencer.platform))
+    q = db.query(Influencer).options(
+        joinedload(Influencer.platform), joinedload(Influencer.owner)
+    )
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
-    if keyword:
-        like = f"%{keyword}%"
-        q = q.filter(
-            (Influencer.display_name.like(like))
-            | (Influencer.real_name.like(like))
-            | (Influencer.email.like(like))
-            | (Influencer.fb_page_url.like(like))
-        )
-    if status_eq:
-        q = q.filter(Influencer.status == status_eq)
+    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id)
     rows = q.order_by(Influencer.id.desc()).all()
     data = build_csv(rows, INFLUENCER_CSV_COLUMNS)
     return csv_response("influencers.csv", data)
+
+
+@router.get("/countries", response_model=list[str])
+def list_influencer_countries(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """当前可见达人里已用过的国家分类（供前端筛选/补全）。"""
+    q = db.query(Influencer.country).distinct()
+    if not is_admin(user):
+        q = q.filter(Influencer.owner_id == user.id)
+    return sorted({(row[0] or "").strip() for row in q.all() if (row[0] or "").strip()})
+
+
+@router.post("/detect-platforms", response_model=list[PlatformDetectItem])
+def detect_platforms(
+    payload: PlatformDetectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按链接正则预分类：返回每条链接识别到的平台，并对齐「平台管理」里的平台代码。"""
+    codes = _platform_id_by_code(db)
+    names = {
+        pid: name
+        for pid, name in db.query(BitBrowserPlatform.id, BitBrowserPlatform.name).all()
+    }
+    items: list[PlatformDetectItem] = []
+    for raw in payload.urls or []:
+        url = (raw or "").strip()
+        if not url:
+            continue
+        platform = detect_platform(url)
+        pid = match_platform_code(platform, codes) if platform else None
+        items.append(
+            PlatformDetectItem(
+                url=url,
+                platform=platform,
+                platform_id=pid,
+                platform_name=names.get(pid) if pid else None,
+                scrapable=bool(platform and platform in SCRAPABLE_PLATFORMS),
+            )
+        )
+    return items
 
 
 @router.post("", response_model=InfluencerOut)
@@ -339,9 +456,13 @@ def start_scrape_profile(
     url = (payload.url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="请填写主页链接或用户名")
-    platform = (payload.platform or "facebook").strip().lower()
-    if platform not in ("facebook", "instagram"):
-        raise HTTPException(status_code=400, detail="不支持的抓取平台")
+    platform = (payload.platform or "").strip().lower() or (
+        detect_platform(url) or "facebook"
+    )
+    if platform == "auto":
+        platform = detect_platform(url) or "facebook"
+    if platform not in SCRAPABLE_PLATFORMS:
+        raise HTTPException(status_code=400, detail=f"平台 {platform} 暂不支持自动抓取")
     task = InfluencerScrapeTask(
         owner_id=user.id, platform=platform, url=url, status="pending"
     )
@@ -364,10 +485,12 @@ def batch_stage_scrape_profiles(
 
     之后可在暂存列表里逐条/整批「抓取」或「私信建联」，私信发出后自动入库。
     """
-    platform = (payload.platform or "facebook").strip().lower()
-    if platform not in ("facebook", "instagram"):
+    platform = (payload.platform or "auto").strip().lower()
+    if platform != "auto" and platform not in KNOWN_PLATFORMS:
         raise HTTPException(status_code=400, detail="不支持的抓取平台")
-    batch = (payload.batch or "").strip() or None
+    fallback = (payload.fallback_platform or "facebook").strip().lower()
+    if fallback not in KNOWN_PLATFORMS:
+        raise HTTPException(status_code=400, detail="不支持的兼容平台")
     # 去重、去空白
     seen: set[str] = set()
     urls: list[str] = []
@@ -379,10 +502,14 @@ def batch_stage_scrape_profiles(
         urls.append(u)
     if not urls:
         raise HTTPException(status_code=400, detail="没有可导入的链接")
+    batch = (payload.batch or "").strip() or _default_batch_name(db, user.id)
     created: list[InfluencerScrapeTask] = []
     for u in urls:
+        row_platform = platform
+        if row_platform == "auto":
+            row_platform = detect_platform(u) or fallback
         task = InfluencerScrapeTask(
-            owner_id=user.id, platform=platform, url=u, batch=batch, status="staged"
+            owner_id=user.id, platform=row_platform, url=u, batch=batch, status="staged"
         )
         db.add(task)
         created.append(task)
@@ -432,13 +559,17 @@ def list_scrape_batches(
         InfluencerScrapeTask.batch,
         func.count(InfluencerScrapeTask.id),
         func.sum(case((InfluencerScrapeTask.status == "staged", 1), else_=0)),
+        func.sum(
+            case((InfluencerScrapeTask.status.in_(("pending", "running")), 1), else_=0)
+        ),
+        func.sum(case((InfluencerScrapeTask.status == "failed", 1), else_=0)),
         func.sum(case((InfluencerScrapeTask.status == "done", 1), else_=0)),
     )
     if not is_admin(user):
         q = q.filter(InfluencerScrapeTask.owner_id == user.id)
     rows = (
         q.group_by(InfluencerScrapeTask.platform, InfluencerScrapeTask.batch)
-        .order_by(InfluencerScrapeTask.platform)
+        .order_by(InfluencerScrapeTask.batch.desc(), InfluencerScrapeTask.platform)
         .all()
     )
     return [
@@ -447,10 +578,77 @@ def list_scrape_batches(
             batch=b,
             total=int(total or 0),
             staged=int(staged or 0),
+            running=int(running or 0),
+            failed=int(failed or 0),
             done=int(done or 0),
         )
-        for (p, b, total, staged, done) in rows
+        for (p, b, total, staged, running, failed, done) in rows
     ]
+
+
+def _batch_task_query(db: Session, user: User, batch: str | None, platform: str | None):
+    """按批次（可选平台）定位当前用户可见的抓取任务。"""
+    q = db.query(InfluencerScrapeTask)
+    if not is_admin(user):
+        q = q.filter(InfluencerScrapeTask.owner_id == user.id)
+    b = (batch or "").strip()
+    if b:
+        q = q.filter(InfluencerScrapeTask.batch == b)
+    else:
+        q = q.filter(InfluencerScrapeTask.batch.is_(None))
+    if platform:
+        q = q.filter(InfluencerScrapeTask.platform == platform.strip().lower())
+    return q
+
+
+@router.post("/scrape-profile-batches/run", response_model=InfluencerScrapeBatchActionResult)
+def run_scrape_batch(
+    payload: InfluencerScrapeBatchRunRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """整批抓取：把该批次里暂存（可选含失败）的任务一次性丢进抓取队列。
+
+    暂不支持自动抓资料的平台（如 TikTok / 小红书）计入 skipped，不会报错中断整批。
+    """
+    statuses = ["staged"] + (["failed"] if payload.include_failed else [])
+    tasks = (
+        _batch_task_query(db, user, payload.batch, payload.platform)
+        .filter(InfluencerScrapeTask.status.in_(statuses))
+        .all()
+    )
+    runnable = [t for t in tasks if (t.platform or "facebook") in SCRAPABLE_PLATFORMS]
+    for t in runnable:
+        t.status = "pending"
+        t.error = None
+        t.result = None
+        t.started_at = None
+        t.finished_at = None
+    db.commit()
+    for t in runnable:
+        threading.Thread(
+            target=_run_scrape_profile_bg, args=(t.id,), daemon=True
+        ).start()
+    return InfluencerScrapeBatchActionResult(
+        affected=len(runnable), skipped=len(tasks) - len(runnable)
+    )
+
+
+@router.post("/scrape-profile-batches/delete", response_model=InfluencerScrapeBatchActionResult)
+def delete_scrape_batch(
+    payload: InfluencerScrapeBatchRunRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """整批删除抓取任务（正在抓取中的跳过），不影响已入库达人。"""
+    tasks = _batch_task_query(db, user, payload.batch, payload.platform).all()
+    deletable = [t for t in tasks if t.status not in ("pending", "running")]
+    for t in deletable:
+        db.delete(t)
+    db.commit()
+    return InfluencerScrapeBatchActionResult(
+        affected=len(deletable), skipped=len(tasks) - len(deletable)
+    )
 
 
 @router.get("/scrape-profile/{task_id}", response_model=InfluencerScrapeTaskOut)
@@ -479,7 +677,7 @@ def update_scrape_profile(
         raise HTTPException(status_code=404, detail="task not found")
     if payload.platform is not None:
         platform = payload.platform.strip().lower()
-        if platform not in ("facebook", "instagram"):
+        if platform not in KNOWN_PLATFORMS:
             raise HTTPException(status_code=400, detail="不支持的抓取平台")
         task.platform = platform
     db.commit()
@@ -514,6 +712,10 @@ def run_scrape_profile(
         raise HTTPException(status_code=404, detail="task not found")
     if task.status in ("running", "pending"):
         raise HTTPException(status_code=400, detail="该任务正在抓取中")
+    if (task.platform or "facebook") not in SCRAPABLE_PLATFORMS:
+        raise HTTPException(
+            status_code=400, detail=f"平台 {task.platform} 暂不支持自动抓取资料"
+        )
     task.status = "pending"
     task.error = None
     task.result = None
@@ -552,6 +754,7 @@ def save_scrape_profile(
         inf, created = influencer_service.create_influencer_from_form(
             db, owner_id=task.owner_id, form=task.result, notes=notes
         )
+    _bind_platform_by_name(db, inf, task.platform)
     return InfluencerScrapeSaveResult(influencer=InfluencerOut.model_validate(inf), created=created)
 
 
