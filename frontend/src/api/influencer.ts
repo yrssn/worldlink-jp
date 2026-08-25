@@ -122,6 +122,16 @@ export const PLATFORM_LABELS: Record<ScrapePlatform, string> = {
   line: 'LINE',
 }
 
+/** 抓取任务里可选的平台，由后端按「平台管理」的代码/名称对齐得到 */
+export interface PlatformOption {
+  platform: ScrapePlatform
+  /** 「平台管理」里的展示名 */
+  name: string
+  platform_id?: number | null
+  code?: string | null
+  scrapable: boolean
+}
+
 export interface PlatformDetectItem {
   url: string
   platform?: ScrapePlatform | null
@@ -175,7 +185,8 @@ export const influencerApi = {
     country_id?: number
     platform_id?: number
   }) => http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
-  listCountries: () => http.get<unknown, string[]>('/influencers/countries'),
+  listPlatformOptions: () =>
+    http.get<unknown, PlatformOption[]>('/influencers/platform-options'),
   detectPlatforms: (urls: string[]) =>
     http.post<unknown, PlatformDetectItem[]>('/influencers/detect-platforms', { urls }),
   create: (data: Partial<Influencer> & { social_accounts?: SocialAccount[] }) =>

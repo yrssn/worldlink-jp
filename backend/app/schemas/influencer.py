@@ -151,6 +151,19 @@ class PlatformDetectItem(BaseModel):
     scrapable: bool = False
 
 
+class PlatformOption(BaseModel):
+    """抓取任务里可选的平台，由「平台管理」的记录 + 平台代码对齐得到。"""
+
+    #: 平台规范名（facebook / instagram / ...），抓取任务用它决定走哪个抓取器
+    platform: str
+    #: 「平台管理」里的展示名与 id（没在平台管理里维护时为内置名 / None）
+    name: str
+    platform_id: Optional[int] = None
+    code: Optional[str] = None
+    #: 是否支持自动抓资料（其余平台只能暂存）
+    scrapable: bool = False
+
+
 class InfluencerScrapeBatchOut(BaseModel):
     """批次分组汇总：平台 + 批次名 + 各状态计数。"""
 

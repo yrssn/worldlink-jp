@@ -8,6 +8,7 @@ import {
   type Influencer,
   type InfluencerScrapeTask,
   type PlatformDetectItem,
+  type PlatformOption,
   type ScrapePlatform,
 } from '@/api/influencer'
 import {
@@ -18,21 +19,11 @@ import {
 import { dmApi, type DmContent } from '@/api/dm'
 import { countryApi, type Country } from '@/api/country'
 
-// 可自动抓资料的平台（对应 Apify actor）
-const SCRAPE_PLATFORMS: { value: ScrapePlatform; label: string; placeholder: string }[] = [
-  { value: 'facebook', label: 'Facebook', placeholder: '粘贴 Facebook 主页链接，发起后台抓取任务' },
-  {
-    value: 'instagram',
-    label: 'Instagram',
-    placeholder: '输入 Instagram 用户名或主页链接，如 nasa 或 https://www.instagram.com/nasa/',
-  },
-]
-// 可预分类/暂存的全部平台（非 FB/IG 的只能暂存，不能自动抓资料）
-const ALL_PLATFORMS = (Object.keys(PLATFORM_LABELS) as ScrapePlatform[]).map((value) => ({
-  value,
-  label: PLATFORM_LABELS[value],
-}))
-const PLATFORM_LABEL: Record<string, string> = { ...PLATFORM_LABELS }
+// 各平台的输入提示（只有能自动抓资料的需要特别说明）
+const PLATFORM_PLACEHOLDERS: Partial<Record<ScrapePlatform, string>> = {
+  facebook: '粘贴 Facebook 主页链接，发起后台抓取任务',
+  instagram: '输入 Instagram 用户名或主页链接，如 nasa 或 https://www.instagram.com/nasa/',
+}
 
 const router = useRouter()
 const list = ref<Influencer[]>([])
@@ -49,6 +40,24 @@ const loading = ref(false)
 // 关联平台字典（「平台管理」）与国家字典（「国家管理」）
 const platforms = ref<BitBrowserPlatform[]>([])
 const countries = ref<Country[]>([])
+/** 抓取任务用的平台选项：后端按「平台管理」的代码/名称对齐后下发 */
+const platformOptions = ref<PlatformOption[]>([])
+/** 可自动抓资料的平台（对应 Apify actor） */
+const scrapablePlatformOptions = computed(() => platformOptions.value.filter((p) => p.scrapable))
+/** 平台规范名 -> 「平台管理」里的展示名（没维护则回退内置名） */
+const platformNameMap = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = { ...PLATFORM_LABELS }
+  for (const p of platformOptions.value) map[p.platform] = p.name
+  return map
+})
+
+async function loadPlatformOptions() {
+  try {
+    platformOptions.value = await influencerApi.listPlatformOptions()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
 
 /** 达人行上展示的国家文案：优先用关联国家的「中文 / English」，否则回退旧文本 */
 function countryLabel(row: Influencer): string {
@@ -190,7 +199,9 @@ const taskTab = ref<'single' | 'batch'>('batch')
 const taskScrapeUrl = ref('')
 const taskPlatform = ref<ScrapePlatform>('facebook')
 const taskPlaceholder = computed(
-  () => SCRAPE_PLATFORMS.find((p) => p.value === taskPlatform.value)?.placeholder || '',
+  () =>
+    PLATFORM_PLACEHOLDERS[taskPlatform.value] ||
+    `粘贴${platformNameMap.value[taskPlatform.value] || taskPlatform.value}主页链接`,
 )
 const taskStarting = ref(false)
 const tasks = ref<InfluencerScrapeTask[]>([])
@@ -206,7 +217,7 @@ function onTaskSelectionChange(rows: InfluencerScrapeTask[]) {
 }
 
 function platformLabel(p?: string | null) {
-  return (p && PLATFORM_LABEL[p]) || p || '—'
+  return (p && platformNameMap.value[p]) || p || '—'
 }
 
 async function updateTaskPlatform(row: InfluencerScrapeTask, platform: ScrapePlatform) {
@@ -262,7 +273,7 @@ const detectSummary = computed(() => {
   return Array.from(counts.entries()).map(([key, count]) => ({
     key,
     count,
-    label: key === '__unknown__' ? '未识别' : PLATFORM_LABEL[key] || key,
+    label: key === '__unknown__' ? '未识别' : platformNameMap.value[key] || key,
     scrapable: key === 'facebook' || key === 'instagram',
   }))
 })
@@ -377,16 +388,17 @@ function batchLabel(b: {
   done: number
 }) {
   const name = b.batch || '（未分组）'
-  const plat = PLATFORM_LABEL[b.platform] || b.platform
+  const plat = platformNameMap.value[b.platform] || b.platform
   return `${plat} · ${name}（共 ${b.total}，待抓 ${b.staged}，已完成 ${b.done}）`
 }
 
 function openTaskDialog() {
   taskDialogVisible.value = true
   taskScrapeUrl.value = ''
-  taskPlatform.value = 'facebook'
+  taskPlatform.value = scrapablePlatformOptions.value[0]?.platform || 'facebook'
   batchImportUrls.value = ''
   detectItems.value = []
+  loadPlatformOptions()
   loadTasks()
   loadBatches()
 }
@@ -870,6 +882,7 @@ async function remove(row: Influencer) {
 onMounted(() => {
   refresh()
   loadPlatforms()
+  loadPlatformOptions()
   loadCountries()
 })
 onUnmounted(() => {
@@ -1137,12 +1150,12 @@ onUnmounted(() => {
         <!-- 单个：抓取 / 私信 -->
         <el-tab-pane label="单个操作" name="single">
           <div style="display: flex; gap: 8px">
-            <el-select v-model="taskPlatform" style="width: 130px">
+            <el-select v-model="taskPlatform" style="width: 150px">
               <el-option
-                v-for="p in SCRAPE_PLATFORMS"
-                :key="p.value"
-                :label="p.label"
-                :value="p.value"
+                v-for="p in scrapablePlatformOptions"
+                :key="p.platform"
+                :label="p.name"
+                :value="p.platform"
               />
             </el-select>
             <el-input
@@ -1165,10 +1178,10 @@ onUnmounted(() => {
             <el-select v-model="batchPlatform" style="width: 150px">
               <el-option label="自动识别平台" value="auto" />
               <el-option
-                v-for="p in ALL_PLATFORMS"
-                :key="p.value"
-                :label="p.label"
-                :value="p.value"
+                v-for="p in platformOptions"
+                :key="p.platform"
+                :label="p.name"
+                :value="p.platform"
               />
             </el-select>
             <el-input
@@ -1203,7 +1216,7 @@ onUnmounted(() => {
               {{ s.label }} {{ s.count }}
             </el-tag>
             <span style="font-size: 12px; color: #909399">
-              暂只有 Facebook / Instagram 可自动抓资料，其余平台只入暂存；未识别的按上方选择的平台归类（默认 Facebook）
+              平台下拉来自「平台管理」（按平台代码对齐）；暂只有 Facebook / Instagram 可自动抓资料，其余平台只入暂存
             </span>
           </div>
         </el-tab-pane>
@@ -1211,12 +1224,12 @@ onUnmounted(() => {
 
       <!-- 工具条：筛选 + 刷新 -->
       <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center">
-        <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 120px" @change="loadTasks">
+        <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 140px" @change="loadTasks">
           <el-option
-            v-for="p in ALL_PLATFORMS"
-            :key="p.value"
-            :label="p.label"
-            :value="p.value"
+            v-for="p in platformOptions"
+            :key="p.platform"
+            :label="p.name"
+            :value="p.platform"
           />
         </el-select>
         <el-select v-model="filterBatch" placeholder="全部批次" clearable filterable style="width: 300px" @change="loadTasks">
@@ -1300,10 +1313,10 @@ onUnmounted(() => {
               @change="(v: ScrapePlatform) => updateTaskPlatform(row, v)"
             >
               <el-option
-                v-for="p in ALL_PLATFORMS"
-                :key="p.value"
-                :label="p.label"
-                :value="p.value"
+                v-for="p in platformOptions"
+                :key="p.platform"
+                :label="p.name"
+                :value="p.platform"
               />
             </el-select>
           </template>

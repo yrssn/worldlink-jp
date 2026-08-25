@@ -37,6 +37,7 @@ from app.schemas.influencer import (
     InfluencerUpdate,
     PlatformDetectItem,
     PlatformDetectRequest,
+    PlatformOption,
     SocialAccountCreate,
     SocialAccountOut,
 )
@@ -45,6 +46,7 @@ from app.utils.csv_export import build_csv, csv_response
 from app.utils.platform_detect import (
     KNOWN_PLATFORMS,
     SCRAPABLE_PLATFORMS,
+    canonical_platform,
     detect_platform,
     match_platform_code,
 )
@@ -427,6 +429,49 @@ def list_influencer_countries(
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
     return sorted({(row[0] or "").strip() for row in q.all() if (row[0] or "").strip()})
+
+
+@router.get("/platform-options", response_model=list[PlatformOption])
+def list_platform_options(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """可选平台：取「平台管理」里的记录，按代码/名称对回平台规范名。
+
+    拓展平台只要在「平台管理」新建并填上代码就会出现在这里；
+    平台管理里一条都没对上时退回内置平台名，避免下拉空発。
+    """
+    rows = (
+        db.query(BitBrowserPlatform)
+        .order_by(BitBrowserPlatform.sort_order.asc(), BitBrowserPlatform.id.asc())
+        .all()
+    )
+    options: list[PlatformOption] = []
+    seen: set[str] = set()
+    for row in rows:
+        platform = canonical_platform(row.code, row.name)
+        if not platform or platform in seen:
+            continue
+        seen.add(platform)
+        options.append(
+            PlatformOption(
+                platform=platform,
+                name=row.name,
+                platform_id=row.id,
+                code=row.code,
+                scrapable=platform in SCRAPABLE_PLATFORMS,
+            )
+        )
+    if not options:
+        options = [
+            PlatformOption(
+                platform=name,
+                name=name,
+                scrapable=name in SCRAPABLE_PLATFORMS,
+            )
+            for name in KNOWN_PLATFORMS
+        ]
+    return options
 
 
 @router.post("/detect-platforms", response_model=list[PlatformDetectItem])

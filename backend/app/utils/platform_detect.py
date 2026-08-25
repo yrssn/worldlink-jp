@@ -70,6 +70,20 @@ def platform_code_candidates(platform: str) -> tuple[str, ...]:
     return PLATFORM_CODE_ALIASES.get(platform, (platform,))
 
 
+def canonical_platform(*texts: str | None) -> str | None:
+    """反查：把「平台管理」里的代码/名称（如 ig、小红书）对回平台规范名。"""
+    for text in texts:
+        key = (text or "").strip().lower()
+        if not key:
+            continue
+        if key in KNOWN_PLATFORMS:
+            return key
+        for name, aliases in PLATFORM_CODE_ALIASES.items():
+            if key in aliases:
+                return name
+    return None
+
+
 def match_platform_code(platform: str, codes: dict[str, int]) -> int | None:
     """在 ``{平台代码小写: 平台id}`` 里找该平台对应的记录 id。"""
     for alias in platform_code_candidates(platform):
