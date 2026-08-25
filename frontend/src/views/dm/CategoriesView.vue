@@ -103,7 +103,7 @@ onMounted(refresh)
         <p style="margin: 0; font-size: 12px; color: #666">
           为私信模板分组，如「首次触达」「跟进」「活动邀请」等。在
           <router-link to="/dm/contents">内容库</router-link>
-          中创建内容时可选择分类。
+          中创建内容时可选择分类。只看自己创建的分类，超级管理员可见全部。
         </p>
       </div>
       <el-button type="primary" @click="openCreate">新建分类</el-button>

@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
-from app.core.deps import get_current_user, get_db
+from app.core.deps import get_current_user, get_db, scope_query
 from app.models.dm import DmCategory, DmContent, DmOutreachLog
 from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.user import User
@@ -52,12 +52,23 @@ def _media_url(owner_id: int, filename: str) -> str:
 
 def _get_category_or_404(db: Session, user: User, category_id: int) -> DmCategory:
     row = (
-        db.query(DmCategory)
+        scope_query(db.query(DmCategory), DmCategory, user)
         .filter(DmCategory.id == category_id)
         .first()
     )
     if not row:
         raise HTTPException(status_code=404, detail="分类不存在")
+    return row
+
+
+def _get_content_or_404(db: Session, user: User, content_id: int) -> DmContent:
+    row = (
+        scope_query(db.query(DmContent), DmContent, user)
+        .filter(DmContent.id == content_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="内容不存在")
     return row
 
 
@@ -93,7 +104,7 @@ def list_dm_categories(
     user: User = Depends(get_current_user),
     active_only: bool = Query(False, description="仅返回启用中的分类"),
 ):
-    q = db.query(DmCategory)
+    q = scope_query(db.query(DmCategory), DmCategory, user)
     if active_only:
         q = q.filter(DmCategory.is_active.is_(True))
     return q.order_by(DmCategory.sort_order.asc(), DmCategory.id.asc()).all()
@@ -168,7 +179,7 @@ def list_dm_contents(
     active_only: bool = Query(False),
     pinned_only: bool = Query(False),
 ):
-    q = db.query(DmContent)
+    q = scope_query(db.query(DmContent), DmContent, user)
     if category_id is not None:
         if category_id == 0:
             q = q.filter(DmContent.category_id.is_(None))
@@ -204,14 +215,7 @@ def get_dm_content(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    row = (
-        db.query(DmContent)
-        .options(joinedload(DmContent.category))
-        .filter(DmContent.id == content_id)
-        .first()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="内容不存在")
+    row = _get_content_or_404(db, user, content_id)
     return _content_to_out(row)
 
 
@@ -256,13 +260,7 @@ def update_dm_content(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    row = (
-        db.query(DmContent)
-        .filter(DmContent.id == content_id)
-        .first()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="内容不存在")
+    row = _get_content_or_404(db, user, content_id)
     data = body.model_dump(exclude_unset=True)
     if "category_id" in data and data["category_id"] is not None:
         _get_category_or_404(db, user, data["category_id"])
@@ -299,13 +297,7 @@ def delete_dm_content(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    row = (
-        db.query(DmContent)
-        .filter(DmContent.id == content_id)
-        .first()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="内容不存在")
+    row = _get_content_or_404(db, user, content_id)
     db.delete(row)
     db.commit()
     return {"ok": True}
@@ -350,7 +342,7 @@ def start_dm_outreach(
 ):
     """在指定 BitBrowser 窗口中打开达人主页并点击「发消息」（私信建联第一步）。"""
     content = (
-        db.query(DmContent)
+        scope_query(db.query(DmContent), DmContent, user)
         .filter(DmContent.id == body.content_id)
         .first()
     )

@@ -262,6 +262,7 @@ onMounted(async () => {
         <h3 style="margin: 0 0 6px 0">私信内容 · 内容库</h3>
         <p style="margin: 0; font-size: 12px; color: #666">
           管理可复用的私信模板：标题、正文、图片与分类。发送时复制正文或连接自动化脚本使用。
+          只看自己创建的内容，超级管理员可见全部。
         </p>
       </div>
       <div style="display: flex; gap: 8px; flex-wrap: wrap">

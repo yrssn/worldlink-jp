@@ -23,8 +23,6 @@ DEFAULT_USER_ROLE_CODE = "normal_user"
 SHARED_TABLES: set[str] = {
     "llm_providers",  # 大模型厂商配置
     "prompt_templates",  # 提示词模板
-    "dm_categories",  # 私信分类
-    "dm_contents",  # 私信内容库
     "bitbrowser_platforms",  # 自建平台（窗口分类字典 + 达人关联平台）
     "countries",  # 国家字典
     "email_accounts",  # 注册用邮箱池
@@ -34,7 +32,8 @@ SHARED_TABLES: set[str] = {
 #: 按创建人隔离的数据表（仅作文档说明，实际逻辑为「不在 SHARED_TABLES 即隔离」）：
 #: scrape_tasks / posts / fb_group_scrapes / fb_group_pull_tasks / fb_group_posts /
 #: influencers / social_accounts / influencer_scrape_tasks / dm_outreach_logs /
-#: bitbrowser_windows / bitbrowser_window_catalog / apify_signup_tasks
+#: dm_categories / dm_contents / bitbrowser_windows / bitbrowser_window_catalog /
+#: apify_signup_tasks
 OWNED_TABLES_DOC = "谁创建谁可见，超级管理员（data_scope=all）可见全部"
 
 
