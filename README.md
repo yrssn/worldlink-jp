@@ -126,7 +126,8 @@ npm run dev
 | 角色权限 | `/system/roles` | 勾选路由树、设置数据范围（仅本人 / 全部数据） |
 | 路由列表 | `/system/menus` | 维护路由、权限编码、接口前缀与校验强度；权限编码需与前端 `router/index.ts` 的 `meta.code` 一致 |
 
-内置角色：`super_admin`（全部路由 + 全部数据，不可删）、`normal_user`（抓取/达人/私信/比特浏览器，数据范围仅本人）。
+内置角色：`super_admin`（全部路由 + 全部数据，不可删）、`normal_user`（除「系统管理」外的全部业务路由，数据范围仅本人）。
+要更细的权限就在「角色权限」页新建角色自行勾选路由。
 启动时 `init_db()` 会幂等写入内置路由与角色，并给历史用户按 `users.role` 补齐角色。
 
 ### 数据归属：共享模块 vs 私有模块
@@ -139,9 +140,12 @@ npm run dev
 
 ### 存量数据归集到一个账号
 
+账号安排：`admin` 是超级管理员（管用户/角色/路由，看全部数据），`yankai` 是日常干活的员工账号
+（普通用户：除系统管理外的全部业务页面，只看自己的数据）。
+
 ```bash
 cd backend
-# 建 RBAC 表 + 写内置路由/角色，创建超级管理员 yankai（随机密码，执行完打印一次）
+# 建 RBAC 表 + 写内置路由/角色，建员工账号 yankai（普通用户，随机密码打印一次）
 # 并把所有含 owner_id / created_by_id 的表的存量数据改成归属 yankai
 python -m scripts.rbac_bootstrap --username yankai --random-password
 
@@ -150,6 +154,9 @@ python -m scripts.rbac_bootstrap --username yankai --claim-only --dry-run
 
 # 指定密码 / 只重置密码不归集数据
 python -m scripts.rbac_bootstrap --username yankai --password 'xxxxxx' --no-claim
+
+# 建/重置一个超级管理员
+python -m scripts.rbac_bootstrap --username admin --role admin --random-password --no-claim
 ```
 
 ## 七、Docker 部署

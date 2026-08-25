@@ -3,23 +3,26 @@
 用途
 ----
 1. 建 RBAC 表（若未建）并写入内置菜单、内置角色（超级管理员 / 普通用户）；
-2. 创建或更新指定的超级管理员账号（默认 ``yankai``）；
+2. 创建或更新指定账号（默认 ``yankai``，默认绑定「普通用户」角色）；
 3. 把库内**所有存量业务数据**（所有含 ``owner_id`` / ``created_by_id`` 的表）
    归属到该账号；
-4. 为其他没有角色的存量用户补上「普通用户」角色。
+4. 为其他没有角色的存量用户补角色（``users.role=admin`` → 超级管理员，
+   其余 → 普通用户）。
 
 用法
 ----
 ```bash
 cd backend
+# 建员工账号 yankai（普通用户）+ 把存量数据全归给它，密码随机生成并打印一次
+python -m scripts.rbac_bootstrap --username yankai --random-password
 # 指定密码
 python -m scripts.rbac_bootstrap --username yankai --password 'xxxxxx'
-# 随机生成密码（执行完会打印，仅此一次）
-python -m scripts.rbac_bootstrap --username yankai --random-password
 # 只归集数据，不改密码
 python -m scripts.rbac_bootstrap --username yankai --claim-only
 # 先看会改哪些表，不落库
 python -m scripts.rbac_bootstrap --username yankai --claim-only --dry-run
+# 建/重置一个超级管理员（不归集数据）
+python -m scripts.rbac_bootstrap --username admin --role admin --random-password --no-claim
 ```
 """
 from __future__ import annotations
@@ -53,11 +56,13 @@ def generate_password(length: int = 14) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def ensure_super_admin(
-    db: Session, username: str, password: str | None
+def ensure_user(
+    db: Session, username: str, password: str | None, *, is_admin: bool
 ) -> tuple[User, str | None]:
-    """创建/修正超级管理员账号，返回（账号, 本次实际设置的密码）。"""
-    super_role = db.query(Role).filter(Role.code == SUPER_ADMIN_ROLE_CODE).one()
+    """创建/修正账号并绑定内置角色，返回（账号, 本次实际设置的密码）。"""
+    role_code = SUPER_ADMIN_ROLE_CODE if is_admin else DEFAULT_USER_ROLE_CODE
+    role = db.query(Role).filter(Role.code == role_code).one()
+    legacy_role = UserRole.admin if is_admin else UserRole.user
     user = db.query(User).filter(User.username == username).first()
     if user is None:
         # 新建账号必须有密码：未指定时自动随机生成并在末尾打印
@@ -65,19 +70,22 @@ def ensure_super_admin(
         user = User(
             username=username,
             password_hash=hash_password(password),
-            role=UserRole.admin,
+            role=legacy_role,
             is_active=True,
         )
         db.add(user)
-        print(f"[user] 创建账号 {username}")
+        print(f"[user] 创建账号 {username}（{role.name}）")
     else:
         if password:
             user.password_hash = hash_password(password)
             print(f"[user] 重设 {username} 密码")
         user.is_active = True
-        user.role = UserRole.admin
-    if super_role not in user.roles:
-        user.roles = list(user.roles) + [super_role]
+        # 只在显式要求提权时改身份，避免把现有管理员降成普通用户
+        if is_admin:
+            user.role = legacy_role
+    if role not in user.roles:
+        user.roles = list(user.roles) + [role]
+        print(f"[user] {username} 绑定角色『{role.name}』")
     db.commit()
     return user, password
 
@@ -113,7 +121,13 @@ def claim_all_data(db: Session, user: User, dry_run: bool = False) -> dict[str, 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="RBAC 初始化 / 数据归集")
-    parser.add_argument("--username", default="yankai", help="超级管理员登录名")
+    parser.add_argument("--username", default="yankai", help="目标账号登录名")
+    parser.add_argument(
+        "--role",
+        choices=("user", "admin"),
+        default="user",
+        help="该账号的身份：user=普通用户（默认）、admin=超级管理员",
+    )
     parser.add_argument("--password", default=None, help="指定密码")
     parser.add_argument(
         "--random-password", action="store_true", help="随机生成密码并打印"
@@ -137,7 +151,9 @@ def main() -> int:
     with SessionLocal() as db:
         rbac_service.seed_rbac(db)
         print("[rbac] 内置菜单 / 角色已就绪")
-        user, password = ensure_super_admin(db, args.username, password)
+        user, password = ensure_user(
+            db, args.username, password, is_admin=args.role == "admin"
+        )
         rbac_service.sync_legacy_admin_roles(db)
         print(
             f"[rbac] 其他存量用户已补齐角色（默认『{DEFAULT_USER_ROLE_CODE}』）"

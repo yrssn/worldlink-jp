@@ -25,9 +25,10 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/layouts/BasicLayout.vue'),
     children: [
       {
+        // 首页本身不渲染内容，守卫里等权限加载完再跳转到落地页
         path: '',
         name: 'home',
-        redirect: () => usePermissionStore().landingPath
+        component: () => import('@/views/common/LoadingView.vue')
       },
       {
         path: 'email/accounts',
@@ -161,6 +162,12 @@ router.beforeEach(async (to) => {
       perm.clear()
       return { path: '/login' }
     }
+  }
+
+  // 路由表里的 redirect 会在守卫之前求值，那时权限还没拉回来，所以落地页在这里算
+  if (to.name === 'home') {
+    const landing = perm.landingPath
+    return landing === '/' ? { path: '/403' } : { path: landing }
   }
 
   const code = to.meta.code as string | undefined

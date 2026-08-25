@@ -237,21 +237,27 @@ MENU_SEEDS: list[MenuSeed] = [
     ),
 ]
 
-#: 内置「普通用户」角色默认拥有的菜单（不含系统管理）
+
+def flatten_seeds(
+    seeds: list[MenuSeed] | None = None, parent: MenuSeed | None = None
+) -> list[tuple[MenuSeed, MenuSeed | None]]:
+    """把树状 seed 拍平成 ``(seed, parent_seed)`` 列表，保持先父后子的顺序。"""
+    result: list[tuple[MenuSeed, MenuSeed | None]] = []
+    for seed in seeds if seeds is not None else MENU_SEEDS:
+        result.append((seed, parent))
+        result.extend(flatten_seeds(seed.children, seed))
+    return result
+
+
+#: 内置「普通用户」角色默认拥有的菜单：除「系统管理」外的全部业务菜单。
+#: 日常干活的员工默认就能用全部业务页面，只是看不到用户/角色/路由配置；
+#: 要收窄到更小范围，在「角色权限」页新建角色自行勾选即可。
+SYSTEM_MENU_CODE = "system"
 DEFAULT_USER_MENU_CODES: list[str] = [
-    "scraper",
-    "scraper:tasks",
-    "scraper:task-detail",
-    "scraper:fb-groups",
-    "influencers",
-    "influencer:detail",
-    "dm",
-    "dm:contents",
-    "dm:categories",
-    "bitbrowser",
-    "bitbrowser:connect",
-    "bitbrowser:windows",
-    "bitbrowser:saved",
+    seed.code
+    for seed, parent in flatten_seeds()
+    if seed.code != SYSTEM_MENU_CODE
+    and (parent is None or parent.code != SYSTEM_MENU_CODE)
 ]
 
 ROLE_SEEDS: list[dict] = [
@@ -274,14 +280,3 @@ ROLE_SEEDS: list[dict] = [
         "menu_codes": DEFAULT_USER_MENU_CODES,
     },
 ]
-
-
-def flatten_seeds(
-    seeds: list[MenuSeed] | None = None, parent: MenuSeed | None = None
-) -> list[tuple[MenuSeed, MenuSeed | None]]:
-    """把树状 seed 拍平成 ``(seed, parent_seed)`` 列表，保持先父后子的顺序。"""
-    result: list[tuple[MenuSeed, MenuSeed | None]] = []
-    for seed in seeds if seeds is not None else MENU_SEEDS:
-        result.append((seed, parent))
-        result.extend(flatten_seeds(seed.children, seed))
-    return result
