@@ -23,6 +23,8 @@ python -m scripts.rbac_bootstrap --username yankai --claim-only
 python -m scripts.rbac_bootstrap --username yankai --claim-only --dry-run
 # 建/重置一个超级管理员（不归集数据）
 python -m scripts.rbac_bootstrap --username admin --role admin --random-password --no-claim
+# 把误建成超管的账号降回普通用户
+python -m scripts.rbac_bootstrap --username yankai --role user --claim-only
 ```
 """
 from __future__ import annotations
@@ -57,11 +59,17 @@ def generate_password(length: int = 14) -> str:
 
 
 def ensure_user(
-    db: Session, username: str, password: str | None, *, is_admin: bool
+    db: Session, username: str, password: str | None, *, role_kind: str | None
 ) -> tuple[User, str | None]:
-    """创建/修正账号并绑定内置角色，返回（账号, 本次实际设置的密码）。"""
-    role_code = SUPER_ADMIN_ROLE_CODE if is_admin else DEFAULT_USER_ROLE_CODE
-    role = db.query(Role).filter(Role.code == role_code).one()
+    """创建/修正账号并绑定内置角色，返回（账号, 本次实际设置的密码）。
+
+    ``role_kind`` 为 ``None`` 时不动已有账号的身份（新建账号按普通用户）；
+    显式传 ``user`` / ``admin`` 时以它为准，包括把误建成超管的账号降回普通用户。
+    """
+    is_admin = role_kind == "admin"
+    super_role = db.query(Role).filter(Role.code == SUPER_ADMIN_ROLE_CODE).one()
+    normal_role = db.query(Role).filter(Role.code == DEFAULT_USER_ROLE_CODE).one()
+    role = super_role if is_admin else normal_role
     legacy_role = UserRole.admin if is_admin else UserRole.user
     user = db.query(User).filter(User.username == username).first()
     if user is None:
@@ -80,9 +88,11 @@ def ensure_user(
             user.password_hash = hash_password(password)
             print(f"[user] 重设 {username} 密码")
         user.is_active = True
-        # 只在显式要求提权时改身份，避免把现有管理员降成普通用户
-        if is_admin:
+        if role_kind is not None:
             user.role = legacy_role
+            if not is_admin and super_role in user.roles:
+                user.roles = [r for r in user.roles if r is not super_role]
+                print(f"[user] {username} 已去除『{super_role.name}』身份")
     if role not in user.roles:
         user.roles = list(user.roles) + [role]
         print(f"[user] {username} 绑定角色『{role.name}』")
@@ -125,8 +135,11 @@ def main() -> int:
     parser.add_argument(
         "--role",
         choices=("user", "admin"),
-        default="user",
-        help="该账号的身份：user=普通用户（默认）、admin=超级管理员",
+        default=None,
+        help=(
+            "显式指定该账号的身份（user=普通用户、admin=超级管理员），"
+            "会覆盖现有身份；不传则不动已有账号的身份，新建账号按普通用户"
+        ),
     )
     parser.add_argument("--password", default=None, help="指定密码")
     parser.add_argument(
@@ -151,9 +164,7 @@ def main() -> int:
     with SessionLocal() as db:
         rbac_service.seed_rbac(db)
         print("[rbac] 内置菜单 / 角色已就绪")
-        user, password = ensure_user(
-            db, args.username, password, is_admin=args.role == "admin"
-        )
+        user, password = ensure_user(db, args.username, password, role_kind=args.role)
         rbac_service.sync_legacy_admin_roles(db)
         print(
             f"[rbac] 其他存量用户已补齐角色（默认『{DEFAULT_USER_ROLE_CODE}』）"

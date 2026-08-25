@@ -33,7 +33,13 @@ router = APIRouter(prefix="/system", tags=["system"])
 # 我的权限（所有登录用户）
 # --------------------------------------------------------------------------- #
 def _build_tree(menus: list[Menu]) -> list[MenuTreeOut]:
-    nodes = {m.id: MenuTreeOut.model_validate(m) for m in menus}
+    # ORM 的 Menu.children 会被 model_validate 一起带出来，这里必须清空后自己挂，
+    # 否则每个子菜单会出现两次（ORM 带的 + 下面 append 的）
+    nodes: dict[int, MenuTreeOut] = {}
+    for m in menus:
+        node = MenuTreeOut.model_validate(m)
+        node.children = []
+        nodes[m.id] = node
     roots: list[MenuTreeOut] = []
     for menu in menus:
         node = nodes[menu.id]
