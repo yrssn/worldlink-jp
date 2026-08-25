@@ -376,7 +376,28 @@ def list_influencers(
         .all()
     )
     _mark_has_outreach(db, items)
+    _attach_accounts(db, items)
     return Page[InfluencerOut](total=total, page=page, page_size=page_size, items=items)
+
+
+def _attach_accounts(db: Session, items: list[Influencer]) -> None:
+    """给列表里的达人挂上关联的社交账号（鼠标悬浮展示用）。"""
+    ids = [i.id for i in items]
+    if not ids:
+        return
+    grouped: dict[int, list[SocialAccountOut]] = {}
+    rows = (
+        db.query(InfluencerSocialAccount)
+        .filter(InfluencerSocialAccount.influencer_id.in_(ids))
+        .order_by(InfluencerSocialAccount.id.asc())
+        .all()
+    )
+    for row in rows:
+        grouped.setdefault(row.influencer_id, []).append(
+            SocialAccountOut.model_validate(row)
+        )
+    for i in items:
+        i.accounts = grouped.get(i.id, [])
 
 
 def _mark_has_outreach(db: Session, items: list[Influencer]) -> None:
@@ -439,7 +460,7 @@ def list_platform_options(
     """可选平台：取「平台管理」里的记录，按代码/名称对回平台规范名。
 
     拓展平台只要在「平台管理」新建并填上代码就会出现在这里；
-    平台管理里一条都没对上时退回内置平台名，避免下拉空発。
+    平台管理里一条都没对上时退回内置平台名，避免下拉空掉。
     """
     rows = (
         db.query(BitBrowserPlatform)
@@ -642,6 +663,7 @@ def list_scrape_batches(
     q = db.query(
         InfluencerScrapeTask.platform,
         InfluencerScrapeTask.batch,
+        InfluencerScrapeTask.owner_id,
         func.count(InfluencerScrapeTask.id),
         func.sum(case((InfluencerScrapeTask.status == "staged", 1), else_=0)),
         func.sum(
@@ -653,21 +675,34 @@ def list_scrape_batches(
     if not is_admin(user):
         q = q.filter(InfluencerScrapeTask.owner_id == user.id)
     rows = (
-        q.group_by(InfluencerScrapeTask.platform, InfluencerScrapeTask.batch)
+        q.group_by(
+            InfluencerScrapeTask.platform,
+            InfluencerScrapeTask.batch,
+            InfluencerScrapeTask.owner_id,
+        )
         .order_by(InfluencerScrapeTask.batch.desc(), InfluencerScrapeTask.platform)
         .all()
     )
+    owner_ids = {oid for (_p, _b, oid, *_rest) in rows if oid is not None}
+    owner_names = {
+        uid: name
+        for uid, name in db.query(User.id, User.username)
+        .filter(User.id.in_(owner_ids))
+        .all()
+    } if owner_ids else {}
     return [
         InfluencerScrapeBatchOut(
             platform=p,
             batch=b,
+            owner_id=oid,
+            owner_name=owner_names.get(oid) if oid is not None else None,
             total=int(total or 0),
             staged=int(staged or 0),
             running=int(running or 0),
             failed=int(failed or 0),
             done=int(done or 0),
         )
-        for (p, b, total, staged, running, failed, done) in rows
+        for (p, b, oid, total, staged, running, failed, done) in rows
     ]
 
 

@@ -98,7 +98,14 @@ onMounted(refresh)
   <div class="page-card" v-if="detail">
     <el-page-header @back="router.back()" :content="detail.display_name" />
     <el-descriptions :column="3" border style="margin-top: 16px">
-      <el-descriptions-item label="昵称">{{ detail.display_name }}</el-descriptions-item>
+      <el-descriptions-item label="昵称">
+        <div style="display: flex; align-items: center; gap: 8px">
+          <el-avatar :size="40" :src="detail.avatar_url || undefined">
+            {{ (detail.display_name || '?').slice(0, 1) }}
+          </el-avatar>
+          <span>{{ detail.display_name }}</span>
+        </div>
+      </el-descriptions-item>
       <el-descriptions-item label="状态">
         <el-tag :type="STATUS_TAG_TYPE[detail.status] || 'info'">
           {{ STATUS_LABELS[detail.status] || detail.status }}

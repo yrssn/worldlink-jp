@@ -6,6 +6,7 @@ import {
   influencerApi,
   PLATFORM_LABELS,
   type Influencer,
+  type InfluencerScrapeBatch,
   type InfluencerScrapeTask,
   type PlatformDetectItem,
   type PlatformOption,
@@ -57,6 +58,25 @@ async function loadPlatformOptions() {
   } catch {
     /* 拦截器已提示 */
   }
+}
+
+/** 悬浮展示的关联账号：社交账号表 + FB 主页（抓 FB 时只落在达人字段上） */
+function accountRows(row: Influencer) {
+  const rows = (row.accounts || []).map((a) => ({
+    platform: platformNameMap.value[a.platform] || a.platform,
+    handle: a.handle || '',
+    url: a.url || '',
+    followers: a.followers ?? null,
+  }))
+  if (row.fb_page_url || row.fb_followers != null) {
+    rows.push({
+      platform: platformNameMap.value.facebook || 'Facebook',
+      handle: row.fb_page_title || '',
+      url: row.fb_page_url || '',
+      followers: row.fb_followers ?? null,
+    })
+  }
+  return rows
 }
 
 /** 达人行上展示的国家文案：优先用关联国家的「中文 / English」，否则回退旧文本 */
@@ -232,7 +252,7 @@ async function updateTaskPlatform(row: InfluencerScrapeTask, platform: ScrapePla
 
 // 批量导入（暂存）与筛选
 const batchImportUrls = ref('')
-const batchName = ref('')
+const batchName = ref<string>('')
 // 'auto' = 后端按链接正则逐条识别平台
 const batchPlatform = ref<ScrapePlatform | 'auto'>('auto')
 const batchImporting = ref(false)
@@ -240,18 +260,19 @@ const filterPlatform = ref<'' | ScrapePlatform>('')
 // '' = 全部批次；'__none__' = 未分组
 const filterBatch = ref<string>('')
 const filterStatus = ref<string>('')
-const batches = ref<
-  {
-    platform: string
-    batch?: string | null
-    total: number
-    staged: number
-    running: number
-    failed: number
-    done: number
-  }[]
->([])
+const batches = ref<InfluencerScrapeBatch[]>([])
 const batchActing = ref(false)
+
+/** 已有批次名（去重），导入时可下拉选已有批次，也可直接输入新批次名 */
+const batchNameOptions = computed(() => {
+  const seen = new Map<string, string>()
+  for (const b of batches.value) {
+    const name = (b.batch || '').trim()
+    if (!name || seen.has(name)) continue
+    seen.set(name, b.owner_name ? `${name}（${b.owner_name}）` : name)
+  }
+  return [...seen.entries()].map(([value, label]) => ({ value, label }))
+})
 
 // 导入前预分类：按链接正则识别每条链接的平台
 const detectItems = ref<PlatformDetectItem[]>([])
@@ -380,16 +401,11 @@ async function loadBatches() {
   }
 }
 
-function batchLabel(b: {
-  platform: string
-  batch?: string | null
-  total: number
-  staged: number
-  done: number
-}) {
+function batchLabel(b: InfluencerScrapeBatch) {
   const name = b.batch || '（未分组）'
   const plat = platformNameMap.value[b.platform] || b.platform
-  return `${plat} · ${name}（共 ${b.total}，待抓 ${b.staged}，已完成 ${b.done}）`
+  const owner = b.owner_name ? ` · ${b.owner_name}` : ''
+  return `${plat} · ${name}${owner}（共 ${b.total}，待抓 ${b.staged}，已完成 ${b.done}）`
 }
 
 function openTaskDialog() {
@@ -475,7 +491,7 @@ async function importBatch() {
     const created = await influencerApi.batchStageScrapeProfiles({
       urls,
       platform: batchPlatform.value,
-      batch: batchName.value.trim() || null,
+      batch: (batchName.value || '').trim() || null,
     })
     batchImportUrls.value = ''
     detectItems.value = []
@@ -932,12 +948,36 @@ onUnmounted(() => {
 
     <el-table v-loading="loading" :data="list" border>
       <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column label="昵称">
+      <el-table-column label="昵称" min-width="190">
         <template #default="{ row }">
-          <span>{{ row.display_name }}</span>
-          <el-tag v-if="row.has_outreach" size="small" type="success" style="margin-left: 6px">
-            已私信
-          </el-tag>
+          <el-popover placement="right" :width="340" trigger="hover">
+            <template #reference>
+              <div style="display: flex; align-items: center; gap: 8px; cursor: default">
+                <el-avatar :size="32" :src="row.avatar_url || undefined">
+                  {{ (row.display_name || '?').slice(0, 1) }}
+                </el-avatar>
+                <div>
+                  <div>{{ row.display_name }}</div>
+                  <el-tag v-if="row.has_outreach" size="small" type="success">已私信</el-tag>
+                </div>
+              </div>
+            </template>
+            <div style="font-size: 12px; line-height: 1.7">
+              <div style="font-weight: 600; margin-bottom: 4px">关联账号</div>
+              <div v-if="!accountRows(row).length" style="color: #909399">暂无关联账号</div>
+              <div v-for="(a, idx) in accountRows(row)" :key="idx">
+                <b>{{ a.platform }}</b>
+                <span v-if="a.handle"> · {{ a.handle }}</span>
+                <span v-if="a.followers != null"> · 粉丝 {{ a.followers }}</span>
+                <div v-if="a.url" style="word-break: break-all">
+                  <a :href="a.url" target="_blank">{{ a.url }}</a>
+                </div>
+              </div>
+              <div v-if="row.email" style="margin-top: 4px; color: #606266">
+                邮箱：{{ row.email }}
+              </div>
+            </div>
+          </el-popover>
         </template>
       </el-table-column>
       <el-table-column label="来源" width="80">
@@ -1021,12 +1061,6 @@ onUnmounted(() => {
         </template>
       </el-table-column>
       <el-table-column prop="email" label="邮箱" min-width="150" />
-      <el-table-column prop="fb_followers" label="FB 粉丝" width="90" />
-      <el-table-column label="FB 主页" min-width="200">
-        <template #default="{ row }">
-          <a v-if="row.fb_page_url" :href="row.fb_page_url" target="_blank">{{ row.fb_page_url }}</a>
-        </template>
-      </el-table-column>
       <el-table-column label="操作" width="170" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="router.push(`/influencers/${row.id}`)">详情</el-button>
@@ -1184,12 +1218,22 @@ onUnmounted(() => {
                 :value="p.platform"
               />
             </el-select>
-            <el-input
+            <el-select
               v-model="batchName"
-              placeholder="批次名，留空自动编号（如 20260825-第1批）"
+              filterable
+              allow-create
+              default-first-option
               clearable
-              style="width: 280px"
-            />
+              placeholder="选已有批次或直接输入新批次名，留空自动编号"
+              style="width: 320px"
+            >
+              <el-option
+                v-for="b in batchNameOptions"
+                :key="b.value"
+                :label="b.label"
+                :value="b.value"
+              />
+            </el-select>
             <el-button :loading="detecting" @click="previewDetect">识别平台</el-button>
             <el-button type="primary" :loading="batchImporting" @click="importBatch">
               导入暂存（{{ parsedBatchUrls.length }} 条）
@@ -1331,8 +1375,16 @@ onUnmounted(() => {
             <a :href="row.url" target="_blank" style="word-break: break-all">{{ row.url }}</a>
           </template>
         </el-table-column>
-        <el-table-column label="抓到的昵称" min-width="140">
-          <template #default="{ row }">{{ row.result?.display_name || '—' }}</template>
+        <el-table-column label="抓到的昵称" min-width="160">
+          <template #default="{ row }">
+            <div v-if="row.result" style="display: flex; align-items: center; gap: 6px">
+              <el-avatar :size="26" :src="row.result?.avatar_url || undefined">
+                {{ (row.result?.display_name || '?').slice(0, 1) }}
+              </el-avatar>
+              <span>{{ row.result?.display_name || '—' }}</span>
+            </div>
+            <span v-else>—</span>
+          </template>
         </el-table-column>
         <el-table-column label="粉丝" width="90">
           <template #default="{ row }">{{ row.result?.fb_followers ?? row.result?.followers ?? '—' }}</template>

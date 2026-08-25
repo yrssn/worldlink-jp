@@ -62,6 +62,8 @@ export interface Influencer {
   owner_id: number
   owner_name?: string | null
   has_outreach?: boolean
+  /** 关联的社交账号（列表悬浮展示） */
+  accounts?: SocialAccount[]
   created_at: string
 }
 
@@ -163,6 +165,9 @@ export interface InfluencerScrapeTask {
 export interface InfluencerScrapeBatch {
   platform: ScrapePlatform
   batch?: string | null
+  /** 批次归属：谁建的就是谁的 */
+  owner_id?: number | null
+  owner_name?: string | null
   total: number
   staged: number
   running: number

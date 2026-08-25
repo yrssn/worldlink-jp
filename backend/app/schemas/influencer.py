@@ -100,6 +100,8 @@ class InfluencerOut(InfluencerBase):
 
     id: int
     source: InfluencerSource
+    #: 关联的社交账号（列表鼠标悬浮展示用）
+    accounts: list[SocialAccountOut] = []
     platform_name: Optional[str] = None
     platform_code: Optional[str] = None
     country_name: Optional[str] = None
@@ -165,10 +167,13 @@ class PlatformOption(BaseModel):
 
 
 class InfluencerScrapeBatchOut(BaseModel):
-    """批次分组汇总：平台 + 批次名 + 各状态计数。"""
+    """批次分组汇总：平台 + 批次名 + 创建人 + 各状态计数。"""
 
     platform: str
     batch: Optional[str] = None
+    #: 批次归属：谁建的就是谁的
+    owner_id: Optional[int] = None
+    owner_name: Optional[str] = None
     total: int
     staged: int
     running: int = 0
