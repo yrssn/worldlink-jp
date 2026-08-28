@@ -932,6 +932,7 @@ const importForm = reactive({
   has_header: true,
   status: 'pre_contact',
   scrape: true,
+  fallback_platform: 'other' as ScrapePlatform | 'other',
 })
 
 const importColumnOptions = computed(() =>
@@ -953,6 +954,7 @@ function openImport() {
     has_header: true,
     status: 'pre_contact',
     scrape: true,
+    fallback_platform: 'other',
   })
   importVisible.value = true
 }
@@ -989,6 +991,7 @@ async function submitImport() {
       has_header: importForm.has_header,
       status: importForm.status,
       scrape: importForm.scrape,
+      fallback_platform: importForm.fallback_platform,
     })
     ElMessage.success(
       `导入完成：新增 ${r.created} 条，已存在（已去重）${r.duplicated} 条` +
@@ -1801,10 +1804,25 @@ onUnmounted(() => {
               />
             </el-select>
           </el-form-item>
+          <el-form-item label="识别不出的链接">
+            <el-select v-model="importForm.fallback_platform" style="width: 100%">
+              <el-option label="归为「其他」平台" value="other" />
+              <el-option
+                v-for="p in platformOptions"
+                :key="p.platform"
+                :label="`归为 ${p.name}`"
+                :value="p.platform"
+              />
+            </el-select>
+            <span style="font-size: 12px; color: #909399">
+              平台按链接自动识别（FB / IG / TikTok / 小红书 / YouTube / X / LINE），
+              导入时同时写入达人和对应的社交账号记录
+            </span>
+          </el-form-item>
           <el-form-item label="导入后抓取">
             <el-switch v-model="importForm.scrape" />
             <span style="margin-left: 10px; font-size: 12px; color: #909399">
-              按主页链接自动识别平台并抓取资料回填（FB / IG 支持自动抓取，其余只暂存）
+              关掉就只入库不抓取；开启则 FB / IG 自动抓资料回填，其余平台只建暂存任务
             </span>
           </el-form-item>
         </template>

@@ -902,6 +902,14 @@ def _url_variants(url: str) -> list[str]:
     ] + [url]
 
 
+def _handle_from_url(url: str) -> str | None:
+    """从主页链接里取账号名（路径最后一段），取不到返回 ``None``。"""
+    parts = influencer_service.normalize_fb_url(url).rsplit("/", 1)
+    if len(parts) < 2:
+        return None
+    return parts[1].strip().lstrip("@") or None
+
+
 def _to_followers(value: str) -> int | None:
     """把表格里的粉丝数（可能带逗号 / 万 / k / w 后缀）转成整数。"""
     text = (value or "").strip().lower().replace(",", "").replace(" ", "")
@@ -970,7 +978,7 @@ async def import_influencers(
     status: str = Form("pre_contact", description="导入后的建联状态"),
     scrape: bool = Form(False, description="是否对主页链接抓取内容"),
     platform: str = Form("auto", description="auto = 按链接自动识别平台"),
-    fallback_platform: str = Form("facebook"),
+    fallback_platform: str = Form("other", description="识别不出平台的链接归为哪个平台"),
     batch: str | None = Form(None, description="抓取批次名，不传自动生成"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -984,8 +992,8 @@ async def import_influencers(
     plat = (platform or "auto").strip().lower()
     if plat != "auto" and plat not in KNOWN_PLATFORMS:
         raise HTTPException(status_code=400, detail="不支持的抓取平台")
-    fallback = (fallback_platform or "facebook").strip().lower()
-    if fallback not in KNOWN_PLATFORMS:
+    fallback = (fallback_platform or "other").strip().lower()
+    if fallback not in KNOWN_PLATFORMS and fallback != "other":
         raise HTTPException(status_code=400, detail="不支持的兼容平台")
 
     content = await file.read()
@@ -1057,7 +1065,13 @@ async def import_influencers(
         if row_platform == "facebook" and followers is not None and inf.fb_followers is None:
             inf.fb_followers = followers
         influencer_service.upsert_social_account(
-            db, inf.id, social, url=url, followers=followers
+            db,
+            inf.id,
+            social,
+            handle=_handle_from_url(url),
+            url=url,
+            followers=followers,
+            keep_existing_url=True,
         )
         if scrape:
             scrapable = row_platform in SCRAPABLE_PLATFORMS

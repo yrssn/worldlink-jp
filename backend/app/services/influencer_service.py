@@ -693,8 +693,12 @@ def upsert_social_account(
     handle: Optional[str] = None,
     url: Optional[str] = None,
     followers: Optional[int] = None,
+    keep_existing_url: bool = False,
 ) -> Optional[InfluencerSocialAccount]:
-    """写入/更新达人在某平台的账号（同平台按 handle/url 匹配已有记录）。"""
+    """写入/更新达人在某平台的账号（同平台按 handle/url 匹配已有记录）。
+
+    ``keep_existing_url=True`` 时不覆盖已有主页链接（导入同一账号的不同写法时保留原链接）。
+    """
     if not (handle or url):
         return None
     rows = (
@@ -717,7 +721,8 @@ def upsert_social_account(
         acc = InfluencerSocialAccount(influencer_id=influencer_id, platform=platform)
         db.add(acc)
     acc.handle = handle or acc.handle
-    acc.url = url or acc.url
+    if not (keep_existing_url and acc.url):
+        acc.url = url or acc.url
     if followers is not None:
         acc.followers = followers
     return acc

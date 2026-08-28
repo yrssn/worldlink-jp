@@ -224,7 +224,8 @@ export interface ImportOptions {
   status?: string
   scrape?: boolean
   platform?: ScrapePlatform | 'auto'
-  fallback_platform?: ScrapePlatform
+  /** 链接识别不出平台时归为哪个平台，默认 other */
+  fallback_platform?: ScrapePlatform | 'other'
 }
 
 export const influencerApi = {
