@@ -33,6 +33,10 @@ class InfluencerScrapeTask(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", index=True
     )
+    # 表格导入时先建好的达人：抓取完成后把资料补写回这条达人，而不是新建一条
+    influencer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("influencers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

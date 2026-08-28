@@ -213,7 +213,7 @@ def _ensure_influencer_country_column() -> None:
 
 
 def _ensure_influencer_scrape_task_columns() -> None:
-    """为 influencer_scrape_tasks 表补齐新增列（platform）。"""
+    """为 influencer_scrape_tasks 表补齐新增列（platform / batch / influencer_id）。"""
     from sqlalchemy import inspect, text
 
     insp = inspect(engine)
@@ -233,6 +233,14 @@ def _ensure_influencer_scrape_task_columns() -> None:
         patches.append(
             "ALTER TABLE influencer_scrape_tasks "
             "ADD INDEX ix_influencer_scrape_tasks_batch (batch)"
+        )
+    if "influencer_id" not in cols:
+        patches.append(
+            "ALTER TABLE influencer_scrape_tasks ADD COLUMN influencer_id INT NULL"
+        )
+        patches.append(
+            "ALTER TABLE influencer_scrape_tasks "
+            "ADD INDEX ix_influencer_scrape_tasks_influencer_id (influencer_id)"
         )
     for sql in patches:
         try:

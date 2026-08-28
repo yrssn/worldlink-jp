@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
+from typing import ClassVar
 
 from sqlalchemy import (
     JSON,
@@ -110,6 +111,8 @@ class Influencer(Base, TimestampMixin):
 
     # 非持久化：由接口按需标注「是否已私信过」，默认 False 便于 from_attributes 序列化
     has_outreach: bool = False
+    # 非持久化：列表接口算出的粉丝数（FB 主字段与各关联账号取最大）
+    followers: ClassVar[int | None] = None
 
     @property
     def platform_name(self) -> str | None:

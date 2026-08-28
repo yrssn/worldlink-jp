@@ -686,6 +686,88 @@ def create_influencer_from_ig_form(
     return inf, created
 
 
+def upsert_social_account(
+    db: Session,
+    influencer_id: int,
+    platform: SocialPlatform,
+    handle: Optional[str] = None,
+    url: Optional[str] = None,
+    followers: Optional[int] = None,
+) -> Optional[InfluencerSocialAccount]:
+    """写入/更新达人在某平台的账号（同平台按 handle/url 匹配已有记录）。"""
+    if not (handle or url):
+        return None
+    rows = (
+        db.query(InfluencerSocialAccount)
+        .filter(
+            InfluencerSocialAccount.influencer_id == influencer_id,
+            InfluencerSocialAccount.platform == platform,
+        )
+        .all()
+    )
+    acc = next(
+        (
+            r
+            for r in rows
+            if (handle and r.handle == handle) or (url and r.url == url)
+        ),
+        None,
+    ) or (rows[0] if rows else None)
+    if acc is None:
+        acc = InfluencerSocialAccount(influencer_id=influencer_id, platform=platform)
+        db.add(acc)
+    acc.handle = handle or acc.handle
+    acc.url = url or acc.url
+    if followers is not None:
+        acc.followers = followers
+    return acc
+
+
+def enrich_influencer_from_form(
+    db: Session,
+    inf: Influencer,
+    form: dict[str, Any],
+) -> Influencer:
+    """把抓取结果补写到已存在的达人上：只填空字段，粉丝数等数值以抓取结果为准。
+
+    表格导入时先按主页链接建好达人，抓取完成后回填资料，避免重复建档。
+    """
+    form = avatar_cache.localize_form_avatar(dict(form))
+    always_overwrite = {"fb_followers", "fb_likes", "fb_rating", "fb_rating_count"}
+    for field in _FORM_INFLUENCER_FIELDS:
+        value = form.get(field)
+        if value in (None, ""):
+            continue
+        if field == "display_name" and str(value).strip().lower() == "unknown":
+            continue
+        if field in always_overwrite or getattr(inf, field, None) in (None, "", []):
+            setattr(inf, field, value)
+    if isinstance(form.get("_ig_profile"), dict):
+        inf.raw_profile = form["_ig_profile"]
+
+    if str(form.get("platform") or "").lower() == "instagram":
+        upsert_social_account(
+            db,
+            inf.id,
+            SocialPlatform.instagram,
+            handle=form.get("ig_username"),
+            url=form.get("ig_url"),
+            followers=_to_int(form.get("followers")),
+        )
+    elif inf.fb_page_url or inf.fb_page_id:
+        upsert_social_account(
+            db,
+            inf.id,
+            SocialPlatform.facebook,
+            handle=inf.fb_page_id,
+            url=inf.fb_page_url,
+            followers=inf.fb_followers,
+        )
+    db.commit()
+    db.refresh(inf)
+    return inf
+
+
 def create_from_scrape(
     db: Session,
     owner_id: int,

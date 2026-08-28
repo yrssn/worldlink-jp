@@ -62,8 +62,10 @@ export interface Influencer {
   owner_id: number
   owner_name?: string | null
   has_outreach?: boolean
-  /** 关联的社交账号（列表悬浮展示） */
+  /** 关联的社交账号（列表内直接展示：平台 + 账号 + 粉丝） */
   accounts?: SocialAccount[]
+  /** 各平台粉丝数最大值（含 FB 主字段），列表展示 & 区间筛选口径 */
+  followers?: number | null
   created_at: string
 }
 
@@ -187,6 +189,44 @@ export interface ScrapeBatchActionResult {
   skipped: number
 }
 
+/** 表格导入：某一列的列名与样例，用于选「哪列是主页链接」 */
+export interface ImportColumnPreview {
+  index: number
+  name: string
+  samples: string[]
+  looks_like_url: boolean
+}
+
+export interface ImportPreview {
+  filename: string
+  total_rows: number
+  columns: ImportColumnPreview[]
+  suggested_url_column?: number | null
+}
+
+export interface ImportResult {
+  total_rows: number
+  created: number
+  duplicated: number
+  skipped: number
+  scrape_tasks: number
+  batch?: string | null
+}
+
+/** 表格导入参数：选列 + 选状态 + 选是否抓取 */
+export interface ImportOptions {
+  url_column: number
+  name_column?: number | null
+  email_column?: number | null
+  followers_column?: number | null
+  notes_column?: number | null
+  has_header?: boolean
+  status?: string
+  scrape?: boolean
+  platform?: ScrapePlatform | 'auto'
+  fallback_platform?: ScrapePlatform
+}
+
 export const influencerApi = {
   list: (params?: {
     page?: number
@@ -196,6 +236,9 @@ export const influencerApi = {
     country?: string
     country_id?: number
     platform_id?: number
+    followers_min?: number
+    followers_max?: number
+    sort?: 'id_desc' | 'followers_desc' | 'followers_asc'
   }) => http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
   listPlatformOptions: () =>
     http.get<unknown, PlatformOption[]>('/influencers/platform-options'),
@@ -291,12 +334,29 @@ export const influencerApi = {
     http.post<unknown, SocialAccount>(`/influencers/${id}/social-accounts`, data),
   removeSocial: (iid: number, sid: number) =>
     http.delete(`/influencers/${iid}/social-accounts/${sid}`),
+  /** 表格导入第一步：回显列名/样例，供选择主页链接列 */
+  previewImport: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return http.post<unknown, ImportPreview>('/influencers/import/preview', fd)
+  },
+  /** 表格导入第二步：按选定列入库，可选建联状态与是否抓取 */
+  importTable: (file: File, options: ImportOptions) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    for (const [k, v] of Object.entries(options)) {
+      if (v !== undefined && v !== null && v !== '') fd.append(k, String(v))
+    }
+    return http.post<unknown, ImportResult>('/influencers/import', fd)
+  },
   exportList: (params?: {
     keyword?: string
     status?: string
     country?: string
     country_id?: number
     platform_id?: number
+    followers_min?: number
+    followers_max?: number
   }) =>
     download(
       { url: '/influencers/export', method: 'GET', params },

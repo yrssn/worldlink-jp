@@ -100,8 +100,10 @@ class InfluencerOut(InfluencerBase):
 
     id: int
     source: InfluencerSource
-    #: 关联的社交账号（列表鼠标悬浮展示用）
+    #: 关联的社交账号（列表内直接展示：平台 + 账号 + 粉丝）
     accounts: list[SocialAccountOut] = []
+    #: 各平台粉丝数的最大值（含 FB 主字段），列表展示 & 区间筛选口径
+    followers: Optional[int] = None
     platform_name: Optional[str] = None
     platform_code: Optional[str] = None
     country_name: Optional[str] = None
@@ -208,6 +210,36 @@ class InfluencerScrapeBatchRunRequest(BaseModel):
     #: 抓完是否直接入库达人库；save_status 为入库后的建联状态（默认预建联）
     auto_save: bool = False
     save_status: Optional[str] = Field(default=None, max_length=32)
+
+
+class ImportColumnPreview(BaseModel):
+    """上传表格的一列：列名 + 前几行样例 + 是否像主页链接列。"""
+
+    index: int
+    name: str
+    samples: list[str] = []
+    looks_like_url: bool = False
+
+
+class ImportPreviewOut(BaseModel):
+    """表格导入第一步：回显列名/样例，交由用户选择主页链接列。"""
+
+    filename: str
+    total_rows: int
+    columns: list[ImportColumnPreview] = []
+    #: 猜测的主页链接列下标（用户可改）
+    suggested_url_column: Optional[int] = None
+
+
+class ImportResultOut(BaseModel):
+    """表格导入结果统计。"""
+
+    total_rows: int
+    created: int
+    duplicated: int
+    skipped: int
+    scrape_tasks: int
+    batch: Optional[str] = None
 
 
 class InfluencerScrapeBatchActionResult(BaseModel):

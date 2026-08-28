@@ -17,7 +17,7 @@ from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform
 from app.models.country import Country
 from app.models.dm import DmOutreachLog
-from app.models.influencer import Influencer, InfluencerStatus
+from app.models.influencer import Influencer, InfluencerSource, InfluencerStatus
 from app.models.influencer_scrape_task import InfluencerScrapeTask
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
@@ -26,6 +26,9 @@ from app.schemas.common import Msg, Page
 from app.schemas.dm import DmOutreachLogOut
 from app.schemas.influencer import (
     AvatarCacheResult,
+    ImportColumnPreview,
+    ImportPreviewOut,
+    ImportResultOut,
     InfluencerCreate,
     InfluencerDetailOut,
     InfluencerFromScrapeRequest,
@@ -102,7 +105,7 @@ def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrap
                 fb_page_url=result.get("fb_page_url"),
                 email=result.get("email"),
             )
-        out.influencer_id = existing.id if existing else None
+        out.influencer_id = existing.id if existing else task.influencer_id
     return out
 
 
@@ -176,10 +179,24 @@ def _parse_save_status(value: str | None) -> InfluencerStatus | None:
 def _auto_save_from_task(
     db: Session, task: InfluencerScrapeTask, save_status: str | None = None
 ) -> None:
-    """抓取完成后自动把结果存入建联达人库（发私信后 / 勾选「抓完直接入库」时用）。"""
+    """抓取完成后自动把结果存入建联达人库（发私信后 / 勾选「抓完直接入库」时用）。
+
+    任务来自表格导入（已绑定 influencer_id）时改为把资料补写回那条达人，不再新建。
+    """
     if not isinstance(task.result, dict) or not task.result:
         return
     try:
+        if task.influencer_id:
+            inf = db.get(Influencer, task.influencer_id)
+            if inf is None:
+                return
+            influencer_service.enrich_influencer_from_form(db, inf, task.result)
+            if save_status:
+                inf.status = InfluencerStatus(save_status)
+                db.commit()
+            _bind_platform_by_name(db, inf, task.platform)
+            logger.info("[InfluencerScrape task#{}] 已回填达人 #{}", task.id, inf.id)
+            return
         if (task.platform or "facebook") == "instagram":
             inf, created = influencer_service.create_influencer_from_ig_form(
                 db, owner_id=task.owner_id, form=task.result
@@ -314,6 +331,16 @@ INFLUENCER_CSV_COLUMNS = [
     ("电话", "phone"),
     ("Messenger", "messenger"),
     ("网站", "website"),
+    ("粉丝数", lambda r: getattr(r, "followers", None) or ""),
+    (
+        "关联账号",
+        lambda r: " | ".join(
+            f"{a.platform.value if hasattr(a.platform, 'value') else a.platform}:"
+            f"{a.handle or a.url or ''}"
+            f"({a.followers if a.followers is not None else '-'})"
+            for a in (getattr(r, "accounts", None) or [])
+        ),
+    ),
     ("FB主页URL", "fb_page_url"),
     ("FB标题", "fb_page_title"),
     ("FB分类", "fb_categories"),
@@ -336,6 +363,21 @@ INFLUENCER_CSV_COLUMNS = [
 ]
 
 
+def _followers_expr():
+    """达人粉丝数口径：FB 主字段与各关联社交账号粉丝取最大值。"""
+    from sqlalchemy import case, func, select
+
+    max_account = func.coalesce(
+        select(func.max(InfluencerSocialAccount.followers))
+        .where(InfluencerSocialAccount.influencer_id == Influencer.id)
+        .correlate(Influencer)
+        .scalar_subquery(),
+        0,
+    )
+    fb = func.coalesce(Influencer.fb_followers, 0)
+    return case((fb >= max_account, fb), else_=max_account)
+
+
 def _apply_influencer_filters(
     q,
     keyword: str | None,
@@ -343,8 +385,10 @@ def _apply_influencer_filters(
     country: str | None,
     platform_id: int | None,
     country_id: int | None = None,
+    followers_min: int | None = None,
+    followers_max: int | None = None,
 ):
-    """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台）。"""
+    """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台 / 粉丝区间）。"""
     if keyword:
         like = f"%{keyword}%"
         q = q.filter(
@@ -371,6 +415,12 @@ def _apply_influencer_filters(
             q = q.filter(Influencer.platform_id.is_(None))
         else:
             q = q.filter(Influencer.platform_id == platform_id)
+    if followers_min is not None or followers_max is not None:
+        followers = _followers_expr()
+        if followers_min is not None:
+            q = q.filter(followers >= followers_min)
+        if followers_max is not None:
+            q = q.filter(followers <= followers_max)
     return q
 
 
@@ -383,6 +433,9 @@ def list_influencers(
     country: str | None = Query(None, description="国家代码（兼容旧参数），__none__ = 未填"),
     country_id: int | None = Query(None, description="关联国家 id，0 = 未关联"),
     platform_id: int | None = Query(None, description="关联平台 id，0 = 未关联"),
+    followers_min: int | None = Query(None, ge=0, description="粉丝数下限"),
+    followers_max: int | None = Query(None, ge=0, description="粉丝数上限"),
+    sort: str = Query("id_desc", description="id_desc / followers_desc / followers_asc"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -393,21 +446,25 @@ def list_influencers(
     )
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
-    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id, country_id)
-    total = q.count()
-    items = (
-        q.order_by(Influencer.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
+    q = _apply_influencer_filters(
+        q, keyword, status_eq, country, platform_id, country_id,
+        followers_min, followers_max,
     )
+    total = q.count()
+    if sort == "followers_desc":
+        q = q.order_by(_followers_expr().desc(), Influencer.id.desc())
+    elif sort == "followers_asc":
+        q = q.order_by(_followers_expr().asc(), Influencer.id.desc())
+    else:
+        q = q.order_by(Influencer.id.desc())
+    items = q.offset((page - 1) * page_size).limit(page_size).all()
     _mark_has_outreach(db, items)
     _attach_accounts(db, items)
     return Page[InfluencerOut](total=total, page=page, page_size=page_size, items=items)
 
 
 def _attach_accounts(db: Session, items: list[Influencer]) -> None:
-    """给列表里的达人挂上关联的社交账号（鼠标悬浮展示用）。"""
+    """给列表里的达人挂上关联社交账号，并算出粉丝数（FB 主字段与各账号取最大）。"""
     ids = [i.id for i in items]
     if not ids:
         return
@@ -424,6 +481,10 @@ def _attach_accounts(db: Session, items: list[Influencer]) -> None:
         )
     for i in items:
         i.accounts = grouped.get(i.id, [])
+        counts = [a.followers for a in i.accounts if a.followers is not None]
+        if i.fb_followers is not None:
+            counts.append(i.fb_followers)
+        i.followers = max(counts) if counts else None
 
 
 def _mark_has_outreach(db: Session, items: list[Influencer]) -> None:
@@ -449,6 +510,8 @@ def export_influencers(
     country: str | None = None,
     country_id: int | None = None,
     platform_id: int | None = None,
+    followers_min: int | None = Query(None, ge=0),
+    followers_max: int | None = Query(None, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -460,8 +523,12 @@ def export_influencers(
     )
     if not is_admin(user):
         q = q.filter(Influencer.owner_id == user.id)
-    q = _apply_influencer_filters(q, keyword, status_eq, country, platform_id, country_id)
+    q = _apply_influencer_filters(
+        q, keyword, status_eq, country, platform_id, country_id,
+        followers_min, followers_max,
+    )
     rows = q.order_by(Influencer.id.desc()).all()
+    _attach_accounts(db, rows)
     data = build_csv(rows, INFLUENCER_CSV_COLUMNS)
     return csv_response("influencers.csv", data)
 
@@ -769,6 +836,225 @@ async def upload_scrape_profile_batch(
         platform=platform,
         fallback_platform=fallback_platform,
         batch=None,
+    )
+
+
+def _read_table(filename: str, content: bytes) -> list[list[str]]:
+    """把上传的 xlsx / csv / txt 读成二维表（首行为表头），单元格统一转字符串。"""
+    suffix = Path(filename).suffix.lower()
+    rows: list[list[str]] = []
+    if suffix in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        try:
+            ws = wb.worksheets[0]
+            for row in ws.iter_rows(values_only=True):
+                rows.append(["" if c is None else str(c).strip() for c in row])
+        finally:
+            wb.close()
+    else:
+        text = content.decode("utf-8-sig", errors="ignore")
+        delimiter = "\t" if ("\t" in text and "," not in text) else ","
+        for row in csv.reader(io.StringIO(text), delimiter=delimiter):
+            rows.append([(c or "").strip() for c in row])
+    return [r for r in rows if any(c for c in r)]
+
+
+def _cell(row: list[str], index: int | None) -> str:
+    """按列下标安全取值，越界/未选列返回空串。"""
+    if index is None or index < 0 or index >= len(row):
+        return ""
+    return (row[index] or "").strip()
+
+
+def _looks_like_url_value(value: str) -> bool:
+    """单元格内容是否像主页链接（比 ``_looks_like_profile_value`` 严格，避免把邮箱/数字列认成链接）。"""
+    s = value.strip().lower()
+    if not s or " " in s or "@" in s:
+        return False
+    if s.startswith(("http://", "https://")):
+        return True
+    return s.startswith("www.") and "/" in s
+
+
+def _to_followers(value: str) -> int | None:
+    """把表格里的粉丝数（可能带逗号 / 万 / k / w 后缀）转成整数。"""
+    text = (value or "").strip().lower().replace(",", "").replace(" ", "")
+    if not text:
+        return None
+    multiplier = 1.0
+    if text.endswith(("万", "w")):
+        multiplier, text = 10000.0, text[:-1]
+    elif text.endswith("k"):
+        multiplier, text = 1000.0, text[:-1]
+    elif text.endswith("m"):
+        multiplier, text = 1000000.0, text[:-1]
+    try:
+        return int(float(text) * multiplier)
+    except ValueError:
+        return None
+
+
+@router.post("/import/preview", response_model=ImportPreviewOut)
+async def preview_import_table(
+    file: UploadFile = File(..., description="存量数据表：xlsx / csv / txt"),
+    user: User = Depends(get_current_user),
+):
+    """导入第一步：回显表头与前几行样例，供前端选“哪一列是主页链接”。"""
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件是空的")
+    if len(content) > _MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=400, detail="文件过大（上限 5MB）")
+    rows = _read_table(file.filename or "", content)
+    if not rows:
+        raise HTTPException(status_code=400, detail="表格里没有可读取的内容")
+    header, body = rows[0], rows[1:]
+    width = max(len(r) for r in rows)
+    columns: list[ImportColumnPreview] = []
+    for idx in range(width):
+        samples = [_cell(r, idx) for r in body[:5]]
+        samples = [s for s in samples if s]
+        hits = sum(1 for r in body[:20] if _looks_like_url_value(_cell(r, idx)))
+        columns.append(
+            ImportColumnPreview(
+                index=idx,
+                name=_cell(header, idx) or f"第{idx + 1}列",
+                samples=samples,
+                looks_like_url=hits > 0,
+            )
+        )
+    suggested = next((c.index for c in columns if c.looks_like_url), None)
+    return ImportPreviewOut(
+        filename=file.filename or "",
+        total_rows=len(body),
+        columns=columns,
+        suggested_url_column=suggested,
+    )
+
+
+@router.post("/import", response_model=ImportResultOut)
+async def import_influencers(
+    file: UploadFile = File(..., description="存量数据表：xlsx / csv / txt"),
+    url_column: int = Form(..., description="主页链接列下标"),
+    name_column: int | None = Form(None, description="昵称列下标"),
+    email_column: int | None = Form(None, description="邮箱列下标"),
+    followers_column: int | None = Form(None, description="粉丝数列下标"),
+    notes_column: int | None = Form(None, description="备注列下标"),
+    has_header: bool = Form(True, description="首行是否为表头"),
+    status: str = Form("pre_contact", description="导入后的建联状态"),
+    scrape: bool = Form(False, description="是否对主页链接抓取内容"),
+    platform: str = Form("auto", description="auto = 按链接自动识别平台"),
+    fallback_platform: str = Form("facebook"),
+    batch: str | None = Form(None, description="抓取批次名，不传自动生成"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按选定的主页链接列导入存量数据：逐行建达人，可选建联状态与是否抓取。
+
+    scrape=True 时同时建好抓取任务并后台开跑，抓到的资料回填到对应达人（不重复建档）；
+    暂不支持自动抓资料的平台（如 TikTok / 小红书）只建暂存任务，不会报错中断。
+    """
+    save_status = _parse_save_status(status) or InfluencerStatus.pre_contact
+    plat = (platform or "auto").strip().lower()
+    if plat != "auto" and plat not in KNOWN_PLATFORMS:
+        raise HTTPException(status_code=400, detail="不支持的抓取平台")
+    fallback = (fallback_platform or "facebook").strip().lower()
+    if fallback not in KNOWN_PLATFORMS:
+        raise HTTPException(status_code=400, detail="不支持的兼容平台")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件是空的")
+    if len(content) > _MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=400, detail="文件过大（上限 5MB）")
+    rows = _read_table(file.filename or "", content)
+    if has_header:
+        rows = rows[1:]
+    if not rows:
+        raise HTTPException(status_code=400, detail="表格里没有可导入的数据行")
+
+    batch_name = (batch or "").strip() or _default_batch_name(db, user.id)
+    platform_codes = _platform_id_by_code(db)
+    created = duplicated = skipped = 0
+    seen: set[str] = set()
+    tasks: list[InfluencerScrapeTask] = []
+    for row in rows:
+        url = _cell(row, url_column)
+        if not url:
+            skipped += 1
+            continue
+        if url in seen:
+            duplicated += 1
+            continue
+        seen.add(url)
+        row_platform = plat if plat != "auto" else (detect_platform(url) or fallback)
+        social = SocialPlatform(row_platform) if row_platform in {
+            p.value for p in SocialPlatform
+        } else SocialPlatform.other
+
+        if row_platform == "facebook":
+            existing = influencer_service.find_duplicate(
+                db, owner_id=user.id, fb_page_url=url, email=_cell(row, email_column) or None
+            )
+        else:
+            existing = influencer_service.find_duplicate_social(
+                db, owner_id=user.id, platform=social, url=url
+            )
+        inf = existing
+        if inf is None:
+            inf = Influencer(
+                display_name=_cell(row, name_column) or url,
+                email=_cell(row, email_column) or None,
+                notes=_cell(row, notes_column) or None,
+                status=save_status,
+                source=InfluencerSource.manual,
+                owner_id=user.id,
+                platform_id=match_platform_code(row_platform, platform_codes),
+            )
+            if row_platform == "facebook":
+                inf.fb_page_url = url
+            db.add(inf)
+            db.flush()
+            created += 1
+        else:
+            duplicated += 1
+        followers = _to_followers(_cell(row, followers_column))
+        if row_platform == "facebook" and followers is not None and inf.fb_followers is None:
+            inf.fb_followers = followers
+        influencer_service.upsert_social_account(
+            db, inf.id, social, url=url, followers=followers
+        )
+        if scrape:
+            scrapable = row_platform in SCRAPABLE_PLATFORMS
+            task = InfluencerScrapeTask(
+                owner_id=user.id,
+                platform=row_platform,
+                url=url,
+                batch=batch_name,
+                status="pending" if scrapable else "staged",
+                influencer_id=inf.id,
+            )
+            db.add(task)
+            if scrapable:
+                tasks.append(task)
+    db.commit()
+
+    for task in tasks:
+        db.refresh(task)
+        threading.Thread(
+            target=_run_scrape_profile_bg,
+            args=(task.id, True, save_status.value),
+            daemon=True,
+        ).start()
+    return ImportResultOut(
+        total_rows=len(rows),
+        created=created,
+        duplicated=duplicated,
+        skipped=skipped,
+        scrape_tasks=len(tasks),
+        batch=batch_name if scrape else None,
     )
 
 

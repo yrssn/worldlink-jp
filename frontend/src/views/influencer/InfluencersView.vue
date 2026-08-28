@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   influencerApi,
   PLATFORM_LABELS,
+  type ImportPreview,
   type Influencer,
   type InfluencerScrapeTask,
   type PlatformDetectItem,
@@ -35,6 +36,10 @@ const statusFilter = ref<string>('')
 /** 国家筛选：0 = 未关联 */
 const countryFilter = ref<number | undefined>(undefined)
 const platformFilter = ref<number | undefined>(undefined)
+/** 粉丝数区间筛选（口径：FB 粉丝与各关联账号粉丝取最大值） */
+const followersMin = ref<number | undefined>(undefined)
+const followersMax = ref<number | undefined>(undefined)
+const sort = ref<'id_desc' | 'followers_desc' | 'followers_asc'>('id_desc')
 const loading = ref(false)
 
 // 关联平台字典（「平台管理」）与国家字典（「国家管理」）
@@ -815,7 +820,10 @@ async function refresh() {
       keyword: keyword.value || undefined,
       status: statusFilter.value || undefined,
       country_id: countryFilter.value ?? undefined,
-      platform_id: platformFilter.value ?? undefined
+      platform_id: platformFilter.value ?? undefined,
+      followers_min: followersMin.value ?? undefined,
+      followers_max: followersMax.value ?? undefined,
+      sort: sort.value,
     })
     list.value = r.items
     total.value = r.total
@@ -871,7 +879,109 @@ async function exportList() {
     status: statusFilter.value || undefined,
     country_id: countryFilter.value ?? undefined,
     platform_id: platformFilter.value ?? undefined,
+    followers_min: followersMin.value ?? undefined,
+    followers_max: followersMax.value ?? undefined,
   })
+}
+
+/** 点击「粉丝数」列表头排序 */
+function onSortChange({ prop, order }: { prop: string; order: string | null }) {
+  if (prop !== 'followers' || !order) sort.value = 'id_desc'
+  else sort.value = order === 'ascending' ? 'followers_asc' : 'followers_desc'
+  page.value = 1
+  refresh()
+}
+
+/** 粉丝数千分位展示 */
+function formatFollowers(v?: number | null) {
+  return v == null ? '—' : v.toLocaleString('en-US')
+}
+
+// ─── 存量数据导入（选主页链接列 → 选状态 → 选是否抓取）──────────
+const importVisible = ref(false)
+const importFile = ref<File | null>(null)
+const importPreview = ref<ImportPreview | null>(null)
+const importLoading = ref(false)
+const importSubmitting = ref(false)
+const importForm = reactive({
+  url_column: undefined as number | undefined,
+  name_column: undefined as number | undefined,
+  email_column: undefined as number | undefined,
+  followers_column: undefined as number | undefined,
+  notes_column: undefined as number | undefined,
+  has_header: true,
+  status: 'pre_contact',
+  scrape: true,
+})
+
+const importColumnOptions = computed(() =>
+  (importPreview.value?.columns || []).map((c) => ({
+    value: c.index,
+    label: c.samples.length ? `${c.name}（如：${c.samples[0]}）` : c.name,
+  })),
+)
+
+function openImport() {
+  importFile.value = null
+  importPreview.value = null
+  Object.assign(importForm, {
+    url_column: undefined,
+    name_column: undefined,
+    email_column: undefined,
+    followers_column: undefined,
+    notes_column: undefined,
+    has_header: true,
+    status: 'pre_contact',
+    scrape: true,
+  })
+  importVisible.value = true
+}
+
+/** 选文件后先读表头/样例，返回 false 阻止 el-upload 自己发请求 */
+async function onPickImportTable(file: File) {
+  importFile.value = file
+  importLoading.value = true
+  try {
+    const preview = await influencerApi.previewImport(file)
+    importPreview.value = preview
+    importForm.url_column = preview.suggested_url_column ?? undefined
+  } catch {
+    importPreview.value = null
+  } finally {
+    importLoading.value = false
+  }
+  return false
+}
+
+async function submitImport() {
+  if (!importFile.value || importForm.url_column === undefined) {
+    ElMessage.warning('请先上传表格并选择主页链接列')
+    return
+  }
+  importSubmitting.value = true
+  try {
+    const r = await influencerApi.importTable(importFile.value, {
+      url_column: importForm.url_column,
+      name_column: importForm.name_column,
+      email_column: importForm.email_column,
+      followers_column: importForm.followers_column,
+      notes_column: importForm.notes_column,
+      has_header: importForm.has_header,
+      status: importForm.status,
+      scrape: importForm.scrape,
+    })
+    ElMessage.success(
+      `导入完成：新增 ${r.created} 条，已存在 ${r.duplicated} 条` +
+        (r.scrape_tasks ? `，已发起 ${r.scrape_tasks} 条抓取（批次 ${r.batch}）` : ''),
+    )
+    importVisible.value = false
+    page.value = 1
+    refresh()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    importSubmitting.value = false
+  }
 }
 
 const cachingAvatars = ref(false)
@@ -920,6 +1030,7 @@ onUnmounted(() => {
           导出（CSV）
         </el-button>
         <el-button :loading="cachingAvatars" @click="cacheAvatars">缓存头像到本机</el-button>
+        <el-button type="warning" @click="openImport">导入存量数据</el-button>
         <el-button @click="openTaskDialog">抓取任务</el-button>
         <el-button type="primary" @click="openCreate">手工新增</el-button>
       </div>
@@ -948,10 +1059,27 @@ onUnmounted(() => {
         <el-option label="未关联" :value="0" />
         <el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" />
       </el-select>
+      <div style="display: flex; align-items: center; gap: 4px">
+        <el-input-number
+          v-model="followersMin"
+          :min="0"
+          :controls="false"
+          placeholder="粉丝≥"
+          style="width: 110px"
+        />
+        <span style="color: #909399">-</span>
+        <el-input-number
+          v-model="followersMax"
+          :min="0"
+          :controls="false"
+          placeholder="粉丝≤"
+          style="width: 110px"
+        />
+      </div>
       <el-button type="primary" @click="(page = 1), refresh()">搜索</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="list" border>
+    <el-table v-loading="loading" :data="list" border @sort-change="onSortChange">
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column label="昵称" min-width="190">
         <template #default="{ row }">
@@ -1003,6 +1131,28 @@ onUnmounted(() => {
               </div>
             </div>
           </el-popover>
+        </template>
+      </el-table-column>
+      <el-table-column prop="followers" label="粉丝数" width="110" sortable="custom">
+        <template #default="{ row }">
+          <span style="font-weight: 600">{{ formatFollowers(row.followers) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="关联账号" min-width="230">
+        <template #default="{ row }">
+          <div v-if="!accountRows(row).length" style="color: #909399">—</div>
+          <div
+            v-for="(a, idx) in accountRows(row)"
+            :key="idx"
+            style="display: flex; align-items: center; gap: 6px; line-height: 1.9"
+          >
+            <el-tag size="small" type="info">{{ a.platform }}</el-tag>
+            <a v-if="a.url" :href="a.url" target="_blank" class="account-link">
+              {{ a.handle || a.url }}
+            </a>
+            <span v-else>{{ a.handle || '—' }}</span>
+            <span style="color: #909399">{{ formatFollowers(a.followers) }}</span>
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="来源" width="80">
@@ -1534,5 +1684,116 @@ onUnmounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="importVisible" title="导入存量数据" width="640px">
+      <el-form label-width="120px" v-loading="importLoading">
+        <el-form-item label="数据表">
+          <el-upload
+            :show-file-list="false"
+            :before-upload="onPickImportTable"
+            accept=".xlsx,.xlsm,.csv,.txt"
+          >
+            <el-button>{{ importFile ? '重新选择文件' : '选择 Excel / CSV' }}</el-button>
+          </el-upload>
+          <span v-if="importPreview" style="margin-left: 10px; font-size: 12px; color: #606266">
+            {{ importPreview.filename }}（{{ importPreview.total_rows }} 行）
+          </span>
+        </el-form-item>
+        <template v-if="importPreview">
+          <el-form-item label="首行是表头">
+            <el-switch v-model="importForm.has_header" />
+          </el-form-item>
+          <el-form-item label="主页链接列" required>
+            <el-select v-model="importForm.url_column" placeholder="选择哪一列是主页链接" style="width: 100%">
+              <el-option
+                v-for="c in importColumnOptions"
+                :key="c.value"
+                :label="c.label"
+                :value="c.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="昵称列">
+            <el-select v-model="importForm.name_column" clearable placeholder="可选" style="width: 100%">
+              <el-option
+                v-for="c in importColumnOptions"
+                :key="c.value"
+                :label="c.label"
+                :value="c.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="粉丝数列">
+            <el-select
+              v-model="importForm.followers_column"
+              clearable
+              placeholder="可选"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="c in importColumnOptions"
+                :key="c.value"
+                :label="c.label"
+                :value="c.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="邮箱列">
+            <el-select v-model="importForm.email_column" clearable placeholder="可选" style="width: 100%">
+              <el-option
+                v-for="c in importColumnOptions"
+                :key="c.value"
+                :label="c.label"
+                :value="c.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="备注列">
+            <el-select v-model="importForm.notes_column" clearable placeholder="可选" style="width: 100%">
+              <el-option
+                v-for="c in importColumnOptions"
+                :key="c.value"
+                :label="c.label"
+                :value="c.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="导入后状态">
+            <el-select v-model="importForm.status" style="width: 100%">
+              <el-option
+                v-for="o in STATUS_OPTIONS"
+                :key="o.value"
+                :label="o.label"
+                :value="o.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="导入后抓取">
+            <el-switch v-model="importForm.scrape" />
+            <span style="margin-left: 10px; font-size: 12px; color: #909399">
+              按主页链接自动识别平台并抓取资料回填（FB / IG 支持自动抓取，其余只暂存）
+            </span>
+          </el-form-item>
+        </template>
+      </el-form>
+      <template #footer>
+        <el-button @click="importVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="!importPreview"
+          :loading="importSubmitting"
+          @click="submitImport"
+        >
+          开始导入
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.account-link {
+  color: var(--el-color-primary);
+  word-break: break-all;
+}
+</style>
