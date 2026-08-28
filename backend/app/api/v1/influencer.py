@@ -806,19 +806,27 @@ async def upload_scrape_profile_batch(
     file: UploadFile = File(..., description="主页链接表格：xlsx / csv / txt"),
     platform: str = Form("auto"),
     fallback_platform: str = Form("facebook"),
+    url_column: int | None = Form(None, description="主页链接列下标，不传则全表扫描"),
+    has_header: bool = Form(True),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """上传主页链接表格（xlsx / csv / txt）批量导入到暂存区。
 
-    表格里所有单元格中形如链接 / @用户名 的内容都会被取出（表头会被自动忽略）。
+    指定 ``url_column`` 时只取该列；不指定则表格里所有形如链接 / @用户名 的单元格都会被取出。
     """
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="文件是空的")
     if len(content) > _MAX_IMPORT_BYTES:
         raise HTTPException(status_code=400, detail="文件过大（上限 5MB）")
-    urls = _extract_urls_from_upload(file.filename or "", content)
+    if url_column is not None:
+        rows = _read_table(file.filename or "", content)
+        if has_header:
+            rows = rows[1:]
+        urls = [u for u in (_cell(row, url_column) for row in rows) if u]
+    else:
+        urls = _extract_urls_from_upload(file.filename or "", content)
     if not urls:
         raise HTTPException(status_code=400, detail="表格里没有识别到主页链接 / 用户名")
     return _stage_urls(

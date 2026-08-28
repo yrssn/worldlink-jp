@@ -544,12 +544,50 @@ async function importBatch() {
   }
 }
 
-/** 上传主页链接表格（xlsx / csv / txt）批量导入；返回 false 阻止 el-upload 自己发请求 */
+// ─── 暂存区上传表格：先回显列名，让用户选哪一列是主页链接 ──────────
+const stageFile = ref<File | null>(null)
+const stagePreview = ref<ImportPreview | null>(null)
+const stageVisible = ref(false)
+const stageForm = reactive({ url_column: undefined as number | undefined, has_header: true })
+const stageColumnOptions = computed(() =>
+  (stagePreview.value?.columns || []).map((c) => ({
+    value: c.index,
+    label: c.samples.length ? `${c.name}（如：${c.samples[0]}）` : c.name,
+  })),
+)
+
+/** 选表格后先读表头/样例，弹出选列；返回 false 阻止 el-upload 自己发请求 */
 async function onPickImportFile(file: File) {
   uploading.value = true
   try {
-    const created = await influencerApi.uploadScrapeBatch(file, batchPlatform.value)
+    stageFile.value = file
+    stagePreview.value = await influencerApi.previewImport(file)
+    stageForm.url_column = stagePreview.value.suggested_url_column ?? undefined
+    stageForm.has_header = true
+    stageVisible.value = true
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    uploading.value = false
+  }
+  return false
+}
+
+/** 按选定的主页链接列导入到暂存区 */
+async function submitStageUpload() {
+  if (!stageFile.value || stageForm.url_column === undefined) {
+    ElMessage.warning('请选择主页链接列')
+    return
+  }
+  uploading.value = true
+  try {
+    const created = await influencerApi.uploadScrapeBatch(stageFile.value, batchPlatform.value, {
+      url_column: stageForm.url_column,
+      has_header: stageForm.has_header,
+    })
     ElMessage.success(`已从表格导入 ${created.length} 条到待处理列表`)
+    stageVisible.value = false
+    stageFile.value = null
     filterPlatform.value = ''
     filterStatus.value = ''
     await loadTasks()
@@ -558,7 +596,6 @@ async function onPickImportFile(file: File) {
   } finally {
     uploading.value = false
   }
-  return false
 }
 
 async function deleteTask(row: InfluencerScrapeTask) {
@@ -1735,6 +1772,39 @@ onUnmounted(() => {
           @click="detailTask && saveTask(detailTask).then(() => (detailVisible = false))"
         >
           存入达人库
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="stageVisible" title="选择主页链接列" width="520px" append-to-body>
+      <el-form label-width="110px">
+        <el-form-item label="数据表">
+          <span style="font-size: 12px; color: #606266">
+            {{ stagePreview?.filename }}（{{ stagePreview?.total_rows }} 行）
+          </span>
+        </el-form-item>
+        <el-form-item label="首行是表头">
+          <el-switch v-model="stageForm.has_header" />
+        </el-form-item>
+        <el-form-item label="主页链接列" required>
+          <el-select
+            v-model="stageForm.url_column"
+            placeholder="选择哪一列是主页链接"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="c in stageColumnOptions"
+              :key="c.value"
+              :label="c.label"
+              :value="c.value"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="stageVisible = false">取消</el-button>
+        <el-button type="primary" :loading="uploading" @click="submitStageUpload">
+          导入到暂存
         </el-button>
       </template>
     </el-dialog>

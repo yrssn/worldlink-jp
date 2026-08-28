@@ -313,10 +313,16 @@ export const influencerApi = {
       data || {},
     ),
   /** 上传主页链接表格（xlsx / csv / txt）批量导入暂存 */
-  uploadScrapeBatch: (file: File, platform: ScrapePlatform | 'auto') => {
+  uploadScrapeBatch: (
+    file: File,
+    platform: ScrapePlatform | 'auto',
+    options?: { url_column?: number; has_header?: boolean },
+  ) => {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('platform', platform)
+    if (options?.url_column !== undefined) fd.append('url_column', String(options.url_column))
+    if (options?.has_header !== undefined) fd.append('has_header', String(options.has_header))
     return http.post<unknown, InfluencerScrapeTask[]>(
       '/influencers/scrape-profile/batch/upload',
       fd,
