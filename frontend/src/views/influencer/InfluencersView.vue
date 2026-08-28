@@ -64,7 +64,21 @@ async function loadPlatformOptions() {
   }
 }
 
-/** 悬浮展示的关联账号：社交账号表 + FB 主页（抓 FB 时只落在达人字段上） */
+/** 主页链接归一化：忽略协议 / www / 尾斜杠 / query 差异，用于判断是否同一个账号 */
+function normalizeUrl(url: string): string {
+  return url
+    .trim()
+    .toLowerCase()
+    .split(/[?#]/)[0]
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/+$/, '')
+}
+
+/**
+ * 列表展示的关联账号：社交账号表 + FB 主页（抓 FB 时只落在达人字段上）。
+ * FB 主页已经在社交账号表里登记过时不再重复显示。
+ */
 function accountRows(row: Influencer) {
   const rows = (row.accounts || []).map((a) => ({
     platform: platformNameMap.value[a.platform] || a.platform,
@@ -72,7 +86,11 @@ function accountRows(row: Influencer) {
     url: a.url || '',
     followers: a.followers ?? null,
   }))
-  if (row.fb_page_url || row.fb_followers != null) {
+  const fbUrl = normalizeUrl(row.fb_page_url || '')
+  const hasFbAccount = (row.accounts || []).some(
+    (a) => a.platform === 'facebook' && (!fbUrl || normalizeUrl(a.url || '') === fbUrl),
+  )
+  if (!hasFbAccount && (row.fb_page_url || row.fb_followers != null)) {
     rows.push({
       platform: platformNameMap.value.facebook || 'Facebook',
       handle: row.fb_page_title || '',
