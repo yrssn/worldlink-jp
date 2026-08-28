@@ -884,6 +884,19 @@ async function exportList() {
   })
 }
 
+/** 清空全部筛选条件并回到第一页 */
+function resetFilters() {
+  keyword.value = ''
+  statusFilter.value = ''
+  countryFilter.value = undefined
+  platformFilter.value = undefined
+  followersMin.value = undefined
+  followersMax.value = undefined
+  sort.value = 'id_desc'
+  page.value = 1
+  refresh()
+}
+
 /** 点击「粉丝数」列表头排序 */
 function onSortChange({ prop, order }: { prop: string; order: string | null }) {
   if (prop !== 'followers' || !order) sort.value = 'id_desc'
@@ -1077,6 +1090,7 @@ onUnmounted(() => {
         />
       </div>
       <el-button type="primary" @click="(page = 1), refresh()">搜索</el-button>
+      <el-button @click="resetFilters">重置</el-button>
     </div>
 
     <el-table v-loading="loading" :data="list" border @sort-change="onSortChange">
