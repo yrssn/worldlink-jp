@@ -391,14 +391,18 @@ const scrapeOptVisible = ref(false)
 const scrapeOptAutoSave = ref(true)
 const scrapeOptStatus = ref('pre_contact')
 /** row=单条，selected=勾选的行，all=当前筛选下全部待处理/失败 */
-const scrapeOptMode = ref<'row' | 'selected' | 'all'>('row')
+const scrapeOptMode = ref<'row' | 'selected' | 'all' | 'failed'>('row')
 const scrapeOptRow = ref<InfluencerScrapeTask | null>(null)
 
 const scrapeOptCount = computed(() => {
   if (scrapeOptMode.value === 'row') return 1
   if (scrapeOptMode.value === 'selected') return runnableSelected.value.length
+  if (scrapeOptMode.value === 'failed') return failedTasks.value.length
   return tasks.value.filter((t) => t.status === 'staged' || t.status === 'failed').length
 })
+
+/** 当前列表里抓取失败的任务（导入后链接抓不到的都在这） */
+const failedTasks = computed(() => tasks.value.filter((t) => t.status === 'failed'))
 
 const runnableSelected = computed(() =>
   selectedTasks.value.filter(
@@ -406,7 +410,10 @@ const runnableSelected = computed(() =>
   ),
 )
 
-function openScrapeOptions(mode: 'row' | 'selected' | 'all', row?: InfluencerScrapeTask) {
+function openScrapeOptions(
+  mode: 'row' | 'selected' | 'all' | 'failed',
+  row?: InfluencerScrapeTask,
+) {
   if (mode === 'selected' && !runnableSelected.value.length) {
     ElMessage.warning('请勾选要抓取的行（待处理/失败/已完成可重抓）')
     return
@@ -446,10 +453,10 @@ async function confirmScrape() {
     }
     return
   }
-  const rows =
-    scrapeOptMode.value === 'row' && scrapeOptRow.value
-      ? [scrapeOptRow.value]
-      : runnableSelected.value
+  let rows: InfluencerScrapeTask[]
+  if (scrapeOptMode.value === 'row' && scrapeOptRow.value) rows = [scrapeOptRow.value]
+  else if (scrapeOptMode.value === 'failed') rows = failedTasks.value.slice()
+  else rows = runnableSelected.value
   if (rows.length === 1) {
     runningTaskId.value = rows[0].id
   } else {
@@ -984,8 +991,11 @@ async function submitImport() {
       scrape: importForm.scrape,
     })
     ElMessage.success(
-      `导入完成：新增 ${r.created} 条，已存在 ${r.duplicated} 条` +
-        (r.scrape_tasks ? `，已发起 ${r.scrape_tasks} 条抓取（批次 ${r.batch}）` : ''),
+      `导入完成：新增 ${r.created} 条，已存在（已去重）${r.duplicated} 条` +
+        (r.skipped ? `，空链接跳过 ${r.skipped} 条` : '') +
+        (r.scrape_tasks
+          ? `，已发起 ${r.scrape_tasks} 条抓取（抓取失败的可在「抓取任务」里重跑）`
+          : ''),
     )
     importVisible.value = false
     page.value = 1
@@ -1469,6 +1479,15 @@ onUnmounted(() => {
           @click="openScrapeOptions('all')"
         >
           抓取全部待处理
+        </el-button>
+        <el-button
+          type="warning"
+          plain
+          :loading="batchRunning"
+          :disabled="failedTasks.length === 0"
+          @click="openScrapeOptions('failed')"
+        >
+          重跑失败（{{ failedTasks.length }}）
         </el-button>
         <el-button
           type="danger"

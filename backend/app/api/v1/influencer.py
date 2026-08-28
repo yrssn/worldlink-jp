@@ -878,6 +878,30 @@ def _looks_like_url_value(value: str) -> bool:
     return s.startswith("www.") and "/" in s
 
 
+def _url_variants(url: str) -> list[str]:
+    """主页链接的常见等价写法（http/https、带不带 www、带不带尾斜杠），用于查重。"""
+    base = influencer_service.normalize_fb_url(url)
+    if not base:
+        return []
+    for prefix in ("https://", "http://"):
+        if base.startswith(prefix):
+            base = base[len(prefix):]
+            break
+    hosts = [base]
+    if base.startswith("www."):
+        hosts.append(base[4:])
+    elif base.startswith(("m.", "web.")):
+        hosts.append(base.split(".", 1)[1])
+    else:
+        hosts.append(f"www.{base}")
+    return [
+        f"{scheme}{h}{suffix}"
+        for h in hosts
+        for scheme in ("https://", "http://")
+        for suffix in ("", "/")
+    ] + [url]
+
+
 def _to_followers(value: str) -> int | None:
     """把表格里的粉丝数（可能带逗号 / 万 / k / w 后缀）转成整数。"""
     text = (value or "").strip().lower().replace(",", "").replace(" ", "")
@@ -985,28 +1009,37 @@ async def import_influencers(
         if not url:
             skipped += 1
             continue
-        if url in seen:
+        key = influencer_service.normalize_fb_url(url)
+        if key in seen:
             duplicated += 1
             continue
-        seen.add(url)
+        seen.add(key)
         row_platform = plat if plat != "auto" else (detect_platform(url) or fallback)
         social = SocialPlatform(row_platform) if row_platform in {
             p.value for p in SocialPlatform
         } else SocialPlatform.other
 
-        if row_platform == "facebook":
-            existing = influencer_service.find_duplicate(
-                db, owner_id=user.id, fb_page_url=url, email=_cell(row, email_column) or None
-            )
-        else:
-            existing = influencer_service.find_duplicate_social(
-                db, owner_id=user.id, platform=social, url=url
-            )
+        # 查重容忍 http/https、www、尾斜杠、query 等写法差异
+        email = _cell(row, email_column) or None
+        existing = None
+        for variant in _url_variants(url):
+            if row_platform == "facebook":
+                existing = influencer_service.find_duplicate(
+                    db, owner_id=user.id, fb_page_url=variant
+                )
+            else:
+                existing = influencer_service.find_duplicate_social(
+                    db, owner_id=user.id, platform=social, url=variant
+                )
+            if existing:
+                break
+        if existing is None and email:
+            existing = influencer_service.find_duplicate(db, owner_id=user.id, email=email)
         inf = existing
         if inf is None:
             inf = Influencer(
                 display_name=_cell(row, name_column) or url,
-                email=_cell(row, email_column) or None,
+                email=email,
                 notes=_cell(row, notes_column) or None,
                 status=save_status,
                 source=InfluencerSource.manual,
