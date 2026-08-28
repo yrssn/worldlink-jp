@@ -1,7 +1,7 @@
 """Add pre-contact / analysis fields to FbGroupPost.
 
-Revision ID: 006
-Revises: 005
+Revision ID: 006b
+Revises: 006
 Create Date: 2026-06-11 09:30:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "006"
-down_revision = "005"
+revision = "006b"
+down_revision = "006"
 branch_labels = None
 depends_on = None
 

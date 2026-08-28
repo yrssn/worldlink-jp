@@ -1,7 +1,7 @@
 """Add fb_author_id + deleted_at (soft delete) to influencers.
 
 Revision ID: 007
-Revises: 006
+Revises: 006b
 Create Date: 2026-06-18 10:00:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "007"
-down_revision = "006"
+down_revision = "006b"
 branch_labels = None
 depends_on = None
 
