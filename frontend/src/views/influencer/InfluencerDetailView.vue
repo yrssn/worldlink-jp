@@ -66,6 +66,10 @@ const platformSelectOptions = computed<{ label: string; value: SocialPlatform }[
     ? platformOptions.value.map((p) => ({ label: p.name, value: p.platform }))
     : FALLBACK_PLATFORMS
 )
+/** 可给账号关联的平台（必须是「平台管理」里真实存在的记录） */
+const accountPlatformOptions = computed(() =>
+  platformOptions.value.filter((p) => p.platform_id != null)
+)
 const platformNameMap = computed<Record<string, string>>(() =>
   Object.fromEntries(platformSelectOptions.value.map((p) => [p.value, p.label]))
 )
@@ -102,6 +106,13 @@ async function addSocial() {
   await influencerApi.addSocial(id.value, socialForm)
   ElMessage.success('已添加')
   socialDialog.value = false
+  refresh()
+}
+
+/** 平台挂在账号上：改这里只影响这个社交账号的平台归属 */
+async function bindAccountPlatform(sid: number, platformId: number | undefined) {
+  await influencerApi.updateSocial(id.value, sid, { platform_id: platformId ?? null })
+  ElMessage.success('已更新关联平台')
   refresh()
 }
 
@@ -180,7 +191,25 @@ onMounted(() => {
     </div>
     <el-table :data="detail.social_accounts" border>
       <el-table-column label="平台" width="120">
-        <template #default="{ row }">{{ platformNameMap[row.platform] || row.platform }}</template>
+        <template #default="{ row }">{{ row.platform_name || platformNameMap[row.platform] || row.platform }}</template>
+      </el-table-column>
+      <el-table-column label="关联平台" width="180">
+        <template #default="{ row }">
+          <el-select
+            :model-value="row.platform_id ?? undefined"
+            clearable
+            placeholder="未关联"
+            size="small"
+            @change="(v: number | undefined) => bindAccountPlatform(row.id, v)"
+          >
+            <el-option
+              v-for="p in accountPlatformOptions"
+              :key="p.platform_id as number"
+              :label="p.name"
+              :value="p.platform_id as number"
+            />
+          </el-select>
+        </template>
       </el-table-column>
       <el-table-column prop="handle" label="账号/Handle" />
       <el-table-column label="链接">

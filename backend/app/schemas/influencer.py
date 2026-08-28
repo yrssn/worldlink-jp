@@ -11,6 +11,8 @@ from app.models.social_account import SocialPlatform
 
 class SocialAccountBase(BaseModel):
     platform: SocialPlatform
+    #: 关联「平台管理」里的平台 id，不传时按 platform 自动对齐
+    platform_id: Optional[int] = None
     handle: Optional[str] = None
     url: Optional[str] = None
     followers: Optional[int] = None
@@ -21,11 +23,23 @@ class SocialAccountCreate(SocialAccountBase):
     pass
 
 
+class SocialAccountUpdate(BaseModel):
+    """编辑单个社交账号（平台 / 账号 / 链接 / 粉丝）。"""
+
+    platform: Optional[SocialPlatform] = None
+    platform_id: Optional[int] = None
+    handle: Optional[str] = None
+    url: Optional[str] = None
+    followers: Optional[int] = None
+
+
 class SocialAccountOut(SocialAccountBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     influencer_id: int
+    #: 「平台管理」里的平台展示名（未关联时为 None）
+    platform_name: Optional[str] = None
     created_at: datetime
 
 

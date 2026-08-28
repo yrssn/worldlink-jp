@@ -49,6 +49,7 @@ from app.schemas.influencer import (
     PlatformOption,
     SocialAccountCreate,
     SocialAccountOut,
+    SocialAccountUpdate,
 )
 from app.services import apify_service, avatar_cache, influencer_service
 from app.utils.csv_export import build_csv, csv_response
@@ -115,17 +116,7 @@ def _platform_id_by_code(db: Session) -> dict[str, int]:
     以「代码」为主（用户可自行改代码来决定自动识别对齐到哪条平台），
     代码没填时退化用平台名称，避免新建平台忘了填代码就识别不出来。
     """
-    rows = db.query(BitBrowserPlatform.id, BitBrowserPlatform.name, BitBrowserPlatform.code).all()
-    mapping: dict[str, int] = {}
-    for pid, name, code in rows:
-        key = (name or "").strip().lower()
-        if key:
-            mapping.setdefault(key, pid)
-    for pid, _name, code in rows:
-        key = (code or "").strip().lower()
-        if key:
-            mapping[key] = pid
-    return mapping
+    return influencer_service.platform_id_by_code(db)
 
 
 def _bind_platform_by_name(db: Session, inf: Influencer, platform: str | None) -> None:
@@ -667,9 +658,10 @@ def create_influencer(
     db.add(inf)
     db.flush()
     for sa in payload.social_accounts or []:
-        db.add(
-            InfluencerSocialAccount(influencer_id=inf.id, **sa.model_dump())
-        )
+        fields = sa.model_dump()
+        if fields.get("platform_id") is None:
+            fields["platform_id"] = influencer_service.resolve_platform_id(db, sa.platform)
+        db.add(InfluencerSocialAccount(influencer_id=inf.id, **fields))
     db.commit()
     db.refresh(inf)
     return inf
@@ -1072,6 +1064,7 @@ async def import_influencers(
             url=url,
             followers=followers,
             keep_existing_url=True,
+            platform_id=match_platform_code(row_platform, platform_codes),
         )
         if scrape:
             scrapable = row_platform in SCRAPABLE_PLATFORMS
@@ -1545,8 +1538,39 @@ def add_social_account(
     inf = db.get(Influencer, iid)
     if not inf or (inf.owner_id != user.id and not is_admin(user)):
         raise HTTPException(status_code=404, detail="influencer not found")
-    sa = InfluencerSocialAccount(influencer_id=iid, **payload.model_dump())
+    fields = payload.model_dump()
+    if fields.get("platform_id") is None:
+        fields["platform_id"] = influencer_service.resolve_platform_id(db, payload.platform)
+    _ensure_platform_access(db, inf.owner_id, fields.get("platform_id"))
+    sa = InfluencerSocialAccount(influencer_id=iid, **fields)
     db.add(sa)
+    db.commit()
+    db.refresh(sa)
+    return sa
+
+
+@router.put("/{iid}/social-accounts/{sid}", response_model=SocialAccountOut)
+def update_social_account(
+    iid: int,
+    sid: int,
+    payload: SocialAccountUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """编辑社交账号：平台关联挂在账号上，改平台只影响这个账号。"""
+    inf = db.get(Influencer, iid)
+    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="influencer not found")
+    sa = db.get(InfluencerSocialAccount, sid)
+    if not sa or sa.influencer_id != iid:
+        raise HTTPException(status_code=404, detail="social account not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "platform_id" in data:
+        _ensure_platform_access(db, inf.owner_id, data["platform_id"])
+    for field, value in data.items():
+        setattr(sa, field, value)
+    if data.get("platform") and "platform_id" not in data:
+        sa.platform_id = influencer_service.resolve_platform_id(db, sa.platform)
     db.commit()
     db.refresh(sa)
     return sa

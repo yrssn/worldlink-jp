@@ -481,6 +481,7 @@ def create_influencer_from_form(
             InfluencerSocialAccount(
                 influencer_id=inf.id,
                 platform=SocialPlatform.facebook,
+                platform_id=resolve_platform_id(db, SocialPlatform.facebook),
                 handle=inf.fb_page_id,
                 url=inf.fb_page_url,
                 followers=inf.fb_followers,
@@ -610,6 +611,7 @@ def _create_from_ig_profile(
             InfluencerSocialAccount(
                 influencer_id=inf.id,
                 platform=SocialPlatform.instagram,
+                platform_id=resolve_platform_id(db, SocialPlatform.instagram),
                 handle=handle,
                 url=url,
                 followers=followers,
@@ -686,6 +688,36 @@ def create_influencer_from_ig_form(
     return inf, created
 
 
+def platform_id_by_code(db: Session) -> dict[str, int]:
+    """「平台管理」里的 ``{平台代码/名称小写: id}``，用于把账号平台对齐到平台字典。
+
+    以「代码」为主（用户可自行改代码决定对齐到哪条平台），代码没填时退化用平台名称。
+    """
+    from app.models.bitbrowser import BitBrowserPlatform
+
+    rows = db.query(BitBrowserPlatform.id, BitBrowserPlatform.name, BitBrowserPlatform.code).all()
+    mapping: dict[str, int] = {}
+    for pid, name, _code in rows:
+        key = (name or "").strip().lower()
+        if key:
+            mapping.setdefault(key, pid)
+    for pid, _name, code in rows:
+        key = (code or "").strip().lower()
+        if key:
+            mapping[key] = pid
+    return mapping
+
+
+def resolve_platform_id(db: Session, platform: SocialPlatform | str | None) -> Optional[int]:
+    """按平台规范名（facebook / instagram / ...）找「平台管理」里的平台 id。"""
+    from app.utils.platform_detect import match_platform_code
+
+    name = platform.value if isinstance(platform, SocialPlatform) else (platform or "")
+    if not name:
+        return None
+    return match_platform_code(name, platform_id_by_code(db))
+
+
 def upsert_social_account(
     db: Session,
     influencer_id: int,
@@ -694,6 +726,7 @@ def upsert_social_account(
     url: Optional[str] = None,
     followers: Optional[int] = None,
     keep_existing_url: bool = False,
+    platform_id: Optional[int] = None,
 ) -> Optional[InfluencerSocialAccount]:
     """写入/更新达人在某平台的账号（同平台按 handle/url 匹配已有记录）。
 
@@ -720,6 +753,8 @@ def upsert_social_account(
     if acc is None:
         acc = InfluencerSocialAccount(influencer_id=influencer_id, platform=platform)
         db.add(acc)
+    if acc.platform_id is None:
+        acc.platform_id = platform_id or resolve_platform_id(db, platform)
     acc.handle = handle or acc.handle
     if not (keep_existing_url and acc.url):
         acc.url = url or acc.url
@@ -827,6 +862,7 @@ def create_from_scrape(
             InfluencerSocialAccount(
                 influencer_id=inf.id,
                 platform=SocialPlatform.facebook,
+                platform_id=resolve_platform_id(db, SocialPlatform.facebook),
                 handle=inf.fb_page_id,
                 url=inf.fb_page_url,
                 followers=inf.fb_followers,
@@ -917,6 +953,7 @@ def create_from_group_post(
             InfluencerSocialAccount(
                 influencer_id=inf.id,
                 platform=SocialPlatform.facebook,
+                platform_id=resolve_platform_id(db, SocialPlatform.facebook),
                 handle=inf.fb_page_id,
                 url=inf.fb_page_url,
                 followers=inf.fb_followers,

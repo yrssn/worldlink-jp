@@ -17,6 +17,10 @@ export type SocialPlatform =
 export interface SocialAccount {
   id?: number
   platform: SocialPlatform
+  /** 关联「平台管理」里的平台 id（平台挂在账号上，一个达人可有多个平台账号） */
+  platform_id?: number | null
+  /** 「平台管理」里的平台展示名 */
+  platform_name?: string | null
   handle?: string | null
   url?: string | null
   followers?: number | null
@@ -333,6 +337,8 @@ export const influencerApi = {
     http.get<unknown, DmOutreachLog[]>(`/influencers/${id}/outreach-logs`),
   addSocial: (id: number, data: SocialAccount) =>
     http.post<unknown, SocialAccount>(`/influencers/${id}/social-accounts`, data),
+  updateSocial: (iid: number, sid: number, data: Partial<SocialAccount>) =>
+    http.put<unknown, SocialAccount>(`/influencers/${iid}/social-accounts/${sid}`, data),
   removeSocial: (iid: number, sid: number) =>
     http.delete(`/influencers/${iid}/social-accounts/${sid}`),
   /** 表格导入第一步：回显列名/样例，供选择主页链接列 */

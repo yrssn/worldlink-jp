@@ -81,7 +81,7 @@ function normalizeUrl(url: string): string {
  */
 function accountRows(row: Influencer) {
   const rows = (row.accounts || []).map((a) => ({
-    platform: platformNameMap.value[a.platform] || a.platform,
+    platform: a.platform_name || platformNameMap.value[a.platform] || a.platform,
     handle: a.handle || '',
     url: a.url || '',
     followers: a.followers ?? null,

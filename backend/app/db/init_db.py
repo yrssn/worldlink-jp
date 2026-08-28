@@ -42,6 +42,7 @@ def create_all() -> None:
     _ensure_influencer_platform_column()
     _ensure_influencer_country_column()
     _ensure_influencer_scrape_task_columns()
+    _ensure_social_account_platform_column()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -243,6 +244,29 @@ def _ensure_influencer_scrape_task_columns() -> None:
             "ADD INDEX ix_influencer_scrape_tasks_influencer_id (influencer_id)"
         )
     for sql in patches:
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_social_account_platform_column() -> None:
+    """为 influencer_social_accounts 补上 platform_id（平台关联到具体账号，对应 alembic 014）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "influencer_social_accounts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("influencer_social_accounts")}
+    if "platform_id" in cols:
+        return
+    for sql in (
+        "ALTER TABLE influencer_social_accounts ADD COLUMN platform_id INT NULL",
+        "ALTER TABLE influencer_social_accounts "
+        "ADD INDEX ix_influencer_social_accounts_platform_id (platform_id)",
+    ):
         try:
             logger.info("[schema-patch] {}", sql)
             with engine.begin() as conn:
