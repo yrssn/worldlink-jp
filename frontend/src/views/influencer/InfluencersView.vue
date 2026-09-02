@@ -1386,24 +1386,24 @@ onUnmounted(() => {
       <el-table-column label="建联进度" min-width="220">
         <template #default="{ row }">
           <el-input
-            :model-value="row.progress || ''"
+            v-model="row.progress"
             type="textarea"
             :autosize="{ minRows: 3, maxRows: 8 }"
             resize="vertical"
             placeholder="可直接填，如「已报价待回」"
-            @change="(v: string) => patchInfluencer(row, { progress: v.trim() || null })"
+            @change="(v: string) => patchInfluencer(row, { progress: (v || '').trim() || null })"
           />
         </template>
       </el-table-column>
       <el-table-column label="备注" min-width="260">
         <template #default="{ row }">
           <el-input
-            :model-value="row.notes || ''"
+            v-model="row.notes"
             type="textarea"
             :autosize="{ minRows: 4, maxRows: 10 }"
             resize="vertical"
             placeholder="可直接填"
-            @change="(v: string) => patchInfluencer(row, { notes: v.trim() || null })"
+            @change="(v: string) => patchInfluencer(row, { notes: (v || '').trim() || null })"
           />
         </template>
       </el-table-column>
