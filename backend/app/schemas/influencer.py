@@ -293,6 +293,8 @@ class ImportResultOut(BaseModel):
 
     total_rows: int
     created: int
+    #: 链接匹配到已有达人并补了资料的行数
+    updated: int = 0
     duplicated: int
     skipped: int
     scrape_tasks: int

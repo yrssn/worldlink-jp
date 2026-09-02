@@ -323,6 +323,8 @@ export interface ImportPreview {
 export interface ImportResult {
   total_rows: number
   created: number
+  /** 链接匹配到已有达人并补了资料 */
+  updated?: number
   duplicated: number
   skipped: number
   scrape_tasks: number
@@ -341,6 +343,8 @@ export interface ImportOptions {
   has_header?: boolean
   status?: string
   scrape?: boolean
+  /** false = 链接匹配不到已有达人时不新建，只补已有达人 */
+  create_missing?: boolean
   platform?: ScrapePlatform | 'auto'
   /** 链接识别不出平台时归为哪个平台，默认 other */
   fallback_platform?: ScrapePlatform | 'other'

@@ -1088,6 +1088,7 @@ const importForm = reactive({
   status: 'pre_contact',
   scrape: true,
   fallback_platform: 'other' as ScrapePlatform | 'other',
+  create_missing: true,
 })
 /** 字段 key -> 列下标（含 url），每个字段都可手动改 / 清空 */
 const importColumnMap = reactive<Record<string, number | undefined>>({})
@@ -1150,10 +1151,13 @@ async function submitImport() {
       status: importForm.status,
       scrape: importForm.scrape,
       fallback_platform: importForm.fallback_platform,
+      create_missing: importForm.create_missing,
     })
     ElMessage.success(
-      `导入完成：新增 ${r.created} 条，已存在（已去重）${r.duplicated} 条` +
-        (r.skipped ? `，空链接跳过 ${r.skipped} 条` : '') +
+      `导入完成：新增 ${r.created} 条，已有达人补资料 ${r.updated || 0} 条，无变化 ${r.duplicated} 条` +
+        (r.skipped
+          ? `，跳过 ${r.skipped} 条（空链接${importForm.create_missing ? '' : ' / 未匹配到已有达人'}）`
+          : '') +
         (r.scrape_tasks
           ? `，已发起 ${r.scrape_tasks} 条抓取（抓取失败的可在「抓取任务」里重跑）`
           : ''),
@@ -1168,23 +1172,6 @@ async function submitImport() {
   }
 }
 
-const cachingAvatars = ref(false)
-
-/** 把存量达人的远端头像下载到服务器，避免国内看图要挂代理 */
-async function cacheAvatars() {
-  cachingAvatars.value = true
-  try {
-    const r = await influencerApi.cacheAvatars()
-    ElMessage.success(
-      r.total
-        ? `已缓存 ${r.cached} 张头像${r.failed ? `，失败 ${r.failed} 张` : ''}`
-        : '没有需要缓存的远端头像',
-    )
-    refresh()
-  } finally {
-    cachingAvatars.value = false
-  }
-}
 
 async function remove(row: Influencer) {
   await ElMessageBox.confirm(`确认删除「${row.display_name}」？`, '提示', { type: 'warning' })
@@ -1214,7 +1201,6 @@ onUnmounted(() => {
         <el-button type="success" :icon="'Download'" @click="exportList">
           导出（CSV）
         </el-button>
-        <el-button :loading="cachingAvatars" @click="cacheAvatars">缓存头像到本机</el-button>
         <el-button type="warning" @click="openImport">导入存量数据</el-button>
         <el-button @click="openTaskDialog">抓取任务</el-button>
         <el-button type="primary" @click="openCreate">手工新增</el-button>
@@ -2053,6 +2039,13 @@ onUnmounted(() => {
             <span style="font-size: 12px; color: #909399">
               平台按链接自动识别（FB / IG / TikTok / 小红书 / YouTube / X / LINE），
               导入时同时写入达人和对应的社交账号记录
+            </span>
+          </el-form-item>
+          <el-form-item label="只更新已有">
+            <el-switch v-model="importForm.create_missing" :active-value="false" :inactive-value="true" />
+            <span style="margin-left: 10px; font-size: 12px; color: #909399">
+              按账号链接匹配已有达人（含之前导入 / 抓取时用的原始链接），命中只补空字段；
+              开启后匹配不到的行直接跳过，不新建记录
             </span>
           </el-form-item>
           <el-form-item label="导入后抓取">

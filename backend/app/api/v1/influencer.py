@@ -928,6 +928,48 @@ def _url_variants(url: str) -> list[str]:
     ] + [url]
 
 
+def _scrape_task_url_index(db: Session, owner_id: int) -> dict[str, tuple[int, int | None]]:
+    """之前导入 / 抓取任务用过的原始链接（归一化） -> 达人 id。
+
+    导入时填的是分享链接（如 facebook.com/share/xxx/），抓取后账号行的 url 会换成规范主页链接，
+    再次导入同一张表时只能靠任务表里留下的原始链接对回去。
+    """
+    rows = (
+        db.query(
+            InfluencerScrapeTask.url,
+            InfluencerScrapeTask.influencer_id,
+            InfluencerScrapeTask.social_account_id,
+        )
+        .filter(
+            InfluencerScrapeTask.owner_id == owner_id,
+            InfluencerScrapeTask.influencer_id.isnot(None),
+        )
+        .order_by(InfluencerScrapeTask.id.asc())
+        .all()
+    )
+    index: dict[str, tuple[int, int | None]] = {}
+    for url, iid, sid in rows:
+        norm = influencer_service.normalize_fb_url(url)
+        if norm and iid is not None:
+            index[norm] = (iid, sid)
+    return index
+
+
+def _find_by_task_url(
+    db: Session, index: dict[str, tuple[int, int | None]], norm_url: str
+) -> tuple[Influencer | None, int | None]:
+    hit = index.get(norm_url)
+    if hit is None:
+        return None, None
+    iid, sid = hit
+    inf = (
+        db.query(Influencer)
+        .filter(Influencer.id == iid, Influencer.deleted_at.is_(None))
+        .first()
+    )
+    return inf, (sid if inf is not None else None)
+
+
 def _handle_from_url(url: str) -> str | None:
     """从主页链接里取账号名（路径最后一段），取不到返回 ``None``。"""
     parts = influencer_service.normalize_fb_url(url).rsplit("/", 1)
@@ -1051,10 +1093,14 @@ async def import_influencers(
     platform: str = Form("auto", description="auto = 按链接自动识别平台"),
     fallback_platform: str = Form("other", description="识别不出平台的链接归为哪个平台"),
     batch: str | None = Form(None, description="抓取批次名，不传自动生成"),
+    create_missing: bool = Form(True, description="链接匹配不到已有达人时是否新建；False = 只补已有达人的资料"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """按选定的主页链接列导入存量数据：逐行建达人，可选建联状态与是否抓取。
+
+    已有达人按链接唯一匹配（关联账号链接、旧主表 fb_page_url、以及之前导入/抓取任务用过的原始链接，
+    归一化比对），命中则只补空字段不新建；``create_missing=False`` 时匹配不到的行直接跳过。
 
     scrape=True 时同时建好抓取任务并后台开跑，抓到的资料回填到对应达人（不重复建档）；
     暂不支持自动抓资料的平台（如 TikTok / 小红书）只建暂存任务，不会报错中断。
@@ -1100,9 +1146,10 @@ async def import_influencers(
     # 表头写「粉丝数量（K）」时，纯数字按千换算
     followers_in_k = "k" in col(header_row, "followers").lower()
 
-    created = duplicated = skipped = 0
+    created = duplicated = skipped = updated = 0
     seen: set[str] = set()
     tasks: list[InfluencerScrapeTask] = []
+    task_url_index = _scrape_task_url_index(db, user.id)
     for row in rows:
         url = col(row, "url")
         if not url:
@@ -1140,8 +1187,27 @@ async def import_influencers(
                 )
             if existing:
                 break
+        account_id: int | None = None
+        if existing is None:
+            existing, account_id = _find_by_task_url(db, task_url_index, key)
+        if existing is not None and account_id is None:
+            # 已有达人该平台只有一个账号时直接补到这一行，避免分享链接 vs 规范链接写法不同又建一行
+            same = (
+                db.query(InfluencerSocialAccount.id)
+                .filter(
+                    InfluencerSocialAccount.influencer_id == existing.id,
+                    InfluencerSocialAccount.platform == social,
+                )
+                .limit(2)
+                .all()
+            )
+            if len(same) == 1:
+                account_id = same[0][0]
         if existing is None and email:
             existing = influencer_service.find_duplicate(db, owner_id=user.id, email=email)
+        if existing is None and not create_missing:
+            skipped += 1
+            continue
         person = _import_person_fields(row, col, countries)
         result_status = influencer_import.parse_result_status(col(row, "result"))
         inf = existing
@@ -1159,10 +1225,18 @@ async def import_influencers(
             created += 1
         else:
             # 已有达人只补空值，不覆盖人工维护的数据
+            changed = False
             for k, v in person.items():
                 if v not in (None, "") and getattr(inf, k) in (None, ""):
                     setattr(inf, k, v)
-            duplicated += 1
+                    changed = True
+            if result_status and inf.status == InfluencerStatus.pre_contact and result_status != inf.status:
+                inf.status = result_status
+                changed = True
+            if changed:
+                updated += 1
+            else:
+                duplicated += 1
         followers = _to_followers(col(row, "followers"))
         if followers is not None and followers_in_k and not re.search(
             r"[a-z万]", col(row, "followers").lower()
@@ -1178,6 +1252,7 @@ async def import_influencers(
             keep_existing_url=True,
             platform_id=match_platform_code(row_platform, platform_codes),
             fields={"title": col(row, "title") or None},
+            account_id=account_id,
         )
         if scrape:
             scrapable = row_platform in SCRAPABLE_PLATFORMS
@@ -1207,6 +1282,7 @@ async def import_influencers(
     return ImportResultOut(
         total_rows=len(rows),
         created=created,
+        updated=updated,
         duplicated=duplicated,
         skipped=skipped,
         scrape_tasks=len(tasks),
