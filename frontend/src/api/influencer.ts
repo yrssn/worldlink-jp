@@ -57,7 +57,41 @@ export const SOCIAL_PLATFORM_OPTIONS: { value: SocialPlatform; label: string }[]
   { value: 'other', label: '其他' },
 ]
 
-export interface Influencer {
+/** 存量 Excel 表头对应的「人 / 建联」维度可选字段 */
+export interface InfluencerProfileFields {
+  /** KOL 编号 */
+  code?: string | null
+  /** KOL 公司名 */
+  company?: string | null
+  gender?: string | null
+  /** 建联负责人 */
+  contact_owner?: string | null
+  /** 落地负责人 */
+  landing_owner?: string | null
+  /** 来源渠道 */
+  source_channel?: string | null
+  contact_started_at?: string | null
+  planned_visit_at?: string | null
+  has_twitter?: boolean | null
+  twitter_channel?: string | null
+  group_name?: string | null
+}
+
+export const PROFILE_FIELD_LABELS: { key: keyof InfluencerProfileFields; label: string }[] = [
+  { key: 'code', label: 'KOL 编号' },
+  { key: 'company', label: 'KOL 公司名' },
+  { key: 'gender', label: '性别' },
+  { key: 'contact_owner', label: '建联负责人' },
+  { key: 'landing_owner', label: '落地负责人' },
+  { key: 'source_channel', label: '来源渠道' },
+  { key: 'contact_started_at', label: '建联开始日期' },
+  { key: 'planned_visit_at', label: '计划首次来访时间' },
+  { key: 'has_twitter', label: '是否推特' },
+  { key: 'twitter_channel', label: '推特渠道' },
+  { key: 'group_name', label: '群名称' },
+]
+
+export interface Influencer extends InfluencerProfileFields {
   id: number
   display_name: string
   real_name?: string | null
@@ -269,11 +303,21 @@ export interface ImportColumnPreview {
   looks_like_url: boolean
 }
 
+export interface ImportFieldOption {
+  key: string
+  label: string
+  required?: boolean
+}
+
 export interface ImportPreview {
   filename: string
   total_rows: number
   columns: ImportColumnPreview[]
   suggested_url_column?: number | null
+  /** 按表头名猜的 字段 key -> 列下标 */
+  suggested_columns?: Record<string, number>
+  /** 可映射字段清单（后端维护） */
+  fields?: ImportFieldOption[]
 }
 
 export interface ImportResult {
@@ -292,6 +336,8 @@ export interface ImportOptions {
   email_column?: number | null
   followers_column?: number | null
   notes_column?: number | null
+  /** 其余字段映射 JSON：{"code": 1, "company": 4, ...} */
+  column_map?: string
   has_header?: boolean
   status?: string
   scrape?: boolean

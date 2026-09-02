@@ -44,6 +44,7 @@ def create_all() -> None:
     _ensure_influencer_scrape_task_columns()
     _ensure_social_account_platform_column()
     _ensure_social_account_profile_columns()
+    _ensure_influencer_profile_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -324,6 +325,45 @@ def _ensure_social_account_profile_columns() -> None:
         patches.append(
             "ALTER TABLE influencer_social_accounts ADD INDEX ix_isa_url (url(191))"
         )
+    for sql in patches:
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+_INFLUENCER_PROFILE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("code", "VARCHAR(64) NULL"),
+    ("company", "VARCHAR(255) NULL"),
+    ("gender", "VARCHAR(16) NULL"),
+    ("contact_owner", "VARCHAR(64) NULL"),
+    ("landing_owner", "VARCHAR(64) NULL"),
+    ("source_channel", "VARCHAR(128) NULL"),
+    ("contact_started_at", "DATETIME NULL"),
+    ("planned_visit_at", "DATETIME NULL"),
+    ("has_twitter", "TINYINT(1) NULL"),
+    ("twitter_channel", "VARCHAR(128) NULL"),
+    ("group_name", "VARCHAR(255) NULL"),
+)
+
+
+def _ensure_influencer_profile_columns() -> None:
+    """为 influencers 补齐存量 Excel 表头对应的人/建联维度列（开发环境自动补；线上请手工执行 SQL）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "influencers" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("influencers")}
+    patches = [
+        f"ALTER TABLE influencers ADD COLUMN {name} {ddl}"
+        for name, ddl in _INFLUENCER_PROFILE_COLUMNS
+        if name not in cols
+    ]
+    if "code" not in cols:
+        patches.append("ALTER TABLE influencers ADD INDEX ix_influencers_code (code)")
     for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)

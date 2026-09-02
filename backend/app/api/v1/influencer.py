@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -27,6 +29,7 @@ from app.schemas.dm import DmOutreachLogOut
 from app.schemas.influencer import (
     AvatarCacheResult,
     ImportColumnPreview,
+    ImportFieldOut,
     ImportPreviewOut,
     ImportResultOut,
     InfluencerCreate,
@@ -52,7 +55,7 @@ from app.schemas.influencer import (
     SocialAccountScrapeRequest,
     SocialAccountUpdate,
 )
-from app.services import apify_service, avatar_cache, influencer_service
+from app.services import apify_service, avatar_cache, influencer_import, influencer_service
 from app.utils.csv_export import build_csv, csv_response
 from app.utils.platform_detect import (
     KNOWN_PLATFORMS,
@@ -345,6 +348,17 @@ INFLUENCER_CSV_COLUMNS = [
     ("类型", lambda r: r.platform_name or ""),
     ("建联进度", "progress"),
     ("建联用户", lambda r: r.owner_name or ""),
+    ("KOL 编号", "code"),
+    ("KOL 公司名", "company"),
+    ("性别", "gender"),
+    ("建联负责人", "contact_owner"),
+    ("落地负责人", "landing_owner"),
+    ("来源渠道", "source_channel"),
+    ("建联开始日期", "contact_started_at"),
+    ("计划首次来访时间", "planned_visit_at"),
+    ("是否推特", lambda r: "" if r.has_twitter is None else ("是" if r.has_twitter else "否")),
+    ("推特渠道", "twitter_channel"),
+    ("群名称", "group_name"),
     ("标签", "tags"),
     ("备注", "notes"),
     ("创建时间", "created_at"),
@@ -940,6 +954,37 @@ def _to_followers(value: str) -> int | None:
         return None
 
 
+def _import_person_fields(
+    row: list[str],
+    col: Callable[[list[str], str], str],
+    countries: dict[str, Country],
+) -> dict[str, object]:
+    """从一行表格取出落 ``influencers`` 的人/建联维度字段（空值不写）。"""
+    out: dict[str, object] = {}
+    for key in influencer_import.INFLUENCER_TEXT_FIELDS:
+        value = col(row, key)
+        if value:
+            out[key] = value
+    if "gender" in out:
+        out["gender"] = influencer_import.parse_gender(str(out["gender"]))
+    for key in influencer_import.INFLUENCER_DATE_FIELDS:
+        parsed = influencer_import.parse_date(col(row, key))
+        if parsed is not None:
+            out[key] = parsed
+    has_twitter = influencer_import.parse_bool(col(row, "has_twitter"))
+    if has_twitter is not None:
+        out["has_twitter"] = has_twitter
+    country_text = col(row, "country")
+    if country_text:
+        country = influencer_import.match_country(country_text, countries)
+        if country is not None:
+            out["country_id"] = country.id
+            out["country"] = country.code or country.name_zh
+        else:
+            out["country"] = country_text[:64]
+    return out
+
+
 @router.post("/import/preview", response_model=ImportPreviewOut)
 async def preview_import_table(
     file: UploadFile = File(..., description="存量数据表：xlsx / csv / txt"),
@@ -970,11 +1015,21 @@ async def preview_import_table(
             )
         )
     suggested = next((c.index for c in columns if c.looks_like_url), None)
+    suggested_columns = influencer_import.suggest_columns([_cell(header, i) for i in range(width)])
+    if suggested is not None:
+        suggested_columns["url"] = suggested
+    elif "url" in suggested_columns:
+        suggested = suggested_columns["url"]
     return ImportPreviewOut(
         filename=file.filename or "",
         total_rows=len(body),
         columns=columns,
         suggested_url_column=suggested,
+        suggested_columns=suggested_columns,
+        fields=[
+            ImportFieldOut(key=f.key, label=f.label, required=f.required)
+            for f in influencer_import.IMPORT_FIELDS
+        ],
     )
 
 
@@ -986,6 +1041,10 @@ async def import_influencers(
     email_column: int | None = Form(None, description="邮箱列下标"),
     followers_column: int | None = Form(None, description="粉丝数列下标"),
     notes_column: int | None = Form(None, description="备注列下标"),
+    column_map: str | None = Form(
+        None,
+        description='其余表头映射 JSON：{"code": 1, "company": 4, ...}，键见 /import/preview 的 fields',
+    ),
     has_header: bool = Form(True, description="首行是否为表头"),
     status: str = Form("pre_contact", description="导入后的建联状态"),
     scrape: bool = Form(False, description="是否对主页链接抓取内容"),
@@ -1014,6 +1073,7 @@ async def import_influencers(
     if len(content) > _MAX_IMPORT_BYTES:
         raise HTTPException(status_code=400, detail="文件过大（上限 5MB）")
     rows = _read_table(file.filename or "", content)
+    header_row: list[str] = rows[0] if (has_header and rows) else []
     if has_header:
         rows = rows[1:]
     if not rows:
@@ -1021,11 +1081,30 @@ async def import_influencers(
 
     batch_name = (batch or "").strip() or _default_batch_name(db, user.id)
     platform_codes = _platform_id_by_code(db)
+    countries = influencer_import.country_lookup(db)
+    cols = influencer_import.parse_column_map(column_map)
+    for key, idx in (
+        ("url", url_column),
+        ("name", name_column),
+        ("email", email_column),
+        ("followers", followers_column),
+        ("notes", notes_column),
+    ):
+        if idx is not None:
+            cols[key] = idx
+
+    def col(row: list[str], key: str) -> str:
+        idx = cols.get(key)
+        return _cell(row, idx) if idx is not None else ""
+
+    # 表头写「粉丝数量（K）」时，纯数字按千换算
+    followers_in_k = "k" in col(header_row, "followers").lower()
+
     created = duplicated = skipped = 0
     seen: set[str] = set()
     tasks: list[InfluencerScrapeTask] = []
     for row in rows:
-        url = _cell(row, url_column)
+        url = col(row, "url")
         if not url:
             skipped += 1
             continue
@@ -1034,13 +1113,21 @@ async def import_influencers(
             duplicated += 1
             continue
         seen.add(key)
-        row_platform = plat if plat != "auto" else (detect_platform(url) or fallback)
+        row_platform = (
+            plat
+            if plat != "auto"
+            else (
+                detect_platform(url)
+                or canonical_platform(col(row, "platform"))
+                or fallback
+            )
+        )
         social = SocialPlatform(row_platform) if row_platform in {
             p.value for p in SocialPlatform
         } else SocialPlatform.other
 
         # 查重容忍 http/https、www、尾斜杠、query 等写法差异
-        email = _cell(row, email_column) or None
+        email = col(row, "email") or None
         existing = None
         for variant in _url_variants(url):
             if row_platform == "facebook":
@@ -1055,23 +1142,32 @@ async def import_influencers(
                 break
         if existing is None and email:
             existing = influencer_service.find_duplicate(db, owner_id=user.id, email=email)
+        person = _import_person_fields(row, col, countries)
+        result_status = influencer_import.parse_result_status(col(row, "result"))
         inf = existing
         if inf is None:
             inf = Influencer(
-                display_name=_cell(row, name_column) or url,
-                email=email,
-                notes=_cell(row, notes_column) or None,
-                status=save_status,
+                display_name=col(row, "name") or col(row, "title") or url,
+                status=result_status or save_status,
                 source=InfluencerSource.manual,
                 owner_id=user.id,
                 platform_id=match_platform_code(row_platform, platform_codes),
+                **person,
             )
             db.add(inf)
             db.flush()
             created += 1
         else:
+            # 已有达人只补空值，不覆盖人工维护的数据
+            for k, v in person.items():
+                if v not in (None, "") and getattr(inf, k) in (None, ""):
+                    setattr(inf, k, v)
             duplicated += 1
-        followers = _to_followers(_cell(row, followers_column))
+        followers = _to_followers(col(row, "followers"))
+        if followers is not None and followers_in_k and not re.search(
+            r"[a-z万]", col(row, "followers").lower()
+        ):
+            followers *= 1000
         account = influencer_service.upsert_social_account(
             db,
             inf.id,
@@ -1081,6 +1177,7 @@ async def import_influencers(
             followers=followers,
             keep_existing_url=True,
             platform_id=match_platform_code(row_platform, platform_codes),
+            fields={"title": col(row, "title") or None},
         )
         if scrape:
             scrapable = row_platform in SCRAPABLE_PLATFORMS

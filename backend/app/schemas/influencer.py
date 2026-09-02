@@ -66,7 +66,23 @@ class SocialAccountOut(SocialAccountBase):
     updated_at: Optional[datetime] = None
 
 
-class InfluencerBase(BaseModel):
+class InfluencerProfileFields(BaseModel):
+    """存量 Excel 表头对应的「人 / 建联」维度可选字段（KOL 编号 / 公司 / 性别 / 负责人 / 日期…）。"""
+
+    code: Optional[str] = Field(default=None, max_length=64, description="KOL 编号")
+    company: Optional[str] = Field(default=None, max_length=255, description="KOL 公司名")
+    gender: Optional[str] = Field(default=None, max_length=16)
+    contact_owner: Optional[str] = Field(default=None, max_length=64, description="建联负责人")
+    landing_owner: Optional[str] = Field(default=None, max_length=64, description="落地负责人")
+    source_channel: Optional[str] = Field(default=None, max_length=128, description="来源渠道")
+    contact_started_at: Optional[datetime] = Field(default=None, description="建联开始日期")
+    planned_visit_at: Optional[datetime] = Field(default=None, description="计划首次来访时间")
+    has_twitter: Optional[bool] = Field(default=None, description="是否推特")
+    twitter_channel: Optional[str] = Field(default=None, max_length=128, description="推特渠道")
+    group_name: Optional[str] = Field(default=None, max_length=255, description="群名称")
+
+
+class InfluencerBase(InfluencerProfileFields):
     display_name: str = Field(..., max_length=255)
     real_name: Optional[str] = None
     bio: Optional[str] = None
@@ -96,7 +112,7 @@ class InfluencerCreate(InfluencerBase):
     social_accounts: Optional[list[SocialAccountCreate]] = None
 
 
-class InfluencerUpdate(BaseModel):
+class InfluencerUpdate(InfluencerProfileFields):
     display_name: Optional[str] = None
     real_name: Optional[str] = None
     bio: Optional[str] = None
@@ -252,6 +268,12 @@ class ImportColumnPreview(BaseModel):
     looks_like_url: bool = False
 
 
+class ImportFieldOut(BaseModel):
+    key: str
+    label: str
+    required: bool = False
+
+
 class ImportPreviewOut(BaseModel):
     """表格导入第一步：回显列名/样例，交由用户选择主页链接列。"""
 
@@ -260,6 +282,10 @@ class ImportPreviewOut(BaseModel):
     columns: list[ImportColumnPreview] = []
     #: 猜测的主页链接列下标（用户可改）
     suggested_url_column: Optional[int] = None
+    #: 按表头名猜的字段 -> 列下标（键见 IMPORT_FIELDS，用户可改）
+    suggested_columns: dict[str, int] = {}
+    #: 可映射的字段清单（key + 中文名），前端据此渲染列映射
+    fields: list[ImportFieldOut] = []
 
 
 class ImportResultOut(BaseModel):

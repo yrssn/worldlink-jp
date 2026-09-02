@@ -36,6 +36,23 @@ ALTER TABLE influencer_social_accounts
   ADD INDEX ix_isa_page_id (page_id),
   ADD INDEX ix_isa_url (url(191));
 
+-- 主表补齐存量 Excel 表头对应的「人 / 建联」维度字段
+-- （KOL 编号 / 公司名 / 性别 / 建联负责人 / 落地负责人 / 来源渠道 / 建联开始日期 /
+--   计划首次来访时间 / 是否推特 / 推特渠道 / 群名称）
+ALTER TABLE influencers
+  ADD COLUMN code               VARCHAR(64)  NULL COMMENT 'KOL 编号',
+  ADD COLUMN company            VARCHAR(255) NULL COMMENT 'KOL 公司名',
+  ADD COLUMN gender             VARCHAR(16)  NULL COMMENT '性别',
+  ADD COLUMN contact_owner      VARCHAR(64)  NULL COMMENT '建联负责人',
+  ADD COLUMN landing_owner      VARCHAR(64)  NULL COMMENT '落地负责人',
+  ADD COLUMN source_channel     VARCHAR(128) NULL COMMENT '来源渠道',
+  ADD COLUMN contact_started_at DATETIME     NULL COMMENT '建联开始日期',
+  ADD COLUMN planned_visit_at   DATETIME     NULL COMMENT '计划首次来访时间',
+  ADD COLUMN has_twitter        TINYINT(1)   NULL COMMENT '是否推特',
+  ADD COLUMN twitter_channel    VARCHAR(128) NULL COMMENT '推特渠道',
+  ADD COLUMN group_name         VARCHAR(255) NULL COMMENT '群名称',
+  ADD INDEX ix_influencers_code (code);
+
 -- ---------------------------------------------------------------------------
 -- 2) 回填 fb_* → Facebook 关联账号
 --    归一化比对：忽略 http/https、www.、尾斜杠、?query/#fragment，忽略大小写

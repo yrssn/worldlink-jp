@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -40,6 +41,24 @@ class Influencer(Base, TimestampMixin):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     real_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 存量 Excel 表头对应的「人 / 建联」维度字段
+    #: KOL 编号（如 LXDRB001）
+    code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    #: KOL 公司名
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: 建联负责人 / 落地负责人（自由文本，与系统用户 owner 无强关联）
+    contact_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    landing_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 来源渠道（如「马总推荐」）
+    source_channel: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    contact_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    planned_visit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: 是否已拉推特（群）/ 推特渠道 / 群名称
+    has_twitter: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    twitter_channel: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    group_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)

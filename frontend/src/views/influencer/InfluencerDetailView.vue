@@ -5,12 +5,15 @@ import { ElMessage } from 'element-plus'
 import {
   influencerApi,
   type DmOutreachLog,
+  PROFILE_FIELD_LABELS,
   type InfluencerDetail,
+  type InfluencerProfileFields as ProfileFields,
   type InfluencerSourcePost,
   type PlatformOption,
   type SocialAccount,
   type SocialPlatform
 } from '@/api/influencer'
+import InfluencerProfileFields from './InfluencerProfileFields.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -235,6 +238,68 @@ async function bindAccountPlatform(sid: number, platformId: number | undefined) 
   refresh()
 }
 
+// ─── 达人基本资料编辑（人 / 建联维度，含 KOL 编号 / 公司 / 负责人 / 日期…）──────────
+const profileDialog = ref(false)
+const profileSaving = ref(false)
+const profileForm = reactive<Partial<InfluencerDetail>>({})
+
+function openEditProfile() {
+  if (!detail.value) return
+  const d = detail.value
+  Object.assign(profileForm, {
+    display_name: d.display_name,
+    real_name: d.real_name ?? '',
+    email: d.email ?? '',
+    phone: d.phone ?? '',
+    website: d.website ?? '',
+    city: d.city ?? '',
+    address: d.address ?? '',
+    bio: d.bio ?? '',
+    notes: d.notes ?? '',
+    progress: d.progress ?? '',
+    code: d.code ?? '',
+    company: d.company ?? '',
+    gender: d.gender ?? null,
+    contact_owner: d.contact_owner ?? '',
+    landing_owner: d.landing_owner ?? '',
+    source_channel: d.source_channel ?? '',
+    contact_started_at: d.contact_started_at ?? null,
+    planned_visit_at: d.planned_visit_at ?? null,
+    has_twitter: d.has_twitter ?? null,
+    twitter_channel: d.twitter_channel ?? '',
+    group_name: d.group_name ?? '',
+  })
+  profileDialog.value = true
+}
+
+async function saveProfile() {
+  if (!profileForm.display_name) {
+    ElMessage.warning('请填写昵称')
+    return
+  }
+  profileSaving.value = true
+  try {
+    const payload: Partial<InfluencerDetail> = {}
+    for (const [k, v] of Object.entries(profileForm)) {
+      ;(payload as Record<string, unknown>)[k] = v === '' ? null : v
+    }
+    await influencerApi.update(id.value, payload)
+    ElMessage.success('已保存')
+    profileDialog.value = false
+    refresh()
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+function profileValue(key: keyof ProfileFields): string {
+  const v = detail.value?.[key]
+  if (v === null || v === undefined || v === '') return '—'
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  if (key === 'contact_started_at' || key === 'planned_visit_at') return String(v).slice(0, 10)
+  return String(v)
+}
+
 async function removeSocial(sid: number) {
   await influencerApi.removeSocial(id.value, sid)
   ElMessage.success('已删除')
@@ -249,7 +314,11 @@ onMounted(() => {
 
 <template>
   <div class="page-card" v-if="detail">
-    <el-page-header @back="router.back()" :content="detail.display_name" />
+    <el-page-header @back="router.back()" :content="detail.display_name">
+      <template #extra>
+        <el-button type="primary" size="small" @click="openEditProfile">编辑资料</el-button>
+      </template>
+    </el-page-header>
     <el-descriptions :column="3" border style="margin-top: 16px">
       <el-descriptions-item label="昵称">
         <div style="display: flex; align-items: center; gap: 8px">
@@ -289,9 +358,77 @@ onMounted(() => {
       <el-descriptions-item label="网站">
         <a v-if="detail.website" :href="detail.website" target="_blank">{{ detail.website }}</a>
       </el-descriptions-item>
+      <el-descriptions-item label="地址" :span="2">{{ detail.address || '—' }}</el-descriptions-item>
+      <el-descriptions-item label="建联进度">{{ detail.progress || '—' }}</el-descriptions-item>
+      <el-descriptions-item
+        v-for="f in PROFILE_FIELD_LABELS"
+        :key="f.key"
+        :label="f.label"
+      >
+        {{ profileValue(f.key) }}
+      </el-descriptions-item>
       <el-descriptions-item label="简介" :span="3">{{ detail.bio }}</el-descriptions-item>
       <el-descriptions-item label="备注" :span="3">{{ detail.notes }}</el-descriptions-item>
     </el-descriptions>
+
+    <el-dialog v-model="profileDialog" title="编辑达人资料" width="760px" top="4vh">
+      <el-form label-width="110px" style="max-height: 70vh; overflow-y: auto; padding-right: 8px">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="昵称" required>
+              <el-input v-model="profileForm.display_name" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="真实姓名">
+              <el-input v-model="profileForm.real_name" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="邮箱">
+              <el-input v-model="profileForm.email" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="电话">
+              <el-input v-model="profileForm.phone" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="常居地">
+              <el-input v-model="profileForm.city" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="网站">
+              <el-input v-model="profileForm.website" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="地址">
+              <el-input v-model="profileForm.address" placeholder="常居地址 / 收发地址" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="建联进度">
+              <el-input v-model="profileForm.progress" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-divider content-position="left">建联资料</el-divider>
+        <InfluencerProfileFields v-model="profileForm" />
+        <el-form-item label="简介">
+          <el-input v-model="profileForm.bio" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="profileForm.notes" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="profileDialog = false">取消</el-button>
+        <el-button type="primary" :loading="profileSaving" @click="saveProfile">保存</el-button>
+      </template>
+    </el-dialog>
 
     <div style="margin: 20px 0 12px; display: flex; justify-content: space-between">
       <h4 style="margin: 0">社交账号</h4>

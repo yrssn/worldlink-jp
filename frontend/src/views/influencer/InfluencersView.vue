@@ -8,6 +8,7 @@ import {
   PLATFORM_LABELS,
   SCRAPABLE_PLATFORMS,
   SOCIAL_PLATFORM_OPTIONS,
+  type ImportFieldOption,
   type ImportPreview,
   type Influencer,
   type InfluencerScrapeTask,
@@ -17,6 +18,7 @@ import {
   type ScrapeTaskResult,
   type SocialAccount,
 } from '@/api/influencer'
+import InfluencerProfileFields from './InfluencerProfileFields.vue'
 import {
   bitbrowserApi,
   type BitBrowserPlatform,
@@ -1001,7 +1003,18 @@ function openCreate() {
     platform_id: undefined,
     status: 'pre_contact',
     avatar_url: '',
-    cover_url: ''
+    cover_url: '',
+    code: '',
+    company: '',
+    gender: null,
+    contact_owner: '',
+    landing_owner: '',
+    source_channel: '',
+    contact_started_at: null,
+    planned_visit_at: null,
+    has_twitter: null,
+    twitter_channel: '',
+    group_name: ''
   })
   resetFormAccount()
   resetScrape()
@@ -1017,7 +1030,11 @@ async function submit() {
   if (formAccount.url || formAccount.handle || formAccount.page_id) {
     social_accounts.push({ ...formAccount, url: formAccount.url || null })
   }
-  await influencerApi.create({ ...form, social_accounts })
+  const payload: Partial<Influencer> = {}
+  for (const [k, v] of Object.entries(form)) {
+    ;(payload as Record<string, unknown>)[k] = v === '' ? null : v
+  }
+  await influencerApi.create({ ...payload, social_accounts })
   ElMessage.success('已新增')
   dialogVisible.value = false
   refresh()
@@ -1067,16 +1084,14 @@ const importPreview = ref<ImportPreview | null>(null)
 const importLoading = ref(false)
 const importSubmitting = ref(false)
 const importForm = reactive({
-  url_column: undefined as number | undefined,
-  name_column: undefined as number | undefined,
-  email_column: undefined as number | undefined,
-  followers_column: undefined as number | undefined,
-  notes_column: undefined as number | undefined,
   has_header: true,
   status: 'pre_contact',
   scrape: true,
   fallback_platform: 'other' as ScrapePlatform | 'other',
 })
+/** 字段 key -> 列下标（含 url），每个字段都可手动改 / 清空 */
+const importColumnMap = reactive<Record<string, number | undefined>>({})
+const importFields = computed<ImportFieldOption[]>(() => importPreview.value?.fields || [])
 
 const importColumnOptions = computed(() =>
   (importPreview.value?.columns || []).map((c) => ({
@@ -1089,16 +1104,12 @@ function openImport() {
   importFile.value = null
   importPreview.value = null
   Object.assign(importForm, {
-    url_column: undefined,
-    name_column: undefined,
-    email_column: undefined,
-    followers_column: undefined,
-    notes_column: undefined,
     has_header: true,
     status: 'pre_contact',
     scrape: true,
     fallback_platform: 'other',
   })
+  for (const k of Object.keys(importColumnMap)) delete importColumnMap[k]
   importVisible.value = true
 }
 
@@ -1109,7 +1120,9 @@ async function onPickImportTable(file: File) {
   try {
     const preview = await influencerApi.previewImport(file)
     importPreview.value = preview
-    importForm.url_column = preview.suggested_url_column ?? undefined
+    for (const k of Object.keys(importColumnMap)) delete importColumnMap[k]
+    Object.assign(importColumnMap, preview.suggested_columns || {})
+    if (preview.suggested_url_column != null) importColumnMap.url = preview.suggested_url_column
   } catch {
     importPreview.value = null
   } finally {
@@ -1119,18 +1132,20 @@ async function onPickImportTable(file: File) {
 }
 
 async function submitImport() {
-  if (!importFile.value || importForm.url_column === undefined) {
-    ElMessage.warning('请先上传表格并选择主页链接列')
+  const urlColumn = importColumnMap.url
+  if (!importFile.value || urlColumn === undefined) {
+    ElMessage.warning('请先上传表格并选择「账号链接」对应的列')
     return
   }
   importSubmitting.value = true
   try {
+    const mapping: Record<string, number> = {}
+    for (const [k, v] of Object.entries(importColumnMap)) {
+      if (k !== 'url' && typeof v === 'number') mapping[k] = v
+    }
     const r = await influencerApi.importTable(importFile.value, {
-      url_column: importForm.url_column,
-      name_column: importForm.name_column,
-      email_column: importForm.email_column,
-      followers_column: importForm.followers_column,
-      notes_column: importForm.notes_column,
+      url_column: urlColumn,
+      column_map: JSON.stringify(mapping),
       has_header: importForm.has_header,
       status: importForm.status,
       scrape: importForm.scrape,
@@ -1579,6 +1594,8 @@ onUnmounted(() => {
         <el-form-item label="建联进度">
           <el-input v-model="form.progress" placeholder="如「已报价待回」，列表里也可直接改" />
         </el-form-item>
+        <el-divider content-position="left">建联资料（KOL 编号 / 公司 / 负责人 / 日期…）</el-divider>
+        <InfluencerProfileFields v-model="form" />
         <el-form-item label="状态">
           <el-select v-model="form.status" style="width: 100%">
             <el-option v-for="o in STATUS_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
@@ -1970,8 +1987,8 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="importVisible" title="导入存量数据" width="640px">
-      <el-form label-width="120px" v-loading="importLoading">
+    <el-dialog v-model="importVisible" title="导入存量数据" width="720px" top="4vh">
+      <el-form label-width="150px" v-loading="importLoading" style="max-height: 70vh; overflow-y: auto; padding-right: 8px">
         <el-form-item label="数据表">
           <el-upload
             :show-file-list="false"
@@ -1988,31 +2005,20 @@ onUnmounted(() => {
           <el-form-item label="首行是表头">
             <el-switch v-model="importForm.has_header" />
           </el-form-item>
-          <el-form-item label="主页链接列" required>
-            <el-select v-model="importForm.url_column" placeholder="选择哪一列是主页链接" style="width: 100%">
-              <el-option
-                v-for="c in importColumnOptions"
-                :key="c.value"
-                :label="c.label"
-                :value="c.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="昵称列">
-            <el-select v-model="importForm.name_column" clearable placeholder="可选" style="width: 100%">
-              <el-option
-                v-for="c in importColumnOptions"
-                :key="c.value"
-                :label="c.label"
-                :value="c.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="粉丝数列">
+          <el-divider content-position="left">
+            表头 → 字段映射（已按表头名自动预选，可逐个修改；不导入的字段清空即可）
+          </el-divider>
+          <el-form-item
+            v-for="f in importFields"
+            :key="f.key"
+            :label="f.label"
+            :required="!!f.required"
+          >
             <el-select
-              v-model="importForm.followers_column"
-              clearable
-              placeholder="可选"
+              v-model="importColumnMap[f.key]"
+              :clearable="!f.required"
+              filterable
+              :placeholder="f.required ? '必选' : '不导入'"
               style="width: 100%"
             >
               <el-option
@@ -2023,26 +2029,7 @@ onUnmounted(() => {
               />
             </el-select>
           </el-form-item>
-          <el-form-item label="邮箱列">
-            <el-select v-model="importForm.email_column" clearable placeholder="可选" style="width: 100%">
-              <el-option
-                v-for="c in importColumnOptions"
-                :key="c.value"
-                :label="c.label"
-                :value="c.value"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="备注列">
-            <el-select v-model="importForm.notes_column" clearable placeholder="可选" style="width: 100%">
-              <el-option
-                v-for="c in importColumnOptions"
-                :key="c.value"
-                :label="c.label"
-                :value="c.value"
-              />
-            </el-select>
-          </el-form-item>
+          <el-divider />
           <el-form-item label="导入后状态">
             <el-select v-model="importForm.status" style="width: 100%">
               <el-option
