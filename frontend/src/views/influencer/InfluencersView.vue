@@ -3,14 +3,19 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  accountFromScrapeResult,
   influencerApi,
   PLATFORM_LABELS,
+  SCRAPABLE_PLATFORMS,
+  SOCIAL_PLATFORM_OPTIONS,
   type ImportPreview,
   type Influencer,
   type InfluencerScrapeTask,
   type PlatformDetectItem,
   type PlatformOption,
   type ScrapePlatform,
+  type ScrapeTaskResult,
+  type SocialAccount,
 } from '@/api/influencer'
 import {
   bitbrowserApi,
@@ -36,7 +41,7 @@ const statusFilter = ref<string>('')
 /** 国家筛选：0 = 未关联 */
 const countryFilter = ref<number | undefined>(undefined)
 const platformFilter = ref<number | undefined>(undefined)
-/** 粉丝数区间筛选（口径：FB 粉丝与各关联账号粉丝取最大值） */
+/** 粉丝数区间筛选（口径：各关联账号粉丝取最大值） */
 const followersMin = ref<number | undefined>(undefined)
 const followersMax = ref<number | undefined>(undefined)
 const sort = ref<'id_desc' | 'followers_desc' | 'followers_asc'>('id_desc')
@@ -64,41 +69,93 @@ async function loadPlatformOptions() {
   }
 }
 
-/** 主页链接归一化：忽略协议 / www / 尾斜杠 / query 差异，用于判断是否同一个账号 */
-function normalizeUrl(url: string): string {
-  return url
-    .trim()
-    .toLowerCase()
-    .split(/[?#]/)[0]
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .replace(/\/+$/, '')
-}
-
-/**
- * 列表展示的关联账号：社交账号表 + FB 主页（抓 FB 时只落在达人字段上）。
- * FB 主页已经在社交账号表里登记过时不再重复显示。
- */
+/** 列表展示的关联账号：平台 + 账号名（title 优先，其次 handle）+ 链接 + 粉丝 */
 function accountRows(row: Influencer) {
-  const rows = (row.accounts || []).map((a) => ({
+  return (row.accounts || []).map((a) => ({
     platform: a.platform_name || platformNameMap.value[a.platform] || a.platform,
-    handle: a.handle || '',
+    handle: a.title || a.handle || '',
     url: a.url || '',
     followers: a.followers ?? null,
   }))
-  const fbUrl = normalizeUrl(row.fb_page_url || '')
-  const hasFbAccount = (row.accounts || []).some(
-    (a) => a.platform === 'facebook' && (!fbUrl || normalizeUrl(a.url || '') === fbUrl),
-  )
-  if (!hasFbAccount && (row.fb_page_url || row.fb_followers != null)) {
-    rows.push({
-      platform: platformNameMap.value.facebook || 'Facebook',
-      handle: row.fb_page_title || '',
-      url: row.fb_page_url || '',
-      followers: row.fb_followers ?? null,
-    })
+}
+
+// ─── 列表「一键抓取」：选中某条 FB / IG 关联账号链接后抓取，结果回写到该账号 ───
+const quickScrapeVisible = ref(false)
+const quickScrapeRow = ref<Influencer | null>(null)
+const quickScrapeAccountId = ref<number | undefined>(undefined)
+const quickScrapeStarting = ref(false)
+const quickScrapeTask = ref<InfluencerScrapeTask | null>(null)
+let quickScrapeTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 可一键抓取的账号：仅 Facebook / Instagram，且要有链接（IG 可只有用户名） */
+const quickScrapeAccounts = computed<SocialAccount[]>(() =>
+  (quickScrapeRow.value?.accounts || []).filter(
+    (a) =>
+      (SCRAPABLE_PLATFORMS as string[]).includes(a.platform) &&
+      (a.url || (a.platform === 'instagram' && a.handle)),
+  ),
+)
+
+function stopQuickScrapePolling() {
+  if (quickScrapeTimer) {
+    clearTimeout(quickScrapeTimer)
+    quickScrapeTimer = null
   }
-  return rows
+}
+
+function openQuickScrape(row: Influencer) {
+  stopQuickScrapePolling()
+  quickScrapeRow.value = row
+  quickScrapeTask.value = null
+  // 必须由用户明确选中要抓的账号链接，不默认选
+  quickScrapeAccountId.value = undefined
+  quickScrapeVisible.value = true
+}
+
+function closeQuickScrape() {
+  stopQuickScrapePolling()
+  quickScrapeRow.value = null
+  quickScrapeTask.value = null
+}
+
+async function pollQuickScrape() {
+  const t = quickScrapeTask.value
+  if (!t) return
+  try {
+    const next = await influencerApi.getScrapeProfile(t.id)
+    quickScrapeTask.value = next
+    if (next.status === 'done') {
+      stopQuickScrapePolling()
+      ElMessage.success('抓取完成，已回写到该关联账号')
+      refresh()
+    } else if (next.status === 'failed') {
+      stopQuickScrapePolling()
+      ElMessage.warning(next.error || '抓取失败')
+    } else {
+      quickScrapeTimer = setTimeout(pollQuickScrape, 3000)
+    }
+  } catch {
+    stopQuickScrapePolling()
+  }
+}
+
+async function startQuickScrape() {
+  const row = quickScrapeRow.value
+  const sid = quickScrapeAccountId.value
+  if (!row || sid == null) {
+    ElMessage.warning('请先选择要抓取的账号链接')
+    return
+  }
+  quickScrapeStarting.value = true
+  try {
+    quickScrapeTask.value = await influencerApi.scrapeSocial(row.id, sid)
+    ElMessage.success('已发起抓取，完成后自动回写到该账号')
+    quickScrapeTimer = setTimeout(pollQuickScrape, 2000)
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    quickScrapeStarting.value = false
+  }
 }
 
 /** 达人行上展示的国家文案：优先用关联国家的「中文 / English」，否则回退旧文本 */
@@ -176,19 +233,51 @@ function resetScrape() {
   scrapeError.value = ''
 }
 
+/** 抓取结果里落到主表的「人」维度字段；账号维度（fb_* / ig_*）单独填到 formAccount */
 const SCRAPE_FILL_KEYS: (keyof Influencer)[] = [
-  'display_name', 'bio', 'address', 'phone', 'email', 'website', 'messenger',
-  'fb_page_id', 'fb_page_url', 'fb_page_title', 'fb_categories', 'fb_followers',
-  'fb_likes', 'fb_rating', 'fb_rating_count', 'avatar_url', 'cover_url'
+  'display_name', 'real_name', 'bio', 'address', 'phone', 'email', 'website',
+  'avatar_url', 'cover_url'
 ]
 
-function applyScrapeResult(result: Partial<Influencer> | null | undefined) {
+/** 手工新增时一并建的关联账号（自动抓取结果回填到这里） */
+const formAccount = reactive<SocialAccount>({ platform: 'facebook', url: '', followers: null })
+
+function resetFormAccount() {
+  Object.assign(formAccount, {
+    platform: 'facebook',
+    platform_id: null,
+    title: null,
+    handle: null,
+    url: '',
+    followers: null,
+    page_id: null,
+    categories: null,
+    likes: null,
+    rating: null,
+    rating_count: null,
+    checkins_mentions: null,
+    page_created_at: null,
+    ad_library_id: null,
+    ad_status: null,
+    messenger: null,
+    avatar_url: null,
+    notes: null,
+  } satisfies SocialAccount)
+}
+
+function applyScrapeResult(result: ScrapeTaskResult | null | undefined) {
   if (!result) return
   for (const key of SCRAPE_FILL_KEYS) {
     const v = result[key]
     if (v !== null && v !== undefined && v !== '') {
       // 抓取结果覆盖对应字段
       ;(form as Record<string, unknown>)[key] = v
+    }
+  }
+  const acc = accountFromScrapeResult(result)
+  for (const [k, v] of Object.entries(acc)) {
+    if (v !== null && v !== undefined && v !== '') {
+      ;(formAccount as Record<string, unknown>)[k] = v
     }
   }
 }
@@ -219,13 +308,14 @@ async function pollScrape() {
 async function startScrape() {
   const url = scrapeUrl.value.trim()
   if (!url) {
-    ElMessage.warning('请粘贴 Facebook 主页链接')
+    ElMessage.warning('请粘贴 Facebook / Instagram 主页链接')
     return
   }
   stopScrapePolling()
   scrapeError.value = ''
   try {
-    const t = await influencerApi.startScrapeProfile(url)
+    const platform: ScrapePlatform = /instagram\.com/i.test(url) ? 'instagram' : 'facebook'
+    const t = await influencerApi.startScrapeProfile(url, platform)
     scrapeTaskId.value = t.id
     scrapeStatus.value = t.status
     ElMessage.success('已发起抓取任务，完成后自动填充')
@@ -901,7 +991,6 @@ function openCreate() {
     email: '',
     phone: '',
     website: '',
-    messenger: '',
     country_id: defaultCountryId.value,
     region: '',
     city: '',
@@ -911,15 +1000,10 @@ function openCreate() {
     progress: '',
     platform_id: undefined,
     status: 'pre_contact',
-    fb_page_url: '',
-    fb_page_id: '',
-    fb_page_title: '',
-    fb_followers: undefined,
-    fb_likes: undefined,
-    fb_categories: undefined,
     avatar_url: '',
     cover_url: ''
   })
+  resetFormAccount()
   resetScrape()
   dialogVisible.value = true
 }
@@ -929,7 +1013,11 @@ async function submit() {
     ElMessage.warning('请填写昵称')
     return
   }
-  await influencerApi.create(form)
+  const social_accounts: SocialAccount[] = []
+  if (formAccount.url || formAccount.handle || formAccount.page_id) {
+    social_accounts.push({ ...formAccount, url: formAccount.url || null })
+  }
+  await influencerApi.create({ ...form, social_accounts })
   ElMessage.success('已新增')
   dialogVisible.value = false
   refresh()
@@ -1099,6 +1187,7 @@ onMounted(() => {
 onUnmounted(() => {
   stopScrapePolling()
   stopTaskPolling()
+  stopQuickScrapePolling()
 })
 </script>
 
@@ -1318,13 +1407,72 @@ onUnmounted(() => {
         </template>
       </el-table-column>
       <el-table-column prop="email" label="邮箱" min-width="150" />
-      <el-table-column label="操作" width="170" fixed="right">
+      <el-table-column label="操作" width="250" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="router.push(`/influencers/${row.id}`)">详情</el-button>
+          <el-button size="small" type="primary" plain @click="openQuickScrape(row)">一键抓取</el-button>
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
+
+    <el-dialog
+      v-model="quickScrapeVisible"
+      :title="`一键抓取：${quickScrapeRow?.display_name || ''}`"
+      width="620px"
+      @closed="closeQuickScrape"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="选择要抓取的关联账号链接（目前仅支持 Facebook / Instagram），抓取结果会回写到这条账号。"
+        style="margin-bottom: 12px"
+      />
+      <el-empty
+        v-if="!quickScrapeAccounts.length"
+        description="该达人没有可抓取的 Facebook / Instagram 账号链接，请先在详情页添加账号"
+        :image-size="70"
+      />
+      <el-radio-group v-else v-model="quickScrapeAccountId" style="display: block">
+        <div
+          v-for="a in quickScrapeAccounts"
+          :key="a.id"
+          style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid #f0f0f0"
+        >
+          <el-radio :value="a.id" style="margin-right: 0; height: auto">
+            <span style="display: inline-flex; flex-direction: column; gap: 2px; line-height: 1.5">
+              <span>
+                <el-tag size="small" type="info">{{ a.platform_name || platformNameMap[a.platform] || a.platform }}</el-tag>
+                <b style="margin-left: 6px">{{ a.title || a.handle || '—' }}</b>
+                <span v-if="a.followers != null" style="color: #909399; margin-left: 6px">粉丝 {{ formatFollowers(a.followers) }}</span>
+              </span>
+              <span style="color: #606266; font-size: 12px; word-break: break-all">{{ a.url || `@${a.handle}` }}</span>
+            </span>
+          </el-radio>
+        </div>
+      </el-radio-group>
+      <div v-if="quickScrapeTask" style="margin-top: 12px; display: flex; align-items: center; gap: 8px">
+        <el-tag size="small" :type="SCRAPE_STATUS_TAG[quickScrapeTask.status] || 'info'">
+          {{ SCRAPE_STATUS_TEXT[quickScrapeTask.status] || quickScrapeTask.status }}
+        </el-tag>
+        <span v-if="quickScrapeTask.status === 'pending' || quickScrapeTask.status === 'running'" style="color: #909399; font-size: 12px">
+          后台抓取中，完成后自动回写并刷新列表，可关闭此窗口
+        </span>
+        <span v-if="quickScrapeTask.error" style="color: #f56c6c; font-size: 12px">{{ quickScrapeTask.error }}</span>
+      </div>
+      <template #footer>
+        <el-button @click="quickScrapeVisible = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :disabled="quickScrapeAccountId == null || !quickScrapeAccounts.length"
+          :loading="quickScrapeStarting || quickScrapeTask?.status === 'pending' || quickScrapeTask?.status === 'running'"
+          @click="startQuickScrape"
+        >
+          开始抓取
+        </el-button>
+      </template>
+    </el-dialog>
     <el-pagination
       v-model:current-page="page"
       v-model:page-size="pageSize"
@@ -1403,12 +1551,25 @@ onUnmounted(() => {
         <el-form-item label="城市">
           <el-input v-model="form.city" />
         </el-form-item>
-        <el-form-item label="FB 主页">
-          <el-input v-model="form.fb_page_url" placeholder="自动抓取后回填，可手动修改" />
+        <el-divider content-position="left" style="margin: 8px 0 16px">关联账号（可在详情页继续添加更多账号）</el-divider>
+        <el-form-item label="账号平台">
+          <el-select v-model="formAccount.platform" style="width: 100%">
+            <el-option v-for="o in SOCIAL_PLATFORM_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
         </el-form-item>
-        <el-form-item label="FB 粉丝">
-          <el-input-number v-model="form.fb_followers" :min="0" :controls="false" style="width: 160px" />
+        <el-form-item label="账号链接">
+          <el-input v-model="formAccount.url" placeholder="自动抓取后回填，可手动修改" />
         </el-form-item>
+        <el-form-item label="账号名">
+          <el-input v-model="formAccount.title" placeholder="页面 / 账号名称" />
+        </el-form-item>
+        <el-form-item label="粉丝数">
+          <el-input-number v-model="formAccount.followers" :min="0" :controls="false" style="width: 160px" />
+        </el-form-item>
+        <el-form-item label="Messenger">
+          <el-input v-model="formAccount.messenger" placeholder="该账号的 Messenger / 私信入口" />
+        </el-form-item>
+        <el-divider style="margin: 4px 0 16px" />
         <el-form-item label="简介">
           <el-input v-model="form.bio" type="textarea" :rows="3" />
         </el-form-item>

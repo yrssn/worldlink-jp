@@ -9,28 +9,49 @@ from app.models.influencer import InfluencerSource, InfluencerStatus
 from app.models.social_account import SocialPlatform
 
 
-class SocialAccountBase(BaseModel):
+class SocialAccountProfile(BaseModel):
+    """账号维度的资料字段（链接 / 粉丝 / 点赞 / 评分 / Messenger …），建/改/出共用。"""
+
+    handle: Optional[str] = Field(default=None, max_length=128)
+    url: Optional[str] = Field(default=None, max_length=512)
+    followers: Optional[int] = None
+    #: 平台内页面/账号 ID（原 fb_page_id）
+    page_id: Optional[str] = Field(default=None, max_length=128)
+    #: 平台内作者 ID（原 fb_author_id）
+    author_id: Optional[str] = Field(default=None, max_length=255)
+    #: 账号名 / 页面名称（原 fb_page_title）
+    title: Optional[str] = Field(default=None, max_length=255)
+    avatar_url: Optional[str] = Field(default=None, max_length=512)
+    categories: Optional[list[str]] = None
+    likes: Optional[int] = None
+    rating: Optional[float] = None
+    rating_count: Optional[int] = None
+    checkins_mentions: Optional[int] = None
+    page_created_at: Optional[datetime] = None
+    ad_library_id: Optional[str] = Field(default=None, max_length=128)
+    ad_status: Optional[str] = Field(default=None, max_length=64)
+    #: 该账号的 Messenger / 私信入口
+    messenger: Optional[str] = Field(default=None, max_length=255)
+    #: 该账号备注
+    notes: Optional[str] = Field(default=None, max_length=512)
+    extra: Optional[dict[str, Any]] = None
+
+
+class SocialAccountBase(SocialAccountProfile):
     platform: SocialPlatform
     #: 关联「平台管理」里的平台 id，不传时按 platform 自动对齐
     platform_id: Optional[int] = None
-    handle: Optional[str] = None
-    url: Optional[str] = None
-    followers: Optional[int] = None
-    extra: Optional[dict[str, Any]] = None
 
 
 class SocialAccountCreate(SocialAccountBase):
     pass
 
 
-class SocialAccountUpdate(BaseModel):
-    """编辑单个社交账号（平台 / 账号 / 链接 / 粉丝）。"""
+class SocialAccountUpdate(SocialAccountProfile):
+    """编辑单个社交账号：平台 / 平台关联 / 账号 / 链接 / 粉丝 / 点赞 / 评分 / 备注 / Messenger 等全部字段。"""
 
     platform: Optional[SocialPlatform] = None
     platform_id: Optional[int] = None
-    handle: Optional[str] = None
-    url: Optional[str] = None
-    followers: Optional[int] = None
 
 
 class SocialAccountOut(SocialAccountBase):
@@ -40,7 +61,9 @@ class SocialAccountOut(SocialAccountBase):
     influencer_id: int
     #: 「平台管理」里的平台展示名（未关联时为 None）
     platform_name: Optional[str] = None
+    last_scraped_at: Optional[datetime] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class InfluencerBase(BaseModel):
@@ -59,21 +82,7 @@ class InfluencerBase(BaseModel):
 
     email: Optional[str] = None
     phone: Optional[str] = None
-    messenger: Optional[str] = None
     website: Optional[str] = None
-
-    fb_page_id: Optional[str] = None
-    fb_page_url: Optional[str] = None
-    fb_page_title: Optional[str] = None
-    fb_categories: Optional[list[str]] = None
-    fb_followers: Optional[int] = None
-    fb_likes: Optional[int] = None
-    fb_rating: Optional[float] = None
-    fb_rating_count: Optional[int] = None
-    fb_checkins_mentions: Optional[int] = None
-    fb_page_created_at: Optional[datetime] = None
-    fb_ad_library_id: Optional[str] = None
-    fb_ad_status: Optional[str] = None
 
     tags: Optional[list[str]] = None
     notes: Optional[str] = None
@@ -83,6 +92,7 @@ class InfluencerBase(BaseModel):
 
 
 class InfluencerCreate(InfluencerBase):
+    #: 账号维度信息（主页链接 / 粉丝 / Messenger …）一律走这里落到关联账号表
     social_accounts: Optional[list[SocialAccountCreate]] = None
 
 
@@ -100,7 +110,6 @@ class InfluencerUpdate(BaseModel):
     address: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
-    messenger: Optional[str] = None
     website: Optional[str] = None
     tags: Optional[list[str]] = None
     notes: Optional[str] = None
@@ -116,7 +125,7 @@ class InfluencerOut(InfluencerBase):
     source: InfluencerSource
     #: 关联的社交账号（列表内直接展示：平台 + 账号 + 粉丝）
     accounts: list[SocialAccountOut] = []
-    #: 各平台粉丝数的最大值（含 FB 主字段），列表展示 & 区间筛选口径
+    #: 各关联账号粉丝数的最大值，列表展示 & 区间筛选口径
     followers: Optional[int] = None
     platform_name: Optional[str] = None
     platform_code: Optional[str] = None
@@ -141,6 +150,12 @@ class InfluencerScrapeTaskCreate(BaseModel):
     url: str = Field(..., max_length=512)
     # facebook（默认）/ instagram，为以后更多平台预留
     platform: str = Field(default="facebook", max_length=32)
+
+
+class SocialAccountScrapeRequest(BaseModel):
+    """列表「一键抓取」：选中该达人的某条关联账号（仅 Facebook / Instagram）后发起抓取，结果回写到该账号。"""
+
+    social_account_id: int
 
 
 class InfluencerScrapeBatchCreate(BaseModel):
@@ -213,6 +228,8 @@ class InfluencerScrapeTaskOut(BaseModel):
     finished_at: Optional[datetime] = None
     # 该任务抓到的主页是否已入库建联达人（命中则为达人 id，便于前端展示「已存入」）
     influencer_id: Optional[int] = None
+    # 一键抓取时绑定的关联账号 id（结果回写到该账号）
+    social_account_id: Optional[int] = None
 
 
 class InfluencerScrapeBatchRunRequest(BaseModel):

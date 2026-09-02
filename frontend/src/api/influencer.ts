@@ -24,8 +24,38 @@ export interface SocialAccount {
   handle?: string | null
   url?: string | null
   followers?: number | null
+  /** 平台内的页面 / 账号 ID */
+  page_id?: string | null
+  author_id?: string | null
+  /** 账号 / 页面名称 */
+  title?: string | null
+  avatar_url?: string | null
+  categories?: string[] | null
+  likes?: number | null
+  rating?: number | null
+  rating_count?: number | null
+  checkins_mentions?: number | null
+  page_created_at?: string | null
+  ad_library_id?: string | null
+  ad_status?: string | null
+  messenger?: string | null
+  notes?: string | null
+  last_scraped_at?: string | null
   extra?: Record<string, unknown> | null
 }
+
+/** 账号编辑表单里可选的平台 */
+export const SOCIAL_PLATFORM_OPTIONS: { value: SocialPlatform; label: string }[] = [
+  { value: 'facebook', label: 'Facebook' },
+  { value: 'instagram', label: 'Instagram' },
+  { value: 'tiktok', label: 'TikTok' },
+  { value: 'youtube', label: 'YouTube' },
+  { value: 'twitter', label: 'X / Twitter' },
+  { value: 'wechat', label: '微信' },
+  { value: 'xiaohongshu', label: '小红书' },
+  { value: 'line', label: 'LINE' },
+  { value: 'other', label: '其他' },
+]
 
 export interface Influencer {
   id: number
@@ -37,7 +67,6 @@ export interface Influencer {
   email?: string | null
   phone?: string | null
   website?: string | null
-  messenger?: string | null
   country?: string | null
   country_id?: number | null
   country_name?: string | null
@@ -47,14 +76,6 @@ export interface Influencer {
   city?: string | null
   language?: string | null
   address?: string | null
-  fb_page_id?: string | null
-  fb_page_url?: string | null
-  fb_page_title?: string | null
-  fb_categories?: string[] | null
-  fb_followers?: number | null
-  fb_likes?: number | null
-  fb_rating?: number | null
-  fb_rating_count?: number | null
   status: InfluencerStatus
   source: InfluencerSource
   platform_id?: number | null
@@ -68,7 +89,7 @@ export interface Influencer {
   has_outreach?: boolean
   /** 关联的社交账号（列表内直接展示：平台 + 账号 + 粉丝） */
   accounts?: SocialAccount[]
-  /** 各平台粉丝数最大值（含 FB 主字段），列表展示 & 区间筛选口径 */
+  /** 各关联账号粉丝数最大值，列表展示 & 区间筛选口径 */
   followers?: number | null
   created_at: string
 }
@@ -155,11 +176,56 @@ export interface PlatformDetectItem {
   scrapable: boolean
 }
 
+/** 抓取任务结果：人维度字段 + FB 账号字段（fb_*）/ IG 账号字段（ig_*） */
 export type ScrapeTaskResult = Partial<Influencer> & {
   platform?: string
+  messenger?: string | null
+  fb_page_id?: string | null
+  fb_page_url?: string | null
+  fb_page_title?: string | null
+  fb_categories?: string[] | null
+  fb_followers?: number | null
+  fb_likes?: number | null
+  fb_rating?: number | null
+  fb_rating_count?: number | null
+  fb_checkins_mentions?: number | null
+  fb_page_created_at?: string | null
+  fb_ad_library_id?: string | null
+  fb_ad_status?: string | null
   ig_username?: string
   ig_url?: string
   followers?: number
+}
+
+/** 把抓取结果里的账号维度字段换成关联账号字段 */
+export function accountFromScrapeResult(result: ScrapeTaskResult): SocialAccount {
+  if (result.platform === 'instagram') {
+    return {
+      platform: 'instagram',
+      handle: result.ig_username ?? null,
+      url: result.ig_url ?? null,
+      followers: result.followers ?? null,
+      title: result.real_name || result.display_name || null,
+      avatar_url: result.avatar_url ?? null,
+    }
+  }
+  return {
+    platform: 'facebook',
+    page_id: result.fb_page_id ?? null,
+    url: result.fb_page_url ?? null,
+    title: result.fb_page_title ?? null,
+    categories: result.fb_categories ?? null,
+    followers: result.fb_followers ?? null,
+    likes: result.fb_likes ?? null,
+    rating: result.fb_rating ?? null,
+    rating_count: result.fb_rating_count ?? null,
+    checkins_mentions: result.fb_checkins_mentions ?? null,
+    page_created_at: result.fb_page_created_at ?? null,
+    ad_library_id: result.fb_ad_library_id ?? null,
+    ad_status: result.fb_ad_status ?? null,
+    messenger: result.messenger ?? null,
+    avatar_url: result.avatar_url ?? null,
+  }
 }
 
 export interface InfluencerScrapeTask {
@@ -173,6 +239,8 @@ export interface InfluencerScrapeTask {
   created_at: string
   finished_at?: string | null
   influencer_id?: number | null
+  /** 列表「一键抓取」时绑定的关联账号，结果回写到该账号 */
+  social_account_id?: number | null
 }
 
 export interface InfluencerScrapeBatch {
@@ -347,6 +415,11 @@ export const influencerApi = {
     http.put<unknown, SocialAccount>(`/influencers/${iid}/social-accounts/${sid}`, data),
   removeSocial: (iid: number, sid: number) =>
     http.delete(`/influencers/${iid}/social-accounts/${sid}`),
+  /** 列表「一键抓取」：选中某条 FB / IG 关联账号后后台抓取，结果回写到该账号 */
+  scrapeSocial: (iid: number, socialAccountId: number) =>
+    http.post<unknown, InfluencerScrapeTask>(`/influencers/${iid}/social-accounts/scrape`, {
+      social_account_id: socialAccountId,
+    }),
   /** 表格导入第一步：回显列名/样例，供选择主页链接列 */
   previewImport: (file: File) => {
     const fd = new FormData()

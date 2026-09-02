@@ -8,6 +8,7 @@ import {
   type InfluencerDetail,
   type InfluencerSourcePost,
   type PlatformOption,
+  type SocialAccount,
   type SocialPlatform
 } from '@/api/influencer'
 
@@ -19,21 +20,62 @@ const sourcePosts = ref<InfluencerSourcePost[]>([])
 const outreachLogs = ref<DmOutreachLog[]>([])
 
 const socialDialog = ref(false)
-const socialForm = reactive<{
+/** 正在编辑的账号 id；undefined = 新增 */
+const editingSocialId = ref<number | undefined>(undefined)
+const socialSaving = ref(false)
+
+interface SocialAccountForm {
   platform: SocialPlatform
+  platform_id?: number
+  title: string
   handle: string
   url: string
   followers?: number
-}>({
-  platform: 'instagram',
-  handle: '',
-  url: ''
-})
+  likes?: number
+  rating?: number
+  rating_count?: number
+  checkins_mentions?: number
+  page_id: string
+  author_id: string
+  avatar_url: string
+  categoriesText: string
+  page_created_at?: string
+  ad_library_id: string
+  ad_status: string
+  messenger: string
+  notes: string
+}
+
+function emptySocialForm(): SocialAccountForm {
+  return {
+    platform: 'facebook',
+    platform_id: undefined,
+    title: '',
+    handle: '',
+    url: '',
+    followers: undefined,
+    likes: undefined,
+    rating: undefined,
+    rating_count: undefined,
+    checkins_mentions: undefined,
+    page_id: '',
+    author_id: '',
+    avatar_url: '',
+    categoriesText: '',
+    page_created_at: undefined,
+    ad_library_id: '',
+    ad_status: '',
+    messenger: '',
+    notes: ''
+  }
+}
+
+const socialForm = reactive<SocialAccountForm>(emptySocialForm())
 
 const STATUS_LABELS: Record<string, string> = {
   pre_contact: '预建联',
   contacting: '建联中',
-  signed: '已签约',
+  signed: '建联成功',
   dropped: '已放弃'
 }
 const STATUS_TAG_TYPE: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
@@ -74,25 +116,87 @@ const platformNameMap = computed<Record<string, string>>(() =>
   Object.fromEntries(platformSelectOptions.value.map((p) => [p.value, p.label]))
 )
 
-const hasFb = computed(() => {
-  const d = detail.value
-  if (!d) return false
-  return !!(
-    d.fb_page_url ||
-    d.fb_page_id ||
-    d.fb_followers ||
-    d.fb_likes ||
-    d.fb_rating ||
-    d.fb_rating_count
-  )
-})
-
 async function loadPlatformOptions() {
   platformOptions.value = await influencerApi.listPlatformOptions().catch(() => [])
-  const values = platformSelectOptions.value.map((p) => p.value)
-  if (values.length && !values.includes(socialForm.platform)) {
-    socialForm.platform = values[0]
+}
+
+/** 选了平台后，没手动选关联平台就自动对齐到「平台管理」里同名的记录 */
+function onSocialPlatformChange(p: SocialPlatform) {
+  const hit = platformOptions.value.find((o) => o.platform === p && o.platform_id != null)
+  socialForm.platform_id = hit?.platform_id ?? undefined
+}
+
+function openAddSocial() {
+  editingSocialId.value = undefined
+  Object.assign(socialForm, emptySocialForm())
+  const first = platformSelectOptions.value[0]?.value
+  if (first) socialForm.platform = first
+  onSocialPlatformChange(socialForm.platform)
+  socialDialog.value = true
+}
+
+function openEditSocial(row: SocialAccount) {
+  editingSocialId.value = row.id
+  Object.assign(socialForm, emptySocialForm(), {
+    platform: row.platform,
+    platform_id: row.platform_id ?? undefined,
+    title: row.title || '',
+    handle: row.handle || '',
+    url: row.url || '',
+    followers: row.followers ?? undefined,
+    likes: row.likes ?? undefined,
+    rating: row.rating ?? undefined,
+    rating_count: row.rating_count ?? undefined,
+    checkins_mentions: row.checkins_mentions ?? undefined,
+    page_id: row.page_id || '',
+    author_id: row.author_id || '',
+    avatar_url: row.avatar_url || '',
+    categoriesText: (row.categories || []).join(', '),
+    page_created_at: row.page_created_at || undefined,
+    ad_library_id: row.ad_library_id || '',
+    ad_status: row.ad_status || '',
+    messenger: row.messenger || '',
+    notes: row.notes || ''
+  })
+  socialDialog.value = true
+}
+
+function socialPayload(): SocialAccount {
+  const text = (v: string) => (v.trim() ? v.trim() : null)
+  const categories = socialForm.categoriesText
+    .split(/[,，\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  return {
+    platform: socialForm.platform,
+    platform_id: socialForm.platform_id ?? null,
+    title: text(socialForm.title),
+    handle: text(socialForm.handle),
+    url: text(socialForm.url),
+    followers: socialForm.followers ?? null,
+    likes: socialForm.likes ?? null,
+    rating: socialForm.rating ?? null,
+    rating_count: socialForm.rating_count ?? null,
+    checkins_mentions: socialForm.checkins_mentions ?? null,
+    page_id: text(socialForm.page_id),
+    author_id: text(socialForm.author_id),
+    avatar_url: text(socialForm.avatar_url),
+    categories: categories.length ? categories : null,
+    page_created_at: socialForm.page_created_at || null,
+    ad_library_id: text(socialForm.ad_library_id),
+    ad_status: text(socialForm.ad_status),
+    messenger: text(socialForm.messenger),
+    notes: text(socialForm.notes)
   }
+}
+
+/** 账号名优先 title，其次 handle */
+function accountName(row: SocialAccount) {
+  return row.title || row.handle || '—'
+}
+
+function fmtNum(v?: number | null) {
+  return v == null ? '—' : v.toLocaleString('en-US')
 }
 
 async function refresh() {
@@ -101,12 +205,27 @@ async function refresh() {
   outreachLogs.value = await influencerApi.listOutreachLogs(id.value).catch(() => [])
 }
 
-async function addSocial() {
+async function saveSocial() {
   if (!socialForm.platform) return
-  await influencerApi.addSocial(id.value, socialForm)
-  ElMessage.success('已添加')
-  socialDialog.value = false
-  refresh()
+  const payload = socialPayload()
+  if (!payload.url && !payload.handle && !payload.title) {
+    ElMessage.warning('请至少填写链接、账号或账号名')
+    return
+  }
+  socialSaving.value = true
+  try {
+    if (editingSocialId.value != null) {
+      await influencerApi.updateSocial(id.value, editingSocialId.value, payload)
+      ElMessage.success('已保存')
+    } else {
+      await influencerApi.addSocial(id.value, payload)
+      ElMessage.success('已添加')
+    }
+    socialDialog.value = false
+    refresh()
+  } finally {
+    socialSaving.value = false
+  }
 }
 
 /** 平台挂在账号上：改这里只影响这个社交账号的平台归属 */
@@ -170,30 +289,19 @@ onMounted(() => {
       <el-descriptions-item label="网站">
         <a v-if="detail.website" :href="detail.website" target="_blank">{{ detail.website }}</a>
       </el-descriptions-item>
-      <el-descriptions-item label="Messenger">{{ detail.messenger }}</el-descriptions-item>
-      <el-descriptions-item v-if="hasFb" label="FB 主页" :span="3">
-        <a v-if="detail.fb_page_url" :href="detail.fb_page_url" target="_blank">
-          {{ detail.fb_page_url }}
-        </a>
-      </el-descriptions-item>
-      <el-descriptions-item v-if="hasFb" label="FB 粉丝">{{ detail.fb_followers }}</el-descriptions-item>
-      <el-descriptions-item v-if="hasFb" label="FB 点赞">{{ detail.fb_likes }}</el-descriptions-item>
-      <el-descriptions-item v-if="hasFb" label="FB 评分">
-        {{ detail.fb_rating ?? '—' }}<span v-if="detail.fb_rating_count">（{{ detail.fb_rating_count }}）</span>
-      </el-descriptions-item>
       <el-descriptions-item label="简介" :span="3">{{ detail.bio }}</el-descriptions-item>
       <el-descriptions-item label="备注" :span="3">{{ detail.notes }}</el-descriptions-item>
     </el-descriptions>
 
     <div style="margin: 20px 0 12px; display: flex; justify-content: space-between">
       <h4 style="margin: 0">社交账号</h4>
-      <el-button type="primary" size="small" @click="socialDialog = true">添加账号</el-button>
+      <el-button type="primary" size="small" @click="openAddSocial">添加账号</el-button>
     </div>
     <el-table :data="detail.social_accounts" border>
-      <el-table-column label="平台" width="120">
+      <el-table-column label="平台" width="110">
         <template #default="{ row }">{{ row.platform_name || platformNameMap[row.platform] || row.platform }}</template>
       </el-table-column>
-      <el-table-column label="关联平台" width="180">
+      <el-table-column label="关联平台" width="160">
         <template #default="{ row }">
           <el-select
             :model-value="row.platform_id ?? undefined"
@@ -211,15 +319,48 @@ onMounted(() => {
           </el-select>
         </template>
       </el-table-column>
-      <el-table-column prop="handle" label="账号/Handle" />
-      <el-table-column label="链接">
+      <el-table-column label="账号名" min-width="140">
         <template #default="{ row }">
-          <a v-if="row.url" :href="row.url" target="_blank">{{ row.url }}</a>
+          <div style="display: flex; align-items: center; gap: 6px">
+            <el-avatar v-if="row.avatar_url" :src="row.avatar_url" :size="24" />
+            <span>{{ accountName(row) }}</span>
+          </div>
+          <div v-if="row.title && row.handle" style="color: #909399; font-size: 12px">@{{ row.handle }}</div>
         </template>
       </el-table-column>
-      <el-table-column prop="followers" label="粉丝" width="100" />
-      <el-table-column label="操作" width="100">
+      <el-table-column label="链接" min-width="200">
         <template #default="{ row }">
+          <a v-if="row.url" :href="row.url" target="_blank">{{ row.url }}</a>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="粉丝" width="100" align="right">
+        <template #default="{ row }">{{ fmtNum(row.followers) }}</template>
+      </el-table-column>
+      <el-table-column label="点赞" width="100" align="right">
+        <template #default="{ row }">{{ fmtNum(row.likes) }}</template>
+      </el-table-column>
+      <el-table-column label="评分" width="110">
+        <template #default="{ row }">
+          <span v-if="row.rating != null">{{ row.rating }}<span v-if="row.rating_count">（{{ row.rating_count }}）</span></span>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="Messenger" min-width="120">
+        <template #default="{ row }">
+          <a v-if="row.messenger && /^https?:/.test(row.messenger)" :href="row.messenger" target="_blank">{{ row.messenger }}</a>
+          <span v-else>{{ row.messenger || '—' }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="备注" min-width="120">
+        <template #default="{ row }">{{ row.notes || '—' }}</template>
+      </el-table-column>
+      <el-table-column label="最近抓取" width="160">
+        <template #default="{ row }">{{ row.last_scraped_at ? String(row.last_scraped_at).replace('T', ' ').slice(0, 16) : '—' }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="140" fixed="right">
+        <template #default="{ row }">
+          <el-button size="small" @click="openEditSocial(row)">编辑</el-button>
           <el-button size="small" type="danger" @click="removeSocial(row.id)">删除</el-button>
         </template>
       </el-table-column>
@@ -285,31 +426,139 @@ onMounted(() => {
     <el-empty v-else description="暂无私信记录" />
 
 
-    <el-dialog v-model="socialDialog" title="添加社交账号" width="480px">
-      <el-form :model="socialForm" label-width="100px">
-        <el-form-item label="平台">
-          <el-select v-model="socialForm.platform" style="width: 100%">
-            <el-option
-              v-for="p in platformSelectOptions"
-              :key="p.value"
-              :label="p.label"
-              :value="p.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="账号">
-          <el-input v-model="socialForm.handle" />
-        </el-form-item>
-        <el-form-item label="链接">
-          <el-input v-model="socialForm.url" />
-        </el-form-item>
-        <el-form-item label="粉丝数">
-          <el-input-number v-model="socialForm.followers" :min="0" />
-        </el-form-item>
+    <el-dialog
+      v-model="socialDialog"
+      :title="editingSocialId != null ? '编辑社交账号' : '添加社交账号'"
+      width="720px"
+      top="5vh"
+    >
+      <el-form :model="socialForm" label-width="110px">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="平台">
+              <el-select v-model="socialForm.platform" style="width: 100%" @change="onSocialPlatformChange">
+                <el-option
+                  v-for="p in platformSelectOptions"
+                  :key="p.value"
+                  :label="p.label"
+                  :value="p.value"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="关联平台">
+              <el-select v-model="socialForm.platform_id" clearable placeholder="未关联" style="width: 100%">
+                <el-option
+                  v-for="p in accountPlatformOptions"
+                  :key="p.platform_id as number"
+                  :label="p.name"
+                  :value="p.platform_id as number"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="账号名">
+              <el-input v-model="socialForm.title" placeholder="页面 / 账号名称" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="Handle">
+              <el-input v-model="socialForm.handle" placeholder="用户名，不填则从链接末段解析" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="链接">
+              <el-input v-model="socialForm.url" placeholder="主页链接" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="粉丝数">
+              <el-input-number v-model="socialForm.followers" :min="0" :controls="false" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="点赞数">
+              <el-input-number v-model="socialForm.likes" :min="0" :controls="false" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="打卡/提及">
+              <el-input-number v-model="socialForm.checkins_mentions" :min="0" :controls="false" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="评分">
+              <el-input-number v-model="socialForm.rating" :min="0" :max="100" :precision="2" :controls="false" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="评分人数">
+              <el-input-number v-model="socialForm.rating_count" :min="0" :controls="false" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="Messenger">
+              <el-input v-model="socialForm.messenger" placeholder="该账号的 Messenger / 私信入口" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="账号备注">
+              <el-input v-model="socialForm.notes" type="textarea" :rows="2" placeholder="如：另一个账号" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-collapse>
+          <el-collapse-item title="更多字段（页面 ID / 头像 / 分类 / 广告库…）" name="more">
+            <el-row :gutter="12">
+              <el-col :span="12">
+                <el-form-item label="页面 ID">
+                  <el-input v-model="socialForm.page_id" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="作者 ID">
+                  <el-input v-model="socialForm.author_id" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="24">
+                <el-form-item label="头像链接">
+                  <el-input v-model="socialForm.avatar_url" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="24">
+                <el-form-item label="分类">
+                  <el-input v-model="socialForm.categoriesText" placeholder="多个用逗号分隔" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="账号创建时间">
+                  <el-date-picker
+                    v-model="socialForm.page_created_at"
+                    type="datetime"
+                    value-format="YYYY-MM-DDTHH:mm:ss"
+                    style="width: 100%"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="广告库 ID">
+                  <el-input v-model="socialForm.ad_library_id" />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="广告状态">
+                  <el-input v-model="socialForm.ad_status" />
+                </el-form-item>
+              </el-col>
+            </el-row>
+          </el-collapse-item>
+        </el-collapse>
       </el-form>
       <template #footer>
         <el-button @click="socialDialog = false">取消</el-button>
-        <el-button type="primary" @click="addSocial">保存</el-button>
+        <el-button type="primary" :loading="socialSaving" @click="saveSocial">保存</el-button>
       </template>
     </el-dialog>
   </div>

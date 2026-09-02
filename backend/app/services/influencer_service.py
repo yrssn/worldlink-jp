@@ -27,12 +27,31 @@ from app.services import avatar_cache
 
 
 def normalize_fb_url(u: Optional[str]) -> str:
-    """规范化 FB 主页链接用于匹配：去空白、去 query/fragment、去尾部斜杠、转小写。"""
+    """规范化主页链接用于匹配：去空白、去 http(s):// 与 www.、去 query/fragment、去尾部斜杠、转小写。
+
+    与回填 SQL（backend/sql/2026_social_account_fields.sql）里的归一化规则保持一致。
+    """
     s = (u or "").strip()
     if not s:
         return ""
-    s = s.split("?", 1)[0].split("#", 1)[0]
-    return s.rstrip("/").lower()
+    s = s.split("?", 1)[0].split("#", 1)[0].strip()
+    low = s.lower()
+    for prefix in ("https://", "http://"):
+        if low.startswith(prefix):
+            low = low[len(prefix):]
+            break
+    if low.startswith("www."):
+        low = low[4:]
+    return low.rstrip("/")
+
+
+def handle_from_url(url: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
+    """从主页链接末段解析账号 handle；``profile.php?id=`` 这类链接末段无意义，退化用 fallback（如 page_id）。"""
+    norm = normalize_fb_url(url)
+    if not norm or "/" not in norm or norm.endswith("profile.php"):
+        return fallback or None
+    seg = norm.rsplit("/", 1)[-1]
+    return seg or fallback or None
 
 
 def build_ig_profile_url(value: Optional[str]) -> str:
@@ -50,7 +69,7 @@ def build_ig_profile_url(value: Optional[str]) -> str:
 
 
 def _influencer_profile_urls(db: Session, influencer: "Influencer") -> set[str]:
-    """收集该达人可用于私信匹配的所有主页 URL（FB 主页 + 各社交账号）的规整值。"""
+    """收集该达人可用于私信匹配的所有主页 URL（各关联账号 + 兼容旧 FB 主字段）的规整值。"""
     urls: set[str] = set()
     if influencer.fb_page_url:
         n = normalize_fb_url(influencer.fb_page_url)
@@ -72,37 +91,27 @@ def _influencer_profile_urls(db: Session, influencer: "Influencer") -> set[str]:
 def match_influencer_id_by_url(
     db: Session, owner_id: int, url: Optional[str], platform: str = "facebook"
 ) -> Optional[int]:
-    """按主页 URL 在同一 owner 下匹配已入库达人的 id；FB 比 fb_page_url，IG 比社交账号 URL。"""
+    """按主页 URL 在同一 owner 下匹配已入库达人的 id（比对各平台关联账号的链接，FB 额外兼容旧 fb_page_url）。"""
     target = normalize_fb_url(url)
     if not target:
         return None
-    if (platform or "").strip().lower() == "instagram":
-        rows = (
-            db.query(InfluencerSocialAccount.influencer_id, InfluencerSocialAccount.url)
-            .join(Influencer, Influencer.id == InfluencerSocialAccount.influencer_id)
-            .filter(
-                Influencer.owner_id == owner_id,
-                Influencer.deleted_at.is_(None),
-                InfluencerSocialAccount.platform == SocialPlatform.instagram,
-                InfluencerSocialAccount.url.isnot(None),
-            )
-            .all()
-        )
-        for inf_id, u in rows:
-            if normalize_fb_url(u) == target:
-                return inf_id
-        return None
-    exact = (
-        db.query(Influencer)
+    plat = (platform or "").strip().lower()
+    q = (
+        db.query(InfluencerSocialAccount.influencer_id, InfluencerSocialAccount.url)
+        .join(Influencer, Influencer.id == InfluencerSocialAccount.influencer_id)
         .filter(
             Influencer.owner_id == owner_id,
             Influencer.deleted_at.is_(None),
-            Influencer.fb_page_url == url,
+            InfluencerSocialAccount.url.isnot(None),
         )
-        .first()
     )
-    if exact:
-        return exact.id
+    if plat in SocialPlatform.__members__:
+        q = q.filter(InfluencerSocialAccount.platform == SocialPlatform(plat))
+    for inf_id, u in q.all():
+        if normalize_fb_url(u) == target:
+            return inf_id
+    if plat == "instagram":
+        return None
     candidates = (
         db.query(Influencer)
         .filter(
@@ -155,14 +164,42 @@ def find_duplicate(
     fb_page_url: Optional[str] = None,
     email: Optional[str] = None,
 ) -> Optional[Influencer]:
-    """根据 fb_author_id（群组帖子作者 user.id）/ fb_page_id / fb_page_url / email 查重。
+    """根据作者 id（群组帖子作者 user.id）/ 页面 id / 主页链接 / email 查重。
 
-    已软删除（``deleted_at`` 有值）的达人不参与查重，便于删除后重新建联。
+    账号维度（author_id / page_id / url）先比 Facebook 关联账号（链接按归一化比对），
+    再兼容旧的主表 fb_* 字段。已软删除（``deleted_at`` 有值）的达人不参与查重。
     """
-    q = db.query(Influencer).filter(
-        Influencer.owner_id == owner_id,
-        Influencer.deleted_at.is_(None),
-    )
+    alive = (Influencer.owner_id == owner_id, Influencer.deleted_at.is_(None))
+    acc_conds = []
+    if fb_author_id:
+        acc_conds.append(InfluencerSocialAccount.author_id == fb_author_id)
+    if fb_page_id:
+        acc_conds.append(InfluencerSocialAccount.page_id == fb_page_id)
+    if acc_conds:
+        hit = (
+            db.query(Influencer)
+            .join(InfluencerSocialAccount, InfluencerSocialAccount.influencer_id == Influencer.id)
+            .filter(*alive, InfluencerSocialAccount.platform == SocialPlatform.facebook, or_(*acc_conds))
+            .first()
+        )
+        if hit:
+            return hit
+    target = normalize_fb_url(fb_page_url)
+    if target:
+        rows = (
+            db.query(Influencer, InfluencerSocialAccount.url)
+            .join(InfluencerSocialAccount, InfluencerSocialAccount.influencer_id == Influencer.id)
+            .filter(
+                *alive,
+                InfluencerSocialAccount.platform == SocialPlatform.facebook,
+                InfluencerSocialAccount.url.isnot(None),
+            )
+            .all()
+        )
+        for inf, u in rows:
+            if normalize_fb_url(u) == target:
+                return inf
+
     conds = []
     if fb_author_id:
         conds.append(Influencer.fb_author_id == fb_author_id)
@@ -174,7 +211,7 @@ def find_duplicate(
         conds.append(Influencer.email == email)
     if not conds:
         return None
-    return q.filter(or_(*conds)).first()
+    return db.query(Influencer).filter(*alive, or_(*conds)).first()
 
 
 def _to_int(v: Any) -> Optional[int]:
@@ -423,15 +460,133 @@ def merge_fb_forms(
     return merged
 
 
+#: 抓取表单中落到主表的「人 / 建联」维度字段
 _FORM_INFLUENCER_FIELDS = (
     "display_name", "real_name", "bio", "avatar_url", "cover_url",
     "country", "region", "city", "language", "address",
-    "email", "phone", "messenger", "website",
-    "fb_page_id", "fb_page_url", "fb_page_title", "fb_categories",
-    "fb_followers", "fb_likes", "fb_rating", "fb_rating_count",
-    "fb_checkins_mentions", "fb_ad_library_id", "fb_ad_status",
+    "email", "phone", "website",
     "tags", "notes",
 )
+
+#: 抓取表单（FB）中的账号维度字段 → influencer_social_accounts 列
+_FORM_FB_ACCOUNT_FIELDS: dict[str, str] = {
+    "fb_page_id": "page_id",
+    "fb_author_id": "author_id",
+    "fb_page_url": "url",
+    "fb_page_title": "title",
+    "fb_categories": "categories",
+    "fb_followers": "followers",
+    "fb_likes": "likes",
+    "fb_rating": "rating",
+    "fb_rating_count": "rating_count",
+    "fb_checkins_mentions": "checkins_mentions",
+    "fb_page_created_at": "page_created_at",
+    "fb_ad_library_id": "ad_library_id",
+    "fb_ad_status": "ad_status",
+    "messenger": "messenger",
+    "avatar_url": "avatar_url",
+}
+
+
+def fb_account_fields_from_form(form: dict[str, Any]) -> dict[str, Any]:
+    """从 FB 抓取表单（fb_* 键）抽出账号维度字段，键名为账号表列名。"""
+    fields: dict[str, Any] = {}
+    for src, dst in _FORM_FB_ACCOUNT_FIELDS.items():
+        v = form.get(src)
+        if v in (None, "", []):
+            continue
+        fields[dst] = v
+    created = fields.get("page_created_at")
+    if isinstance(created, str):
+        try:
+            fields["page_created_at"] = datetime.fromisoformat(created)
+        except ValueError:
+            fields.pop("page_created_at", None)
+    if fields.get("url") or fields.get("page_id"):
+        fields.setdefault("handle", handle_from_url(fields.get("url"), fields.get("page_id")))
+    return fields
+
+
+def ig_account_fields_from_form(form: dict[str, Any]) -> dict[str, Any]:
+    """从 IG 抓取表单（ig_username / ig_url / followers）抽出账号维度字段。"""
+    raw = form.get("_ig_profile") if isinstance(form.get("_ig_profile"), dict) else {}
+    fields: dict[str, Any] = {
+        "handle": form.get("ig_username"),
+        "url": form.get("ig_url"),
+        "followers": _to_int(form.get("followers")),
+        "title": form.get("real_name") or form.get("display_name"),
+        "avatar_url": form.get("avatar_url"),
+        "page_id": str(raw.get("id") or "") or None,
+    }
+    return {k: v for k, v in fields.items() if v not in (None, "", [])}
+
+
+def account_fields_from_form(form: dict[str, Any]) -> tuple[SocialPlatform, dict[str, Any]]:
+    """按表单里的 platform 把抓取结果换成 (平台, 账号字段)。"""
+    if str(form.get("platform") or "").lower() == "instagram":
+        return SocialPlatform.instagram, ig_account_fields_from_form(form)
+    return SocialPlatform.facebook, fb_account_fields_from_form(form)
+
+
+#: 抓取回来的这些指标以最新结果为准（覆盖旧值），其余字段只补空
+_ACCOUNT_METRIC_FIELDS = frozenset(
+    {"followers", "likes", "rating", "rating_count", "checkins_mentions", "ad_status"}
+)
+
+
+def apply_account_fields(
+    acc: InfluencerSocialAccount,
+    fields: dict[str, Any],
+    *,
+    overwrite: bool = False,
+    keep_existing_url: bool = False,
+    scraped: bool = False,
+) -> InfluencerSocialAccount:
+    """把账号维度字段写到账号行上。
+
+    - ``overwrite=True``：非空值全部覆盖；否则指标类字段覆盖、其余只补空；
+    - ``keep_existing_url=True``：已有链接时不换链接（同一账号的不同写法）；
+    - ``scraped=True``：顺带记下 last_scraped_at。
+    """
+    for key, value in fields.items():
+        if value in (None, "", []):
+            continue
+        if key in ("id", "influencer_id", "platform", "platform_id", "notes"):
+            continue
+        if key == "url" and keep_existing_url and acc.url:
+            continue
+        current = getattr(acc, key, None)
+        if overwrite or key in _ACCOUNT_METRIC_FIELDS or current in (None, "", []):
+            setattr(acc, key, value)
+    if scraped:
+        acc.last_scraped_at = datetime.utcnow()
+    return acc
+
+
+def _new_account(
+    db: Session,
+    influencer_id: int,
+    platform: SocialPlatform,
+    fields: dict[str, Any],
+    platform_id: Optional[int] = None,
+) -> InfluencerSocialAccount:
+    acc = InfluencerSocialAccount(
+        influencer_id=influencer_id,
+        platform=platform,
+        platform_id=platform_id or resolve_platform_id(db, platform),
+    )
+    apply_account_fields(acc, fields, overwrite=True)
+    db.add(acc)
+    return acc
+
+
+def _sync_person_from_account(inf: Influencer, fields: dict[str, Any]) -> None:
+    """账号资料里可以补到「人」上的部分：没名字时用账号名，没头像时用账号头像。"""
+    name = str(inf.display_name or "").strip()
+    if (not name or name.lower() == "unknown") and fields.get("title"):
+        inf.display_name = str(fields["title"])[:255]
+    if not inf.avatar_url and fields.get("avatar_url"):
+        inf.avatar_url = fields["avatar_url"]
 
 
 def create_influencer_from_form(
@@ -442,19 +597,15 @@ def create_influencer_from_form(
 ) -> tuple[Influencer, bool]:
     """把「自动抓取任务」的可填充表单结果入库为建联达人。
 
-    - 只取白名单字段，避免脏字段；fb_page_created_at(ISO 字符串)单独解析；
-    - 按 fb_page_id / fb_page_url / email 去重，命中则复用已有，不重复创建；
+    - 主表只取「人」维度白名单字段；fb_* 等账号维度字段落到 Facebook 关联账号；
+    - 按 page_id / 主页链接 / email 去重，命中则复用已有，不重复创建；
     返回 (influencer, created)。
     """
+    form = avatar_cache.localize_form_avatar(dict(form))
     data: dict[str, Any] = {
         k: form.get(k) for k in _FORM_INFLUENCER_FIELDS if form.get(k) not in (None, "")
     }
-    created_raw = form.get("fb_page_created_at")
-    if isinstance(created_raw, str) and created_raw:
-        try:
-            data["fb_page_created_at"] = datetime.fromisoformat(created_raw)
-        except ValueError:
-            pass
+    account = fb_account_fields_from_form(form)
 
     data.setdefault("display_name", "Unknown")
     data["owner_id"] = owner_id
@@ -465,28 +616,19 @@ def create_influencer_from_form(
     existing = find_duplicate(
         db,
         owner_id=owner_id,
-        fb_page_id=data.get("fb_page_id"),
-        fb_page_url=data.get("fb_page_url"),
+        fb_page_id=account.get("page_id"),
+        fb_page_url=account.get("url"),
         email=data.get("email"),
     )
     if existing:
         link_outreach_logs_for_influencer(db, existing)
         return existing, False
 
-    inf = Influencer(**avatar_cache.localize_form_avatar(data))
+    inf = Influencer(**data)
     db.add(inf)
     db.flush()
-    if inf.fb_page_url or inf.fb_page_id:
-        db.add(
-            InfluencerSocialAccount(
-                influencer_id=inf.id,
-                platform=SocialPlatform.facebook,
-                platform_id=resolve_platform_id(db, SocialPlatform.facebook),
-                handle=inf.fb_page_id,
-                url=inf.fb_page_url,
-                followers=inf.fb_followers,
-            )
-        )
+    if account.get("url") or account.get("page_id"):
+        _new_account(db, inf.id, SocialPlatform.facebook, account)
     db.commit()
     db.refresh(inf)
     link_outreach_logs_for_influencer(db, inf)
@@ -552,28 +694,30 @@ def find_duplicate_social(
     handle: Optional[str] = None,
     url: Optional[str] = None,
 ) -> Optional[Influencer]:
-    """按某社交平台的 handle / url 查重（用于 Instagram 等非 FB 平台）。
+    """按某社交平台的 handle / url（归一化比对）查重。
 
     已软删除的达人不参与查重。
     """
-    conds = []
-    if handle:
-        conds.append(InfluencerSocialAccount.handle == handle)
-    if url:
-        conds.append(InfluencerSocialAccount.url == url)
-    if not conds:
+    handle_key = (handle or "").strip().lower()
+    target = normalize_fb_url(url)
+    if not handle_key and not target:
         return None
-    return (
-        db.query(Influencer)
+    rows = (
+        db.query(Influencer, InfluencerSocialAccount.handle, InfluencerSocialAccount.url)
         .join(InfluencerSocialAccount, InfluencerSocialAccount.influencer_id == Influencer.id)
         .filter(
             Influencer.owner_id == owner_id,
             Influencer.deleted_at.is_(None),
             InfluencerSocialAccount.platform == platform,
-            or_(*conds),
         )
-        .first()
+        .all()
     )
+    for inf, h, u in rows:
+        if handle_key and (h or "").strip().lower() == handle_key:
+            return inf
+        if target and normalize_fb_url(u) == target:
+            return inf
+    return None
 
 
 def _create_from_ig_profile(
@@ -607,15 +751,18 @@ def _create_from_ig_profile(
     db.flush()
 
     if handle or url:
-        db.add(
-            InfluencerSocialAccount(
-                influencer_id=inf.id,
-                platform=SocialPlatform.instagram,
-                platform_id=resolve_platform_id(db, SocialPlatform.instagram),
-                handle=handle,
-                url=url,
-                followers=followers,
-            )
+        _new_account(
+            db,
+            inf.id,
+            SocialPlatform.instagram,
+            {
+                "handle": handle,
+                "url": url,
+                "followers": followers,
+                "title": profile.get("fullName") or handle,
+                "avatar_url": inf.avatar_url,
+                "page_id": str(profile.get("id") or "") or None,
+            },
         )
 
     _attach_posts(db, inf.id, post, source_post_ids)
@@ -718,6 +865,27 @@ def resolve_platform_id(db: Session, platform: SocialPlatform | str | None) -> O
     return match_platform_code(name, platform_id_by_code(db))
 
 
+def _match_account(
+    rows: list[InfluencerSocialAccount],
+    handle: Optional[str],
+    url: Optional[str],
+    page_id: Optional[str] = None,
+) -> Optional[InfluencerSocialAccount]:
+    """在同一达人同平台的账号里，按 page_id / 归一化 URL / handle（忽略大小写）找已有记录。"""
+    target = normalize_fb_url(url)
+    handle_key = (handle or "").strip().lower()
+    for r in rows:
+        if page_id and r.page_id and r.page_id == page_id:
+            return r
+    for r in rows:
+        if target and normalize_fb_url(r.url) == target:
+            return r
+    for r in rows:
+        if handle_key and (r.handle or "").strip().lower() == handle_key:
+            return r
+    return None
+
+
 def upsert_social_account(
     db: Session,
     influencer_id: int,
@@ -727,39 +895,54 @@ def upsert_social_account(
     followers: Optional[int] = None,
     keep_existing_url: bool = False,
     platform_id: Optional[int] = None,
+    fields: Optional[dict[str, Any]] = None,
+    account_id: Optional[int] = None,
+    scraped: bool = False,
 ) -> Optional[InfluencerSocialAccount]:
-    """写入/更新达人在某平台的账号（同平台按 handle/url 匹配已有记录）。
+    """写入/更新达人在某平台的账号。
 
+    匹配顺序：``account_id`` 指定的账号（一键抓取）→ 同达人同平台里
+    page_id / 归一化 URL / handle 命中的账号 → 该平台仅有一条账号且未传链接时复用它 → 新建。
+
+    ``fields`` 为账号维度全量字段（title / likes / rating / messenger …）；
     ``keep_existing_url=True`` 时不覆盖已有主页链接（导入同一账号的不同写法时保留原链接）。
     """
-    if not (handle or url):
+    data: dict[str, Any] = dict(fields or {})
+    if handle:
+        data.setdefault("handle", handle)
+    if url:
+        data.setdefault("url", url)
+    if followers is not None:
+        data["followers"] = followers
+    if not (data.get("handle") or data.get("url") or data.get("page_id") or account_id):
         return None
-    rows = (
-        db.query(InfluencerSocialAccount)
-        .filter(
-            InfluencerSocialAccount.influencer_id == influencer_id,
-            InfluencerSocialAccount.platform == platform,
+
+    acc: Optional[InfluencerSocialAccount] = None
+    if account_id:
+        acc = db.get(InfluencerSocialAccount, account_id)
+        if acc is not None and acc.influencer_id != influencer_id:
+            acc = None
+    if acc is None:
+        rows = (
+            db.query(InfluencerSocialAccount)
+            .filter(
+                InfluencerSocialAccount.influencer_id == influencer_id,
+                InfluencerSocialAccount.platform == platform,
+            )
+            .order_by(InfluencerSocialAccount.id.asc())
+            .all()
         )
-        .all()
-    )
-    acc = next(
-        (
-            r
-            for r in rows
-            if (handle and r.handle == handle) or (url and r.url == url)
-        ),
-        None,
-    ) or (rows[0] if rows else None)
+        acc = _match_account(rows, data.get("handle"), data.get("url"), data.get("page_id"))
+        if acc is None and len(rows) == 1 and not (rows[0].url and data.get("url")):
+            acc = rows[0]
     if acc is None:
         acc = InfluencerSocialAccount(influencer_id=influencer_id, platform=platform)
         db.add(acc)
     if acc.platform_id is None:
         acc.platform_id = platform_id or resolve_platform_id(db, platform)
-    acc.handle = handle or acc.handle
-    if not (keep_existing_url and acc.url):
-        acc.url = url or acc.url
-    if followers is not None:
-        acc.followers = followers
+    if not data.get("handle") and not acc.handle:
+        data["handle"] = handle_from_url(data.get("url"), data.get("page_id"))
+    apply_account_fields(acc, data, keep_existing_url=keep_existing_url, scraped=scraped)
     return acc
 
 
@@ -767,42 +950,41 @@ def enrich_influencer_from_form(
     db: Session,
     inf: Influencer,
     form: dict[str, Any],
+    social_account_id: Optional[int] = None,
 ) -> Influencer:
-    """把抓取结果补写到已存在的达人上：只填空字段，粉丝数等数值以抓取结果为准。
+    """把抓取结果补写到已存在的达人上。
+
+    - 主表「人」维度字段只填空；
+    - 账号维度（链接 / 粉丝 / 点赞 / 评分 / Messenger …）写到对应关联账号，
+      ``social_account_id`` 指定时（列表一键抓取）直接回写到这条账号，指标类以最新抓取为准。
 
     表格导入时先按主页链接建好达人，抓取完成后回填资料，避免重复建档。
     """
     form = avatar_cache.localize_form_avatar(dict(form))
-    always_overwrite = {"fb_followers", "fb_likes", "fb_rating", "fb_rating_count"}
     for field in _FORM_INFLUENCER_FIELDS:
         value = form.get(field)
         if value in (None, ""):
             continue
         if field == "display_name" and str(value).strip().lower() == "unknown":
             continue
-        if field in always_overwrite or getattr(inf, field, None) in (None, "", []):
+        if getattr(inf, field, None) in (None, "", []):
             setattr(inf, field, value)
     if isinstance(form.get("_ig_profile"), dict):
         inf.raw_profile = form["_ig_profile"]
 
-    if str(form.get("platform") or "").lower() == "instagram":
-        upsert_social_account(
+    platform, account = account_fields_from_form(form)
+    if account or social_account_id:
+        acc = upsert_social_account(
             db,
             inf.id,
-            SocialPlatform.instagram,
-            handle=form.get("ig_username"),
-            url=form.get("ig_url"),
-            followers=_to_int(form.get("followers")),
+            platform,
+            fields=account,
+            account_id=social_account_id,
+            keep_existing_url=True,
+            scraped=True,
         )
-    elif inf.fb_page_url or inf.fb_page_id:
-        upsert_social_account(
-            db,
-            inf.id,
-            SocialPlatform.facebook,
-            handle=inf.fb_page_id,
-            url=inf.fb_page_url,
-            followers=inf.fb_followers,
-        )
+        if acc is not None:
+            _sync_person_from_account(inf, account)
     db.commit()
     db.refresh(inf)
     return inf
@@ -826,15 +1008,16 @@ def create_from_scrape(
             db, owner_id, page_profile, post, notes, source_post_ids
         )
 
-    profile_data: dict[str, Any] = {}
+    mapped: dict[str, Any] = {}
     if page_profile:
-        profile_data.update(_map_page_profile(page_profile))
+        mapped.update(_map_page_profile(page_profile))
 
     if post:
-        profile_data.setdefault("display_name", post.author_name or "Unknown")
-        profile_data.setdefault("fb_page_url", post.author_url)
-        profile_data.setdefault("fb_page_id", post.author_page_id)
+        mapped.setdefault("display_name", post.author_name or "Unknown")
+        mapped.setdefault("fb_page_url", post.author_url)
+        mapped.setdefault("fb_page_id", post.author_page_id)
 
+    profile_data, account = _split_person_and_account(mapped)
     profile_data.setdefault("display_name", "Unknown")
     profile_data["source"] = InfluencerSource.scrape
     profile_data["owner_id"] = owner_id
@@ -844,8 +1027,8 @@ def create_from_scrape(
     existing = find_duplicate(
         db,
         owner_id=owner_id,
-        fb_page_id=profile_data.get("fb_page_id"),
-        fb_page_url=profile_data.get("fb_page_url"),
+        fb_page_id=account.get("page_id"),
+        fb_page_url=account.get("url"),
         email=profile_data.get("email"),
     )
     if existing:
@@ -853,25 +1036,28 @@ def create_from_scrape(
         _attach_posts(db, existing.id, post, source_post_ids)
         return existing
 
-    inf = Influencer(**avatar_cache.localize_form_avatar(profile_data))
+    inf = Influencer(**profile_data)
     db.add(inf)
     db.flush()
 
-    if inf.fb_page_url or inf.fb_page_id:
-        db.add(
-            InfluencerSocialAccount(
-                influencer_id=inf.id,
-                platform=SocialPlatform.facebook,
-                platform_id=resolve_platform_id(db, SocialPlatform.facebook),
-                handle=inf.fb_page_id,
-                url=inf.fb_page_url,
-                followers=inf.fb_followers,
-            )
-        )
+    if account.get("url") or account.get("page_id"):
+        _new_account(db, inf.id, SocialPlatform.facebook, account)
 
     _attach_posts(db, inf.id, post, source_post_ids)
     db.refresh(inf)
     return inf
+
+
+def _split_person_and_account(mapped: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """把 ``_map_page_profile`` 的结果拆成 (主表字段, Facebook 账号字段)。"""
+    mapped = avatar_cache.localize_form_avatar(dict(mapped))
+    person = {
+        k: v
+        for k, v in mapped.items()
+        if k in _FORM_INFLUENCER_FIELDS or k == "raw_profile"
+    }
+    person = {k: v for k, v in person.items() if v not in (None, "")}
+    return person, fb_account_fields_from_form(mapped)
 
 
 def _attach_posts(
@@ -912,20 +1098,21 @@ def create_from_group_post(
 
     返回 (influencer, created)，created 为 True 表示新建，False 表示命中已有。
     """
-    profile_data: dict[str, Any] = {}
+    mapped: dict[str, Any] = {}
     if page_profile:
-        profile_data.update(_map_page_profile(page_profile))
+        mapped.update(_map_page_profile(page_profile))
 
     # 帖子兜底：群组帖子里的作者就是个人主页，用其作为最低限度的资料
-    profile_data.setdefault("display_name", post.user_name or "Unknown")
+    mapped.setdefault("display_name", post.user_name or "Unknown")
     if profile_url:
-        profile_data.setdefault("fb_page_url", profile_url)
+        mapped.setdefault("fb_page_url", profile_url)
     if post.user_id:
-        profile_data.setdefault("fb_page_id", str(post.user_id))
+        mapped.setdefault("fb_page_id", str(post.user_id))
         # 记录帖子作者 user.id，后续按作者去重 / 命中已建联
-        profile_data["fb_author_id"] = str(post.user_id)
-    profile_data.setdefault("display_name", "Unknown")
+        mapped["fb_author_id"] = str(post.user_id)
 
+    profile_data, account = _split_person_and_account(mapped)
+    profile_data.setdefault("display_name", "Unknown")
     profile_data["source"] = InfluencerSource.scrape
     profile_data["owner_id"] = owner_id
     if notes:
@@ -935,8 +1122,8 @@ def create_from_group_post(
         db,
         owner_id=owner_id,
         fb_author_id=str(post.user_id) if post.user_id else None,
-        fb_page_id=profile_data.get("fb_page_id"),
-        fb_page_url=profile_data.get("fb_page_url"),
+        fb_page_id=account.get("page_id"),
+        fb_page_url=account.get("url"),
         email=profile_data.get("email"),
     )
     if existing:
@@ -944,21 +1131,12 @@ def create_from_group_post(
         db.commit()
         return existing, False
 
-    inf = Influencer(**avatar_cache.localize_form_avatar(profile_data))
+    inf = Influencer(**profile_data)
     db.add(inf)
     db.flush()
 
-    if inf.fb_page_url or inf.fb_page_id:
-        db.add(
-            InfluencerSocialAccount(
-                influencer_id=inf.id,
-                platform=SocialPlatform.facebook,
-                platform_id=resolve_platform_id(db, SocialPlatform.facebook),
-                handle=inf.fb_page_id,
-                url=inf.fb_page_url,
-                followers=inf.fb_followers,
-            )
-        )
+    if account.get("url") or account.get("page_id"):
+        _new_account(db, inf.id, SocialPlatform.facebook, account)
 
     post.influencer_id = inf.id
     db.commit()

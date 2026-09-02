@@ -49,6 +49,7 @@ from app.schemas.influencer import (
     PlatformOption,
     SocialAccountCreate,
     SocialAccountOut,
+    SocialAccountScrapeRequest,
     SocialAccountUpdate,
 )
 from app.services import apify_service, avatar_cache, influencer_service
@@ -172,7 +173,8 @@ def _auto_save_from_task(
 ) -> None:
     """抓取完成后自动把结果存入建联达人库（发私信后 / 勾选「抓完直接入库」时用）。
 
-    任务来自表格导入（已绑定 influencer_id）时改为把资料补写回那条达人，不再新建。
+    任务来自表格导入 / 列表一键抓取（已绑定 influencer_id）时改为把资料补写回那条达人，不再新建；
+    绑定了 social_account_id 时账号维度的结果直接回写到这条关联账号。
     """
     if not isinstance(task.result, dict) or not task.result:
         return
@@ -181,7 +183,9 @@ def _auto_save_from_task(
             inf = db.get(Influencer, task.influencer_id)
             if inf is None:
                 return
-            influencer_service.enrich_influencer_from_form(db, inf, task.result)
+            influencer_service.enrich_influencer_from_form(
+                db, inf, task.result, social_account_id=task.social_account_id
+            )
             if save_status:
                 inf.status = InfluencerStatus(save_status)
                 db.commit()
@@ -320,29 +324,22 @@ INFLUENCER_CSV_COLUMNS = [
     ("地址", "address"),
     ("邮箱", "email"),
     ("电话", "phone"),
-    ("Messenger", "messenger"),
     ("网站", "website"),
     ("粉丝数", lambda r: getattr(r, "followers", None) or ""),
     (
         "关联账号",
         lambda r: " | ".join(
             f"{a.platform.value if hasattr(a.platform, 'value') else a.platform}:"
-            f"{a.handle or a.url or ''}"
+            f"{a.title or a.handle or a.url or ''}"
             f"({a.followers if a.followers is not None else '-'})"
             for a in (getattr(r, "accounts", None) or [])
         ),
     ),
-    ("FB主页URL", "fb_page_url"),
-    ("FB标题", "fb_page_title"),
-    ("FB分类", "fb_categories"),
-    ("FB粉丝", "fb_followers"),
-    ("FB点赞", "fb_likes"),
-    ("FB评分", "fb_rating"),
-    ("FB评分数", "fb_rating_count"),
-    ("打卡/标记", "fb_checkins_mentions"),
-    ("主页创建", "fb_page_created_at"),
-    ("广告库ID", "fb_ad_library_id"),
-    ("广告状态", "fb_ad_status"),
+    ("账号链接", lambda r: " | ".join(a.url for a in (getattr(r, "accounts", None) or []) if a.url)),
+    ("Messenger", lambda r: " | ".join(a.messenger for a in (getattr(r, "accounts", None) or []) if a.messenger)),
+    ("账号点赞", lambda r: " | ".join(str(a.likes) for a in (getattr(r, "accounts", None) or []) if a.likes is not None)),
+    ("账号评分", lambda r: " | ".join(str(a.rating) for a in (getattr(r, "accounts", None) or []) if a.rating is not None)),
+    ("账号备注", lambda r: " | ".join(a.notes for a in (getattr(r, "accounts", None) or []) if a.notes)),
     ("状态", lambda r: r.status.value if r.status else ""),
     ("来源", lambda r: r.source.value if r.source else ""),
     ("类型", lambda r: r.platform_name or ""),
@@ -355,18 +352,28 @@ INFLUENCER_CSV_COLUMNS = [
 
 
 def _followers_expr():
-    """达人粉丝数口径：FB 主字段与各关联社交账号粉丝取最大值。"""
-    from sqlalchemy import case, func, select
+    """达人粉丝数口径：各关联账号粉丝数取最大值；没有任何账号时才退化用旧的主表 fb_followers。"""
+    from sqlalchemy import func, select
 
-    max_account = func.coalesce(
+    max_account = (
         select(func.max(InfluencerSocialAccount.followers))
         .where(InfluencerSocialAccount.influencer_id == Influencer.id)
         .correlate(Influencer)
-        .scalar_subquery(),
-        0,
+        .scalar_subquery()
     )
-    fb = func.coalesce(Influencer.fb_followers, 0)
-    return case((fb >= max_account, fb), else_=max_account)
+    return func.coalesce(max_account, Influencer.fb_followers, 0)
+
+
+def _account_keyword_exists(like: str):
+    """关键词命中任一关联账号的链接 / handle / 账号名。"""
+    from sqlalchemy import exists
+
+    return exists().where(
+        InfluencerSocialAccount.influencer_id == Influencer.id,
+        (InfluencerSocialAccount.url.like(like))
+        | (InfluencerSocialAccount.handle.like(like))
+        | (InfluencerSocialAccount.title.like(like)),
+    )
 
 
 def _apply_influencer_filters(
@@ -387,6 +394,7 @@ def _apply_influencer_filters(
             | (Influencer.real_name.like(like))
             | (Influencer.email.like(like))
             | (Influencer.fb_page_url.like(like))
+            | _account_keyword_exists(like)
         )
     if status_eq:
         q = q.filter(Influencer.status == status_eq)
@@ -455,7 +463,7 @@ def list_influencers(
 
 
 def _attach_accounts(db: Session, items: list[Influencer]) -> None:
-    """给列表里的达人挂上关联社交账号，并算出粉丝数（FB 主字段与各账号取最大）。"""
+    """给列表里的达人挂上关联社交账号，并算出粉丝数（各账号取最大；没账号时退化用旧 fb_followers）。"""
     ids = [i.id for i in items]
     if not ids:
         return
@@ -473,7 +481,7 @@ def _attach_accounts(db: Session, items: list[Influencer]) -> None:
     for i in items:
         i.accounts = grouped.get(i.id, [])
         counts = [a.followers for a in i.accounts if a.followers is not None]
-        if i.fb_followers is not None:
+        if not i.accounts and i.fb_followers is not None:
             counts.append(i.fb_followers)
         i.followers = max(counts) if counts else None
 
@@ -661,6 +669,10 @@ def create_influencer(
         fields = sa.model_dump()
         if fields.get("platform_id") is None:
             fields["platform_id"] = influencer_service.resolve_platform_id(db, sa.platform)
+        if not fields.get("handle"):
+            fields["handle"] = influencer_service.handle_from_url(
+                fields.get("url"), fields.get("page_id")
+            )
         db.add(InfluencerSocialAccount(influencer_id=inf.id, **fields))
     db.commit()
     db.refresh(inf)
@@ -1054,17 +1066,13 @@ async def import_influencers(
                 owner_id=user.id,
                 platform_id=match_platform_code(row_platform, platform_codes),
             )
-            if row_platform == "facebook":
-                inf.fb_page_url = url
             db.add(inf)
             db.flush()
             created += 1
         else:
             duplicated += 1
         followers = _to_followers(_cell(row, followers_column))
-        if row_platform == "facebook" and followers is not None and inf.fb_followers is None:
-            inf.fb_followers = followers
-        influencer_service.upsert_social_account(
+        account = influencer_service.upsert_social_account(
             db,
             inf.id,
             social,
@@ -1076,6 +1084,8 @@ async def import_influencers(
         )
         if scrape:
             scrapable = row_platform in SCRAPABLE_PLATFORMS
+            if account is not None and account.id is None:
+                db.flush()
             task = InfluencerScrapeTask(
                 owner_id=user.id,
                 platform=row_platform,
@@ -1083,6 +1093,7 @@ async def import_influencers(
                 batch=batch_name,
                 status="pending" if scrapable else "staged",
                 influencer_id=inf.id,
+                social_account_id=account.id if account is not None else None,
             )
             db.add(task)
             if scrapable:
@@ -1550,11 +1561,55 @@ def add_social_account(
     if fields.get("platform_id") is None:
         fields["platform_id"] = influencer_service.resolve_platform_id(db, payload.platform)
     _ensure_platform_access(db, inf.owner_id, fields.get("platform_id"))
+    if not fields.get("handle"):
+        fields["handle"] = influencer_service.handle_from_url(
+            fields.get("url"), fields.get("page_id")
+        )
     sa = InfluencerSocialAccount(influencer_id=iid, **fields)
     db.add(sa)
     db.commit()
     db.refresh(sa)
     return sa
+
+
+@router.post("/{iid}/social-accounts/scrape", response_model=InfluencerScrapeTaskOut)
+def scrape_social_account(
+    iid: int,
+    payload: SocialAccountScrapeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """列表「一键抓取」：选中该达人的某条关联账号（仅 Facebook / Instagram）后后台抓取，
+    结果自动回写到这条账号（主表只补空的「人」维度字段）。"""
+    inf = db.get(Influencer, iid)
+    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+        raise HTTPException(status_code=404, detail="influencer not found")
+    sa = db.get(InfluencerSocialAccount, payload.social_account_id)
+    if not sa or sa.influencer_id != iid:
+        raise HTTPException(status_code=404, detail="social account not found")
+    platform = sa.platform.value if isinstance(sa.platform, SocialPlatform) else str(sa.platform)
+    if platform not in SCRAPABLE_PLATFORMS:
+        raise HTTPException(status_code=400, detail=f"平台 {platform} 暂不支持一键抓取，目前仅支持 Facebook / Instagram")
+    url = (sa.url or "").strip()
+    if not url and platform == "instagram" and sa.handle:
+        url = influencer_service.build_ig_profile_url(sa.handle)
+    if not url:
+        raise HTTPException(status_code=400, detail="该账号没有主页链接，请先编辑账号补上链接")
+    task = InfluencerScrapeTask(
+        owner_id=inf.owner_id,
+        platform=platform,
+        url=url,
+        status="pending",
+        influencer_id=iid,
+        social_account_id=sa.id,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    threading.Thread(
+        target=_run_scrape_profile_bg, args=(task.id, True), daemon=True
+    ).start()
+    return _scrape_task_out(db, task)
 
 
 @router.put("/{iid}/social-accounts/{sid}", response_model=SocialAccountOut)
@@ -1579,6 +1634,8 @@ def update_social_account(
         setattr(sa, field, value)
     if data.get("platform") and "platform_id" not in data:
         sa.platform_id = influencer_service.resolve_platform_id(db, sa.platform)
+    if not sa.handle:
+        sa.handle = influencer_service.handle_from_url(sa.url, sa.page_id)
     db.commit()
     db.refresh(sa)
     return sa

@@ -37,6 +37,12 @@ class InfluencerScrapeTask(Base, TimestampMixin):
     influencer_id: Mapped[int | None] = mapped_column(
         ForeignKey("influencers.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # 列表「一键抓取」时绑定的关联账号：抓取结果回写到这条账号，而不是按链接再去猜
+    social_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("influencer_social_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

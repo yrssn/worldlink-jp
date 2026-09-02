@@ -43,6 +43,7 @@ def create_all() -> None:
     _ensure_influencer_country_column()
     _ensure_influencer_scrape_task_columns()
     _ensure_social_account_platform_column()
+    _ensure_social_account_profile_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -243,6 +244,14 @@ def _ensure_influencer_scrape_task_columns() -> None:
             "ALTER TABLE influencer_scrape_tasks "
             "ADD INDEX ix_influencer_scrape_tasks_influencer_id (influencer_id)"
         )
+    if "social_account_id" not in cols:
+        patches.append(
+            "ALTER TABLE influencer_scrape_tasks ADD COLUMN social_account_id INT NULL"
+        )
+        patches.append(
+            "ALTER TABLE influencer_scrape_tasks "
+            "ADD INDEX ix_ist_social_account_id (social_account_id)"
+        )
     for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)
@@ -267,6 +276,55 @@ def _ensure_social_account_platform_column() -> None:
         "ALTER TABLE influencer_social_accounts "
         "ADD INDEX ix_influencer_social_accounts_platform_id (platform_id)",
     ):
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+#: influencer_social_accounts 账号维度列（与 backend/sql/2026_social_account_fields.sql 一致）
+_SOCIAL_ACCOUNT_PROFILE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("page_id", "VARCHAR(128) NULL"),
+    ("author_id", "VARCHAR(255) NULL"),
+    ("title", "VARCHAR(255) NULL"),
+    ("avatar_url", "VARCHAR(512) NULL"),
+    ("categories", "JSON NULL"),
+    ("likes", "INT NULL"),
+    ("rating", "FLOAT NULL"),
+    ("rating_count", "INT NULL"),
+    ("checkins_mentions", "INT NULL"),
+    ("page_created_at", "DATETIME NULL"),
+    ("ad_library_id", "VARCHAR(128) NULL"),
+    ("ad_status", "VARCHAR(64) NULL"),
+    ("messenger", "VARCHAR(255) NULL"),
+    ("notes", "VARCHAR(512) NULL"),
+    ("last_scraped_at", "DATETIME NULL"),
+)
+
+
+def _ensure_social_account_profile_columns() -> None:
+    """为 influencer_social_accounts 补齐账号维度列（开发环境自动补；线上请手工执行 SQL）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "influencer_social_accounts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("influencer_social_accounts")}
+    patches = [
+        f"ALTER TABLE influencer_social_accounts ADD COLUMN {name} {ddl}"
+        for name, ddl in _SOCIAL_ACCOUNT_PROFILE_COLUMNS
+        if name not in cols
+    ]
+    if "page_id" not in cols:
+        patches.append(
+            "ALTER TABLE influencer_social_accounts ADD INDEX ix_isa_page_id (page_id)"
+        )
+        patches.append(
+            "ALTER TABLE influencer_social_accounts ADD INDEX ix_isa_url (url(191))"
+        )
+    for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)
             with engine.begin() as conn:
