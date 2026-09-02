@@ -1,8 +1,8 @@
+# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=Asia/Tokyo
 
@@ -10,7 +10,12 @@ WORKDIR /app
 
 # 系统依赖：mysqlclient/cryptography 编译时需要的 build-essential / libffi-dev / libssl-dev
 # tini 作为 PID 1，处理信号
-RUN apt-get update \
+# 国内服务器构建可通过 compose 传 APT_MIRROR（如 mirrors.tuna.tsinghua.edu.cn）替换 debian 源
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
@@ -21,11 +26,13 @@ RUN apt-get update \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# 国内构建可改成清华源（按需取消注释）
-# RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# pip 源通过 compose 的 PIP_INDEX_URL 传入（默认官方 PyPI）
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_INDEX_URL=$PIP_INDEX_URL
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install --upgrade pip \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
     && pip install -r /app/requirements.txt
 
 COPY . /app

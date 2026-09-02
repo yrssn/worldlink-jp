@@ -11,11 +11,24 @@ version: "3.8"
 #      - MYSQL_HOST 写 mysql 容器名（如 mysql），MYSQL_PORT 写容器内端口 3306
 #      - REDIS_HOST 写 redis（服务名）
 #   4. 启动:  docker-compose up -d --build
+#
+# 更新代码时建议分两步，构建期间旧容器继续服务、不停机：
+#   docker compose build            # 只构建镜像（依赖层有缓存，仅改代码时很快）
+#   docker compose up -d            # 用新镜像重建容器（秒级）
+# 只想恢复服务、不重新构建：docker compose up -d（直接用现有镜像）
+# 国内服务器构建慢：在 compose 同级 .env 写 NPM_REGISTRY / PIP_INDEX_URL / APT_MIRROR（见下方 build.args）
 # ============================================================
 
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        # 国内服务器：在宿主机 .env（compose 同级）里设置
+        #   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        #   APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        APT_MIRROR: ${APT_MIRROR:-}
     image: spider-jp-worldlink-backend:latest
     container_name: worldlink-backend
     restart: unless-stopped
@@ -41,7 +54,11 @@ services:
       - mysql-net
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # 国内服务器：NPM_REGISTRY=https://registry.npmmirror.com
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     image: spider-jp-worldlink-frontend:latest
     container_name: worldlink-frontend
     restart: unless-stopped
