@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, String
+from sqlalchemy import JSON, Boolean, DateTime, Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -32,6 +32,8 @@ class User(Base, TimestampMixin):
     bitbrowser_api_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     #: 该用户最近一次从 BitBrowser 本地服务拉取并写入 ``bitbrowser_windows`` 的时间（UTC 存库）
     bitbrowser_last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: 导入 / 批量导入时要“区别开”的对照账号：主页链接已在这些用户名下的行跳过不入库
+    dedupe_against_user_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     #: RBAC 角色（多对多）；``role`` 字段保留作为兼容字段（admin 视为超级管理员）
     roles: Mapped[list[Role]] = relationship(

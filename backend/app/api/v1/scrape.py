@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_user, get_db, is_admin
+from app.core.deps import can_view, get_current_user, get_db, owner_filter
 from app.db.session import SessionLocal
 from app.models.post import Post
 from app.models.scrape import ScrapeTask, ScrapeTaskStatus, ScrapeTaskType
@@ -49,8 +49,7 @@ def list_tasks(
     user: User = Depends(get_current_user),
 ):
     q = db.query(ScrapeTask)
-    if not is_admin(user):
-        q = q.filter(ScrapeTask.owner_id == user.id)
+    q = owner_filter(q, ScrapeTask, user)
     return q.order_by(ScrapeTask.id.desc()).all()
 
 
@@ -61,7 +60,7 @@ def get_task(
     user: User = Depends(get_current_user),
 ):
     task = db.get(ScrapeTask, tid)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     return task
 
@@ -73,7 +72,7 @@ def cancel_task(
     user: User = Depends(get_current_user),
 ):
     task = db.get(ScrapeTask, tid)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     if task.status in (ScrapeTaskStatus.success, ScrapeTaskStatus.failed):
         return Msg(msg="already finished")
@@ -91,7 +90,7 @@ def scrape_author_pages_from_posts(
 ):
     """勾选帖子后，按作者主页 URL 抓 facebook-pages-scraper 并合并到 page_results。"""
     task = db.get(ScrapeTask, tid)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     if task.task_type not in (
         ScrapeTaskType.fb_posts_by_page,
@@ -120,7 +119,7 @@ def list_task_posts(
 ):
     """返回该任务抓回来的帖子（仅 fb_posts_* 任务有数据）。"""
     task = db.get(ScrapeTask, tid)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     q = db.query(Post).filter(Post.task_id == tid)
     if only_passed:
@@ -192,7 +191,7 @@ def export_task_posts(
 ):
     """导出某任务抓到的帖子（CSV）。"""
     task = db.get(ScrapeTask, tid)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     q = db.query(Post).filter(Post.task_id == tid)
     if only_passed:
@@ -211,7 +210,7 @@ def export_task_pages(
 ):
     """导出某任务抓到的主页结果（CSV）。"""
     task = db.get(ScrapeTask, tid)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     items: list[dict[str, Any]] = []
     if task.extra_input and isinstance(task.extra_input, dict):
@@ -233,7 +232,7 @@ def list_task_pages(
 ):
     """返回该任务抓回来的 Page 列表（待审核博主）。"""
     task = db.get(ScrapeTask, tid)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
 
     items: list[dict[str, Any]] = []

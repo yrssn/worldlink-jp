@@ -1,6 +1,8 @@
 """RBAC 服务：种子数据初始化、权限解析。"""
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -122,11 +124,49 @@ def is_super_admin(user: User) -> bool:
     return any(r.code == SUPER_ADMIN_ROLE_CODE for r in active_roles(user))
 
 
+#: 本次请求路径命中的菜单 code（由 ``permission_guard`` 在每次请求开头写入），
+#: 用于按路由解析角色的“单路由数据范围”。
+current_menu_codes: ContextVar[tuple[str, ...]] = ContextVar(
+    "current_menu_codes", default=()
+)
+
+SCOPE_ALL = "all"
+SCOPE_USERS = "users"
+
+
+def _route_scopes(user: User) -> list[dict]:
+    """当前路由上，用户各启用角色配置的单路由数据范围。"""
+    codes = current_menu_codes.get()
+    if not codes:
+        return []
+    found: list[dict] = []
+    for role in active_roles(user):
+        cfg = role.menu_data_scopes or {}
+        for code in codes:
+            item = cfg.get(code)
+            if isinstance(item, dict) and item.get("scope") in (SCOPE_ALL, SCOPE_USERS):
+                found.append(item)
+    return found
+
+
 def has_full_data_scope(user: User) -> bool:
-    """是否可以看全部用户的数据。"""
+    """是否可以看全部用户的数据（全局，或者当前路由被单独放宽为“全部”）。"""
     if is_super_admin(user):
         return True
-    return any(r.data_scope == DataScope.all for r in active_roles(user))
+    if any(r.data_scope == DataScope.all for r in active_roles(user)):
+        return True
+    return any(item.get("scope") == SCOPE_ALL for item in _route_scopes(user))
+
+
+def visible_owner_ids(user: User) -> set[int] | None:
+    """当前路由上可见数据的 owner_id 集合；``None`` = 不限（全部数据）。"""
+    if has_full_data_scope(user):
+        return None
+    ids = {user.id}
+    for item in _route_scopes(user):
+        if item.get("scope") == SCOPE_USERS:
+            ids.update(int(x) for x in (item.get("user_ids") or []) if str(x).isdigit())
+    return ids
 
 
 def user_menus(db: Session, user: User) -> list[Menu]:

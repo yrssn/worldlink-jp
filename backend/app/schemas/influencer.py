@@ -288,6 +288,13 @@ class ImportPreviewOut(BaseModel):
     fields: list[ImportFieldOut] = []
 
 
+class ImportConflictOut(BaseModel):
+    """导入时被「对照账号」占用而跳过的行。"""
+
+    url: str
+    owner: str
+
+
 class ImportResultOut(BaseModel):
     """表格导入结果统计。"""
 
@@ -299,6 +306,9 @@ class ImportResultOut(BaseModel):
     skipped: int
     scrape_tasks: int
     batch: Optional[str] = None
+    #: 主页链接已在对照账号名下、按配置区别开而跳过的行数及明细
+    cross_user_skipped: int = 0
+    cross_user_conflicts: list[ImportConflictOut] = Field(default_factory=list)
 
 
 class InfluencerScrapeBatchActionResult(BaseModel):

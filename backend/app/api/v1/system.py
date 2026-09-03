@@ -208,7 +208,7 @@ def create_role(
 ) -> RoleOut:
     if db.query(Role).filter(Role.code == payload.code).first():
         raise HTTPException(status_code=400, detail="角色编码已存在")
-    role = Role(**payload.model_dump(exclude={"menu_ids"}))
+    role = Role(**payload.model_dump(exclude={"menu_ids"}, mode="json"))
     role.menus = db.query(Menu).filter(Menu.id.in_(payload.menu_ids)).all()
     db.add(role)
     db.commit()
@@ -231,6 +231,7 @@ def update_role(
         # 超级管理员的菜单与数据范围固定，避免把自己锁死在系统外
         menu_ids = None
         data.pop("data_scope", None)
+        data.pop("menu_data_scopes", None)
         data.pop("is_active", None)
     if "name" in data:
         role.name = data["name"]
@@ -238,6 +239,8 @@ def update_role(
         role.remark = data["remark"]
     if "data_scope" in data:
         role.data_scope = data["data_scope"]
+    if "menu_data_scopes" in data:
+        role.menu_data_scopes = payload.model_dump(mode="json")["menu_data_scopes"] or None
     if "is_active" in data:
         role.is_active = data["is_active"]
     if "sort_order" in data:
@@ -280,6 +283,7 @@ def _sync_legacy_role_field(user: User) -> None:
 def _user_out(user: User) -> SysUserOut:
     out = SysUserOut.model_validate(user)
     out.is_super_admin = rbac_service.is_super_admin(user)
+    out.dedupe_against_user_ids = [int(x) for x in (user.dedupe_against_user_ids or [])]
     return out
 
 
@@ -306,6 +310,7 @@ def create_user(
         full_name=payload.full_name,
         is_active=payload.is_active,
         role=UserRole.user,
+        dedupe_against_user_ids=payload.dedupe_against_user_ids or None,
     )
     user.roles = db.query(Role).filter(Role.id.in_(payload.role_ids)).all()
     _sync_legacy_role_field(user)
@@ -334,6 +339,10 @@ def update_user(
         user.full_name = data["full_name"]
     if "is_active" in data:
         user.is_active = data["is_active"]
+    if "dedupe_against_user_ids" in data:
+        user.dedupe_against_user_ids = [
+            i for i in (data["dedupe_against_user_ids"] or []) if i != user.id
+        ] or None
     if role_ids is not None:
         if user.id == current.id and not any(
             r.code == rbac_service.SUPER_ADMIN_ROLE_CODE

@@ -10,7 +10,7 @@ from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.deps import get_current_user, get_db, is_admin
+from app.core.deps import can_view, get_current_user, get_db, is_admin, owner_filter
 from app.db.session import SessionLocal
 from app.models.fb_group_scrape import (
     FbGroupPost,
@@ -291,8 +291,7 @@ def _to_task_out(task: FbGroupPullTask) -> FbGroupPullTaskOut:
 
 def _active_query(db: Session, user: User, *, include_deleted: bool):
     q = db.query(FbGroupScrapeConfig).options(joinedload(FbGroupScrapeConfig.creator))
-    if not is_admin(user):
-        q = q.filter(FbGroupScrapeConfig.created_by_id == user.id)
+    q = owner_filter(q, FbGroupScrapeConfig, user, attr="created_by_id")
     if not include_deleted:
         q = q.filter(FbGroupScrapeConfig.deleted_at.is_(None))
     return q
@@ -532,8 +531,7 @@ def batch_pull_fb_group_posts(
         )
         .all()
     )
-    if not is_admin(user):
-        configs = [c for c in configs if c.created_by_id == user.id]
+    configs = [c for c in configs if can_view(c, user, attr="created_by_id")]
 
     found_ids = {c.id for c in configs}
     missing = [i for i in body.config_ids if i not in found_ids]
@@ -601,8 +599,7 @@ def list_pull_tasks(
         )
         .filter(FbGroupPullTask.config_id == row.id)
     )
-    if not is_admin(user):
-        q = q.filter(FbGroupPullTask.created_by_id == user.id)
+    q = owner_filter(q, FbGroupPullTask, user, attr="created_by_id")
     tasks = q.order_by(FbGroupPullTask.id.desc()).all()
     return [_to_task_out(t) for t in tasks]
 
@@ -625,7 +622,7 @@ def get_pull_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not is_admin(user) and task.created_by_id != user.id:
+    if not can_view(task, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权访问")
     return _to_task_out(task)
 
@@ -648,7 +645,7 @@ def fail_pull_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not is_admin(user) and task.created_by_id != user.id:
+    if not can_view(task, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权操作")
     if task.status not in (FbGroupPullTaskStatus.pending, FbGroupPullTaskStatus.running):
         raise HTTPException(status_code=400, detail=f"任务当前状态为 {task.status}，无需标记失败")
@@ -732,7 +729,7 @@ def list_task_posts(
     task = db.query(FbGroupPullTask).filter(FbGroupPullTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not is_admin(user) and task.created_by_id != user.id:
+    if not can_view(task, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权访问")
 
     base = db.query(FbGroupPost).filter(FbGroupPost.task_id == task_id)
@@ -778,7 +775,7 @@ def _get_post_or_404(db: Session, user: User, post_id: int) -> FbGroupPost:
     if not post:
         raise HTTPException(status_code=404, detail="帖子不存在")
     task = db.query(FbGroupPullTask).filter(FbGroupPullTask.id == post.task_id).first()
-    if task and not is_admin(user) and task.created_by_id != user.id:
+    if task and not can_view(task, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权访问")
     return post
 
@@ -832,7 +829,7 @@ def analyze_task_posts_endpoint(
     task = db.query(FbGroupPullTask).filter(FbGroupPullTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not is_admin(user) and task.created_by_id != user.id:
+    if not can_view(task, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权访问")
     posts = db.query(FbGroupPost).filter(FbGroupPost.task_id == task_id).all()
     filtered = fb_group_analysis.analyze_posts(db, task.created_by_id, posts)
@@ -942,8 +939,7 @@ def list_schedule_tasks(
         )
         .filter(FbGroupScheduleTask.config_id == row.id)
     )
-    if not is_admin(user):
-        q = q.filter(FbGroupScheduleTask.created_by_id == user.id)
+    q = owner_filter(q, FbGroupScheduleTask, user, attr="created_by_id")
     tasks = q.order_by(FbGroupScheduleTask.id.desc()).all()
     return [_to_schedule_out(t) for t in tasks]
 
@@ -967,7 +963,7 @@ def update_schedule_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="定时任务不存在")
-    if not is_admin(user) and task.created_by_id != user.id:
+    if not can_view(task, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权修改")
 
     data = body.model_dump(exclude_unset=True)
@@ -994,7 +990,7 @@ def delete_schedule_task(
     task = db.query(FbGroupScheduleTask).filter(FbGroupScheduleTask.id == schedule_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="定时任务不存在")
-    if not is_admin(user) and task.created_by_id != user.id:
+    if not can_view(task, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权删除")
 
     db.delete(task)
@@ -1018,7 +1014,7 @@ def execute_schedule_now(
     schedule = db.query(FbGroupScheduleTask).filter(FbGroupScheduleTask.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="定时任务不存在")
-    if not is_admin(user) and schedule.created_by_id != user.id:
+    if not can_view(schedule, user, attr="created_by_id"):
         raise HTTPException(status_code=403, detail="无权执行")
 
     # 构建拉取参数，支持增量拉取

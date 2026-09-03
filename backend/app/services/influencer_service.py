@@ -1142,3 +1142,50 @@ def create_from_group_post(
     db.commit()
     db.refresh(inf)
     return inf, True
+
+
+def cross_user_url_index(db: Session, user) -> dict[str, str]:
+    """用户配置了「对照账号」时，返回这些账号名下所有主页链接（归一化）→ 对照账号用户名。
+
+    覆盖：关联账号 url、旧主表 fb_page_url、以及抓取任务里留下的原始分享链接。
+    没配置对照账号时返回空 dict，导入 / 批量导入行为不变。
+    """
+    from app.models.influencer_scrape_task import InfluencerScrapeTask
+    from app.models.user import User
+
+    ids = {int(x) for x in (user.dedupe_against_user_ids or []) if str(x).isdigit()}
+    ids.discard(user.id)
+    if not ids:
+        return {}
+    names = {
+        uid: (name or f"#{uid}")
+        for uid, name in db.query(User.id, User.username).filter(User.id.in_(ids)).all()
+    }
+    index: dict[str, str] = {}
+
+    def put(url: Optional[str], owner_id: int) -> None:
+        key = normalize_fb_url(url)
+        if key and key not in index:
+            index[key] = names.get(owner_id, f"#{owner_id}")
+
+    rows = (
+        db.query(InfluencerSocialAccount.url, Influencer.owner_id)
+        .join(Influencer, Influencer.id == InfluencerSocialAccount.influencer_id)
+        .filter(Influencer.owner_id.in_(ids), InfluencerSocialAccount.url.isnot(None))
+        .all()
+    )
+    for url, owner_id in rows:
+        put(url, owner_id)
+    for url, owner_id in (
+        db.query(Influencer.fb_page_url, Influencer.owner_id)
+        .filter(Influencer.owner_id.in_(ids), Influencer.fb_page_url.isnot(None))
+        .all()
+    ):
+        put(url, owner_id)
+    for url, owner_id in (
+        db.query(InfluencerScrapeTask.url, InfluencerScrapeTask.owner_id)
+        .filter(InfluencerScrapeTask.owner_id.in_(ids))
+        .all()
+    ):
+        put(url, owner_id)
+    return index

@@ -40,12 +40,19 @@ export interface MenuPayload {
   remark?: string | null
 }
 
+/** 单个路由上放宽的数据范围：all = 该路由看全部人；users = 多看指定用户 */
+export interface MenuDataScope {
+  scope: 'all' | 'users'
+  user_ids: number[]
+}
+
 export interface Role {
   id: number
   code: string
   name: string
   remark: string | null
   data_scope: DataScope
+  menu_data_scopes: Record<string, MenuDataScope> | null
   is_active: boolean
   is_builtin: boolean
   sort_order: number
@@ -58,6 +65,7 @@ export interface RolePayload {
   name: string
   remark?: string | null
   data_scope?: DataScope
+  menu_data_scopes?: Record<string, MenuDataScope> | null
   is_active?: boolean
   sort_order?: number
   menu_ids?: number[]
@@ -80,6 +88,8 @@ export interface SysUser {
   created_at: string | null
   roles: RoleBrief[]
   is_super_admin: boolean
+  /** 导入 / 批量导入时按主页链接“区别开”的对照账号 */
+  dedupe_against_user_ids: number[]
 }
 
 export interface SysUserPayload {
@@ -87,6 +97,7 @@ export interface SysUserPayload {
   full_name?: string | null
   is_active?: boolean
   role_ids?: number[]
+  dedupe_against_user_ids?: number[]
 }
 
 export interface MyPermission {

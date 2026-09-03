@@ -14,7 +14,7 @@ from loguru import logger
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
-from app.core.deps import get_current_user, get_db, is_admin
+from app.core.deps import can_view, get_current_user, get_db, owner_filter
 from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform
 from app.models.country import Country
@@ -31,6 +31,7 @@ from app.schemas.influencer import (
     ImportColumnPreview,
     ImportFieldOut,
     ImportPreviewOut,
+    ImportConflictOut,
     ImportResultOut,
     InfluencerCreate,
     InfluencerDetailOut,
@@ -457,8 +458,7 @@ def list_influencers(
         joinedload(Influencer.country_ref),
         joinedload(Influencer.owner),
     )
-    if not is_admin(user):
-        q = q.filter(Influencer.owner_id == user.id)
+    q = owner_filter(q, Influencer, user)
     q = _apply_influencer_filters(
         q, keyword, status_eq, country, platform_id, country_id,
         followers_min, followers_max,
@@ -534,8 +534,7 @@ def export_influencers(
         joinedload(Influencer.country_ref),
         joinedload(Influencer.owner),
     )
-    if not is_admin(user):
-        q = q.filter(Influencer.owner_id == user.id)
+    q = owner_filter(q, Influencer, user)
     q = _apply_influencer_filters(
         q, keyword, status_eq, country, platform_id, country_id,
         followers_min, followers_max,
@@ -553,8 +552,7 @@ def list_influencer_countries(
 ):
     """当前可见达人里已用过的国家分类（供前端筛选/补全）。"""
     q = db.query(Influencer.country).distinct()
-    if not is_admin(user):
-        q = q.filter(Influencer.owner_id == user.id)
+    q = owner_filter(q, Influencer, user)
     return sorted({(row[0] or "").strip() for row in q.all() if (row[0] or "").strip()})
 
 
@@ -618,8 +616,7 @@ def cache_influencer_avatars(
 ):
     """把存量达人的远端头像下载到本机（国内免代理看图）。"""
     q = db.query(Influencer).filter(Influencer.avatar_url.like("http%"))
-    if not is_admin(user):
-        q = q.filter(Influencer.owner_id == user.id)
+    q = owner_filter(q, Influencer, user)
     rows = q.order_by(Influencer.id.desc()).limit(limit).all()
     cached = 0
     failed = 0
@@ -787,17 +784,20 @@ def _stage_urls(
     if not urls:
         raise HTTPException(status_code=400, detail="没有可导入的链接")
     batch_name = (batch or "").strip() or _default_batch_name(db, user.id)
+    cross_index = influencer_service.cross_user_url_index(db, user)
     created: list[InfluencerScrapeTask] = []
     for u in urls:
         row_platform = plat
         if row_platform == "auto":
             row_platform = detect_platform(u) or fallback
+        other = cross_index.get(influencer_service.normalize_fb_url(u))
         task = InfluencerScrapeTask(
             owner_id=user.id,
             platform=row_platform,
             url=u,
             batch=batch_name,
-            status="staged",
+            status="skipped" if other else "staged",
+            error=f"主页链接已在账号「{other}」名下，已区别开不抓取" if other else None,
         )
         db.add(task)
         created.append(task)
@@ -1150,6 +1150,8 @@ async def import_influencers(
     seen: set[str] = set()
     tasks: list[InfluencerScrapeTask] = []
     task_url_index = _scrape_task_url_index(db, user.id)
+    cross_index = influencer_service.cross_user_url_index(db, user)
+    cross_user_conflicts: list[ImportConflictOut] = []
     for row in rows:
         url = col(row, "url")
         if not url:
@@ -1160,6 +1162,10 @@ async def import_influencers(
             duplicated += 1
             continue
         seen.add(key)
+        other = cross_index.get(key)
+        if other:
+            cross_user_conflicts.append(ImportConflictOut(url=url, owner=other))
+            continue
         row_platform = (
             plat
             if plat != "auto"
@@ -1287,6 +1293,8 @@ async def import_influencers(
         skipped=skipped,
         scrape_tasks=len(tasks),
         batch=batch_name if scrape else None,
+        cross_user_skipped=len(cross_user_conflicts),
+        cross_user_conflicts=cross_user_conflicts,
     )
 
 
@@ -1301,8 +1309,7 @@ def list_scrape_profiles(
 ):
     """抓取/暂存任务列表：按创建时间倒序，支持按 平台 / 批次 / 状态 过滤。"""
     q = db.query(InfluencerScrapeTask)
-    if not is_admin(user):
-        q = q.filter(InfluencerScrapeTask.owner_id == user.id)
+    q = owner_filter(q, InfluencerScrapeTask, user)
     if platform:
         q = q.filter(InfluencerScrapeTask.platform == platform.strip().lower())
     if batch is not None:
@@ -1337,8 +1344,7 @@ def list_scrape_batches(
         func.sum(case((InfluencerScrapeTask.status == "failed", 1), else_=0)),
         func.sum(case((InfluencerScrapeTask.status == "done", 1), else_=0)),
     )
-    if not is_admin(user):
-        q = q.filter(InfluencerScrapeTask.owner_id == user.id)
+    q = owner_filter(q, InfluencerScrapeTask, user)
     rows = (
         q.group_by(
             InfluencerScrapeTask.platform,
@@ -1374,8 +1380,7 @@ def list_scrape_batches(
 def _batch_task_query(db: Session, user: User, batch: str | None, platform: str | None):
     """定位当前用户可见的抓取任务：batch=None 为不限批次，"" 为未分组。"""
     q = db.query(InfluencerScrapeTask)
-    if not is_admin(user):
-        q = q.filter(InfluencerScrapeTask.owner_id == user.id)
+    q = owner_filter(q, InfluencerScrapeTask, user)
     if batch is not None:
         b = batch.strip()
         if b:
@@ -1449,7 +1454,7 @@ def get_scrape_profile(
 ):
     """轮询自动抓取任务状态/结果。"""
     task = db.get(InfluencerScrapeTask, task_id)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     return _scrape_task_out(db, task)
 
@@ -1463,7 +1468,7 @@ def update_scrape_profile(
 ):
     """修改暂存任务字段（目前支持改平台，纠正批量导入时选错的平台）。"""
     task = db.get(InfluencerScrapeTask, task_id)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     if payload.platform is not None:
         platform = payload.platform.strip().lower()
@@ -1483,7 +1488,7 @@ def delete_scrape_profile(
 ):
     """删除一条暂存/抓取任务（不影响已入库的达人）。"""
     task = db.get(InfluencerScrapeTask, task_id)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     db.delete(task)
     db.commit()
@@ -1502,10 +1507,12 @@ def run_scrape_profile(
     payload.auto_save=True 时抓完直接入库，save_status 指定入库后的建联状态。
     """
     task = db.get(InfluencerScrapeTask, task_id)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     if task.status in ("running", "pending"):
         raise HTTPException(status_code=400, detail="该任务正在抓取中")
+    if task.status == "skipped":
+        raise HTTPException(status_code=400, detail=task.error or "该链接已在对照账号名下，已区别开")
     if (task.platform or "facebook") not in SCRAPABLE_PLATFORMS:
         raise HTTPException(
             status_code=400, detail=f"平台 {task.platform} 暂不支持自动抓取资料"
@@ -1539,7 +1546,7 @@ def save_scrape_profile(
     命中已有达人时复用、不重复创建，并通过 created=False 告知前端。
     """
     task = db.get(InfluencerScrapeTask, task_id)
-    if not task or (task.owner_id != user.id and not is_admin(user)):
+    if not task or not can_view(task, user):
         raise HTTPException(status_code=404, detail="task not found")
     if task.status != "done" or not isinstance(task.result, dict) or not task.result:
         raise HTTPException(status_code=400, detail="该任务尚未抓取完成，无法存入")
@@ -1563,7 +1570,7 @@ def get_influencer(
     user: User = Depends(get_current_user),
 ):
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     socials = (
         db.query(InfluencerSocialAccount)
@@ -1595,7 +1602,7 @@ def list_influencer_outreach_logs(
 ):
     """该达人的私信建联发送记录（各看各的：仅返回当前用户发送的记录）。"""
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     influencer_service.link_outreach_logs_for_influencer(db, inf)
     rows = (
@@ -1618,7 +1625,7 @@ def list_influencer_posts(
 ):
     """返回该达人所有来源帖子（含 AI 评分、原帖链接）。"""
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     rows = (
         db.query(Post)
@@ -1653,7 +1660,7 @@ def update_influencer(
     user: User = Depends(get_current_user),
 ):
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     data = payload.model_dump(exclude_unset=True)
     _ensure_platform_access(db, inf.owner_id, data.get("platform_id"))
@@ -1675,7 +1682,7 @@ def delete_influencer(
     user: User = Depends(get_current_user),
 ):
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     db.delete(inf)
     db.commit()
@@ -1692,7 +1699,7 @@ def create_from_scrape(
     post: Post | None = None
     if payload.post_id:
         post = db.get(Post, payload.post_id)
-        if not post or (post.owner_id != user.id and not is_admin(user)):
+        if not post or not can_view(post, user):
             raise HTTPException(status_code=404, detail="post not found")
     elif payload.author_url:
         post = (
@@ -1728,7 +1735,7 @@ def add_social_account(
     user: User = Depends(get_current_user),
 ):
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     fields = payload.model_dump()
     if fields.get("platform_id") is None:
@@ -1755,7 +1762,7 @@ def scrape_social_account(
     """列表「一键抓取」：选中该达人的某条关联账号（仅 Facebook / Instagram）后后台抓取，
     结果自动回写到这条账号（主表只补空的「人」维度字段）。"""
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     sa = db.get(InfluencerSocialAccount, payload.social_account_id)
     if not sa or sa.influencer_id != iid:
@@ -1795,7 +1802,7 @@ def update_social_account(
 ):
     """编辑社交账号：平台关联挂在账号上，改平台只影响这个账号。"""
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     sa = db.get(InfluencerSocialAccount, sid)
     if not sa or sa.influencer_id != iid:
@@ -1822,7 +1829,7 @@ def delete_social_account(
     user: User = Depends(get_current_user),
 ):
     inf = db.get(Influencer, iid)
-    if not inf or (inf.owner_id != user.id and not is_admin(user)):
+    if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     sa = db.get(InfluencerSocialAccount, sid)
     if not sa or sa.influencer_id != iid:
