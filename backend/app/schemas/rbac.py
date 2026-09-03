@@ -62,11 +62,20 @@ class MenuTreeOut(MenuOut):
 # --------------------------------------------------------------------------- #
 # 角色
 # --------------------------------------------------------------------------- #
+class MenuDataScope(BaseModel):
+    """单个路由上放宽的数据范围：all = 该路由看全部人的数据；users = 只多看指定用户的数据。"""
+
+    scope: str = Field(..., pattern="^(all|users)$")
+    user_ids: list[int] = Field(default_factory=list)
+
+
 class RoleBase(BaseModel):
     code: str = Field(..., min_length=2, max_length=64)
     name: str = Field(..., min_length=1, max_length=64)
     remark: Optional[str] = None
     data_scope: DataScope = DataScope.own
+    #: ``{menu_code: MenuDataScope}``，未列出的路由按 data_scope
+    menu_data_scopes: Optional[dict[str, MenuDataScope]] = None
     is_active: bool = True
     sort_order: int = 0
 
@@ -79,6 +88,7 @@ class RoleUpdate(BaseModel):
     name: Optional[str] = None
     remark: Optional[str] = None
     data_scope: Optional[DataScope] = None
+    menu_data_scopes: Optional[dict[str, MenuDataScope]] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
     menu_ids: Optional[list[int]] = None
@@ -104,6 +114,7 @@ class SysUserCreate(BaseModel):
     full_name: Optional[str] = None
     is_active: bool = True
     role_ids: list[int] = Field(default_factory=list)
+    dedupe_against_user_ids: list[int] = Field(default_factory=list)
 
 
 class SysUserUpdate(BaseModel):
@@ -111,6 +122,7 @@ class SysUserUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
     role_ids: Optional[list[int]] = None
+    dedupe_against_user_ids: Optional[list[int]] = None
 
 
 class PasswordResetIn(BaseModel):
@@ -143,6 +155,8 @@ class SysUserOut(BaseModel):
     created_at: datetime
     roles: list[RoleBriefOut] = Field(default_factory=list)
     is_super_admin: bool = False
+    #: 导入 / 批量导入时按主页链接“区别开”的对照账号
+    dedupe_against_user_ids: list[int] = Field(default_factory=list)
 
 
 class MyPermissionOut(BaseModel):

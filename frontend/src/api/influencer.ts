@@ -329,6 +329,9 @@ export interface ImportResult {
   skipped: number
   scrape_tasks: number
   batch?: string | null
+  /** 主页链接已在对照账号名下、按配置区别开而跳过的行 */
+  cross_user_skipped?: number
+  cross_user_conflicts?: { url: string; owner: string }[]
 }
 
 /** 表格导入参数：选列 + 选状态 + 选是否抓取 */

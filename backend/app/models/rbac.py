@@ -117,6 +117,9 @@ class Role(Base, TimestampMixin):
     data_scope: Mapped[DataScope] = mapped_column(
         Enum(DataScope), default=DataScope.own, nullable=False
     )
+    #: 按路由单独放宽的数据范围：``{menu_code: {"scope": "all" | "users", "user_ids": [..]}}``。
+    #: 只对写在这里的路由生效，其余路由仍按 ``data_scope``。
+    menu_data_scopes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     #: 内置角色（超级管理员）不允许删除，且始终拥有全部菜单
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

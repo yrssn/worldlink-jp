@@ -18,7 +18,8 @@ const form = reactive({
   email: '',
   full_name: '',
   is_active: true,
-  role_ids: [] as number[]
+  role_ids: [] as number[],
+  dedupe_against_user_ids: [] as number[]
 })
 
 async function refresh() {
@@ -40,6 +41,7 @@ function openCreate() {
   form.full_name = ''
   form.is_active = true
   form.role_ids = []
+  form.dedupe_against_user_ids = []
   dialogVisible.value = true
 }
 
@@ -51,6 +53,7 @@ function openEdit(row: SysUser) {
   form.full_name = row.full_name || ''
   form.is_active = row.is_active
   form.role_ids = row.roles.map((r) => r.id)
+  form.dedupe_against_user_ids = [...(row.dedupe_against_user_ids || [])]
   dialogVisible.value = true
 }
 
@@ -61,7 +64,8 @@ async function submitForm() {
         email: form.email.trim() || null,
         full_name: form.full_name.trim() || null,
         is_active: form.is_active,
-        role_ids: form.role_ids
+        role_ids: form.role_ids,
+        dedupe_against_user_ids: form.dedupe_against_user_ids
       })
       ElMessage.success('已更新')
     } else {
@@ -79,7 +83,8 @@ async function submitForm() {
         email: form.email.trim() || null,
         full_name: form.full_name.trim() || null,
         is_active: form.is_active,
-        role_ids: form.role_ids
+        role_ids: form.role_ids,
+        dedupe_against_user_ids: form.dedupe_against_user_ids
       })
       ElMessage.success('已创建')
     }
@@ -228,6 +233,30 @@ onMounted(refresh)
           <el-select v-model="form.role_ids" multiple style="width: 100%">
             <el-option v-for="r in roles" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="链接对照">
+          <div style="width: 100%">
+            <el-select
+              v-model="form.dedupe_against_user_ids"
+              multiple
+              filterable
+              clearable
+              collapse-tags
+              collapse-tags-tooltip
+              style="width: 100%"
+              placeholder="不选 = 不做区分"
+            >
+              <el-option
+                v-for="u in list.filter((x) => x.id !== editing?.id)"
+                :key="u.id"
+                :value="u.id"
+                :label="u.full_name ? `${u.username}（${u.full_name}）` : u.username"
+              />
+            </el-select>
+            <div style="color: #909399; font-size: 12px; line-height: 1.5; margin-top: 4px">
+              该用户导入 / 批量导入链接时，主页链接已在所选账号名下的行会被区别开：不入库、不抓取，并标出是和哪个账号重复。
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="form.is_active" active-text="启用" inactive-text="停用" />

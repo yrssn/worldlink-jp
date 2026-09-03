@@ -199,12 +199,13 @@ const form = reactive<Partial<Influencer>>({
 // ─── 自动抓取（手工新增时按主页 URL 异步抓资料填表） ──────────────
 const scrapeUrl = ref('')
 const scrapeTaskId = ref<number | null>(null)
-const scrapeStatus = ref<'' | 'staged' | 'pending' | 'running' | 'done' | 'failed' | 'contacted'>('')
+const scrapeStatus = ref<'' | 'staged' | 'skipped' | 'pending' | 'running' | 'done' | 'failed' | 'contacted'>('')
 const scrapeError = ref('')
 let scrapeTimer: ReturnType<typeof setTimeout> | null = null
 
 const SCRAPE_STATUS_TEXT: Record<string, string> = {
   staged: '待处理',
+  skipped: '已区别开',
   pending: '排队中…',
   running: '抓取中…',
   done: '抓取完成',
@@ -213,6 +214,7 @@ const SCRAPE_STATUS_TEXT: Record<string, string> = {
 }
 const SCRAPE_STATUS_TAG: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
   staged: 'info',
+  skipped: 'warning',
   pending: 'info',
   running: 'warning',
   done: 'success',
@@ -1160,8 +1162,15 @@ async function submitImport() {
           : '') +
         (r.scrape_tasks
           ? `，已发起 ${r.scrape_tasks} 条抓取（抓取失败的可在「抓取任务」里重跑）`
+          : '') +
+        (r.cross_user_skipped
+          ? `，${r.cross_user_skipped} 条链接已在对照账号名下，已区别开未入库`
           : ''),
     )
+    if (r.cross_user_conflicts?.length) {
+      const owners = [...new Set(r.cross_user_conflicts.map((c) => c.owner))].join('、')
+      ElMessage.warning(`与账号「${owners}」重复的链接：${r.cross_user_conflicts.slice(0, 5).map((c) => c.url).join('，')}${r.cross_user_conflicts.length > 5 ? ' …' : ''}`)
+    }
     importVisible.value = false
     page.value = 1
     refresh()
@@ -1690,6 +1699,7 @@ onUnmounted(() => {
         </el-select>
         <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 120px" @change="loadTasks">
           <el-option label="待处理" value="staged" />
+          <el-option label="已区别开" value="skipped" />
           <el-option label="抓取中" value="running" />
           <el-option label="已完成" value="done" />
           <el-option label="失败" value="failed" />

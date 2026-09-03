@@ -70,6 +70,12 @@ def _ensure_users_bitbrowser_columns() -> None:
         patches.append("ALTER TABLE users ADD COLUMN bitbrowser_api_key VARCHAR(512) NULL")
     if "bitbrowser_last_sync_at" not in ucols:
         patches.append("ALTER TABLE users ADD COLUMN bitbrowser_last_sync_at DATETIME NULL")
+    if "dedupe_against_user_ids" not in ucols:
+        patches.append("ALTER TABLE users ADD COLUMN dedupe_against_user_ids JSON NULL")
+    if "roles" in insp.get_table_names():
+        rcols = {c["name"] for c in insp.get_columns("roles")}
+        if "menu_data_scopes" not in rcols:
+            patches.append("ALTER TABLE roles ADD COLUMN menu_data_scopes JSON NULL")
     for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)

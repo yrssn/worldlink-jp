@@ -36,6 +36,7 @@ class _MenuRule:
     title: str
     prefixes: list[str]
     write_only: bool
+    enforce: bool = True
 
 
 _rules_cache: list[_MenuRule] | None = None
@@ -55,9 +56,7 @@ def _load_rules(db: Session) -> list[_MenuRule]:
         return _rules_cache
     rules: list[_MenuRule] = []
     for menu in db.query(Menu).filter(Menu.is_active.is_(True)).all():
-        if menu.api_enforce_mode == ApiEnforceMode.off or not menu.api_prefixes:
-            continue
-        prefixes = [p for p in menu.api_prefixes if p]
+        prefixes = [p for p in (menu.api_prefixes or []) if p]
         if not prefixes:
             continue
         rules.append(
@@ -66,6 +65,7 @@ def _load_rules(db: Session) -> list[_MenuRule]:
                 title=menu.title,
                 prefixes=prefixes,
                 write_only=menu.api_enforce_mode == ApiEnforceMode.write,
+                enforce=menu.api_enforce_mode != ApiEnforceMode.off,
             )
         )
     _rules_cache = rules
@@ -73,17 +73,24 @@ def _load_rules(db: Session) -> list[_MenuRule]:
     return rules
 
 
-def _matched_rules(db: Session, path: str, method: str) -> list[_MenuRule]:
-    """找出「声明了该路径前缀」且需要在后端校验的菜单规则。"""
+def _path_rules(db: Session, path: str) -> list[_MenuRule]:
+    """声明了该路径前缀的全部菜单规则（不管是否需要校验）。"""
     matched: list[_MenuRule] = []
     for rule in _load_rules(db):
-        if rule.write_only and method not in WRITE_METHODS:
-            continue
         for prefix in rule.prefixes:
             if path == prefix or path.startswith(prefix.rstrip("/") + "/"):
                 matched.append(rule)
                 break
     return matched
+
+
+def _matched_rules(db: Session, path: str, method: str) -> list[_MenuRule]:
+    """找出「声明了该路径前缀」且需要在后端校验的菜单规则。"""
+    return [
+        r
+        for r in _path_rules(db, path)
+        if r.enforce and not (r.write_only and method not in WRITE_METHODS)
+    ]
 
 
 def _bearer_token(conn: HTTPConnection) -> str | None:
@@ -94,7 +101,7 @@ def _bearer_token(conn: HTTPConnection) -> str | None:
     return token
 
 
-def enforce_route_permission(
+async def enforce_route_permission(
     conn: HTTPConnection,
     db: Session = Depends(get_db),
 ) -> None:
@@ -102,10 +109,14 @@ def enforce_route_permission(
 
     未带 token 时直接放过，交由各接口自己的 ``get_current_user`` 返回 401；
     WebSocket 连接（比特浏览器中继）自带 token 鉴权，不走菜单校验。
+
+    必须是 async：这里写入的 ``current_menu_codes`` 要让后续接口读到，
+    同步依赖会在线程池里执行、ContextVar 改动不会回传到请求上下文。
     """
     if conn.scope.get("type") != "http":
         return
     path = conn.url.path
+    rbac_service.current_menu_codes.set(tuple(r.code for r in _path_rules(db, path)))
     if any(path.startswith(p) for p in EXEMPT_PREFIXES):
         return
     token = _bearer_token(conn)
