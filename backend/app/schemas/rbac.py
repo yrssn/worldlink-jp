@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.rbac import ApiEnforceMode, DataScope, MenuType
 from app.models.user import UserRole
@@ -157,6 +157,11 @@ class SysUserOut(BaseModel):
     is_super_admin: bool = False
     #: 导入 / 批量导入时按主页链接“区别开”的对照账号
     dedupe_against_user_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("dedupe_against_user_ids", mode="before")
+    @classmethod
+    def _none_to_empty(cls, v):
+        return [] if v is None else v
 
 
 class MyPermissionOut(BaseModel):
