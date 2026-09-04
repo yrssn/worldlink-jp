@@ -1151,48 +1151,143 @@ def create_from_group_post(
     return inf, True
 
 
-def cross_user_url_index(db: Session, user) -> dict[str, str]:
-    """用户配置了「对照账号」时，返回这些账号名下所有主页链接（归一化）→ 对照账号用户名。
+class CrossUserIndex:
+    """对照账号名下的账号标识索引：FB 按页面 ID（兜底链接），IG 按用户名 + 链接。
 
-    覆盖：关联账号 url、旧主表 fb_page_url、以及抓取任务里留下的原始分享链接。
-    没配置对照账号时返回空 dict，导入 / 批量导入行为不变。
+    value 均为对照账号用户名，便于提示「和谁重复」。
+    """
+
+    def __init__(self) -> None:
+        self.urls: dict[str, str] = {}
+        self.fb_page_ids: dict[str, str] = {}
+        self.ig_handles: dict[str, str] = {}
+
+    def __bool__(self) -> bool:
+        return bool(self.urls or self.fb_page_ids or self.ig_handles)
+
+    def match(
+        self,
+        platform: Optional[str],
+        url: Optional[str] = None,
+        page_id: Optional[str] = None,
+        handle: Optional[str] = None,
+    ) -> Optional[str]:
+        """命中则返回对照账号用户名。
+
+        facebook：有 page_id 就只看 page_id（同一主页有多种链接写法）；没有 page_id 时退化比链接。
+        instagram：先比用户名，再比链接。其他平台按链接。
+        """
+        plat = (platform or "facebook").lower()
+        if plat == "facebook":
+            pid = (page_id or "").strip()
+            if pid:
+                return self.fb_page_ids.get(pid)
+            return self.urls.get(normalize_fb_url(url))
+        if plat == "instagram":
+            h = (handle or "").strip().lstrip("@").lower()
+            if h and h in self.ig_handles:
+                return self.ig_handles[h]
+            key = normalize_fb_url(url)
+            if key and key in self.urls:
+                return self.urls[key]
+            tail = handle_from_url(url)
+            if tail:
+                return self.ig_handles.get(tail.lower())
+            return None
+        return self.urls.get(normalize_fb_url(url))
+
+
+def cross_user_index(db: Session, user) -> CrossUserIndex:
+    """用户配置了「对照账号」时，收集这些账号名下的 FB 页面 ID / IG 用户名 / 主页链接。
+
+    覆盖：关联账号（url / page_id / handle）、旧主表 fb_page_url / fb_page_id、
+    抓取任务的原始链接及抓取结果里的 fb_page_id / ig_username。
+    没配置对照账号时返回空索引，导入 / 批量导入 / 入库行为不变。
     """
     from app.models.influencer_scrape_task import InfluencerScrapeTask
     from app.models.user import User
 
+    index = CrossUserIndex()
     ids = {int(x) for x in (user.dedupe_against_user_ids or []) if str(x).isdigit()}
     ids.discard(user.id)
     if not ids:
-        return {}
+        return index
     names = {
         uid: (name or f"#{uid}")
         for uid, name in db.query(User.id, User.username).filter(User.id.in_(ids)).all()
     }
-    index: dict[str, str] = {}
 
-    def put(url: Optional[str], owner_id: int) -> None:
+    def owner(owner_id: int) -> str:
+        return names.get(owner_id, f"#{owner_id}")
+
+    def put_url(url: Optional[str], owner_id: int) -> None:
         key = normalize_fb_url(url)
-        if key and key not in index:
-            index[key] = names.get(owner_id, f"#{owner_id}")
+        if key:
+            index.urls.setdefault(key, owner(owner_id))
+
+    def put_pid(pid: Optional[str], owner_id: int) -> None:
+        k = (str(pid) if pid is not None else "").strip()
+        if k:
+            index.fb_page_ids.setdefault(k, owner(owner_id))
+
+    def put_handle(h: Optional[str], owner_id: int) -> None:
+        k = (h or "").strip().lstrip("@").lower()
+        if k:
+            index.ig_handles.setdefault(k, owner(owner_id))
 
     rows = (
-        db.query(InfluencerSocialAccount.url, Influencer.owner_id)
+        db.query(
+            InfluencerSocialAccount.platform,
+            InfluencerSocialAccount.url,
+            InfluencerSocialAccount.page_id,
+            InfluencerSocialAccount.handle,
+            Influencer.owner_id,
+        )
         .join(Influencer, Influencer.id == InfluencerSocialAccount.influencer_id)
-        .filter(Influencer.owner_id.in_(ids), InfluencerSocialAccount.url.isnot(None))
+        .filter(Influencer.owner_id.in_(ids))
         .all()
     )
-    for url, owner_id in rows:
-        put(url, owner_id)
-    for url, owner_id in (
-        db.query(Influencer.fb_page_url, Influencer.owner_id)
-        .filter(Influencer.owner_id.in_(ids), Influencer.fb_page_url.isnot(None))
+    for plat, url, pid, handle, owner_id in rows:
+        put_url(url, owner_id)
+        if plat == SocialPlatform.facebook:
+            put_pid(pid, owner_id)
+        elif plat == SocialPlatform.instagram:
+            put_handle(handle, owner_id)
+            put_handle(handle_from_url(url), owner_id)
+    for url, pid, owner_id in (
+        db.query(Influencer.fb_page_url, Influencer.fb_page_id, Influencer.owner_id)
+        .filter(Influencer.owner_id.in_(ids))
         .all()
     ):
-        put(url, owner_id)
-    for url, owner_id in (
-        db.query(InfluencerScrapeTask.url, InfluencerScrapeTask.owner_id)
+        put_url(url, owner_id)
+        put_pid(pid, owner_id)
+    for plat, url, result, owner_id in (
+        db.query(
+            InfluencerScrapeTask.platform,
+            InfluencerScrapeTask.url,
+            InfluencerScrapeTask.result,
+            InfluencerScrapeTask.owner_id,
+        )
         .filter(InfluencerScrapeTask.owner_id.in_(ids))
         .all()
     ):
-        put(url, owner_id)
+        put_url(url, owner_id)
+        if isinstance(result, dict):
+            if (plat or "facebook") == "instagram":
+                put_handle(result.get("ig_username"), owner_id)
+                put_url(result.get("ig_url"), owner_id)
+            else:
+                put_pid(result.get("fb_page_id"), owner_id)
+                put_url(result.get("fb_page_url"), owner_id)
+        elif (plat or "facebook") == "instagram":
+            put_handle(handle_from_url(url), owner_id)
     return index
+
+
+def cross_user_match_for_form(index: CrossUserIndex, platform: Optional[str], form: dict[str, Any]) -> Optional[str]:
+    """用抓取结果（可填充表单）去对照索引里比：FB 用 fb_page_id，IG 用 ig_username / ig_url。"""
+    if not index or not isinstance(form, dict):
+        return None
+    if (platform or "facebook") == "instagram":
+        return index.match("instagram", url=form.get("ig_url"), handle=form.get("ig_username"))
+    return index.match("facebook", url=form.get("fb_page_url"), page_id=form.get("fb_page_id"))

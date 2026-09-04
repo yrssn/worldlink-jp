@@ -173,6 +173,22 @@ def _parse_save_status(value: str | None) -> InfluencerStatus | None:
         raise HTTPException(status_code=400, detail=f"不支持的建联状态：{raw}")
 
 
+def _cross_user_hit_for_task(db: Session, task: InfluencerScrapeTask) -> str | None:
+    """抓取结果出来后再拿 FB 页面 ID / IG 用户名去对照账号名下复查一次（导入时只有链接，同一主页不同写法这时才能识别）。"""
+    owner = db.get(User, task.owner_id)
+    if owner is None or not isinstance(task.result, dict):
+        return None
+    index = influencer_service.cross_user_index(db, owner)
+    return influencer_service.cross_user_match_for_form(index, task.platform, task.result)
+
+
+def _mark_task_cross_user_skipped(db: Session, task: InfluencerScrapeTask, other: str) -> None:
+    task.status = "skipped"
+    task.error = f"该主页已在账号「{other}」名下（按页面 ID / 用户名命中），已区别开未入库"
+    db.commit()
+    logger.info("[InfluencerScrape task#{}] 与对照账号「{}」重复，不入库", task.id, other)
+
+
 def _auto_save_from_task(
     db: Session, task: InfluencerScrapeTask, save_status: str | None = None
 ) -> None:
@@ -184,6 +200,10 @@ def _auto_save_from_task(
     if not isinstance(task.result, dict) or not task.result:
         return
     try:
+        other = _cross_user_hit_for_task(db, task)
+        if other and not task.influencer_id:
+            _mark_task_cross_user_skipped(db, task, other)
+            return
         if task.influencer_id:
             inf = db.get(Influencer, task.influencer_id)
             if inf is None:
@@ -212,6 +232,19 @@ def _auto_save_from_task(
         logger.info("[InfluencerScrape task#{}] 已自动存入达人库", task.id)
     except Exception as e:  # noqa: BLE001
         logger.warning("[InfluencerScrape task#{}] 自动入库失败：{}", task.id, e)
+
+
+def _after_scrape_done(
+    db: Session, task: InfluencerScrapeTask, auto_save: bool, save_status: str | None
+) -> None:
+    """抓完后的收尾：先按 FB 页面 ID / IG 用户名和对照账号复查，重复的标成「已区别开」；否则按需自动入库。"""
+    if not task.influencer_id:
+        other = _cross_user_hit_for_task(db, task)
+        if other:
+            _mark_task_cross_user_skipped(db, task, other)
+            return
+    if auto_save:
+        _auto_save_from_task(db, task, save_status)
 
 
 def _run_scrape_profile_bg(
@@ -251,8 +284,7 @@ def _run_scrape_profile_bg(
             task.status = "done"
             task.finished_at = datetime.utcnow()
             db.commit()
-            if auto_save:
-                _auto_save_from_task(db, task, save_status)
+            _after_scrape_done(db, task, auto_save, save_status)
             logger.info("[InfluencerScrape task#{}] IG done for {}", task_id, task.url)
             return
 
@@ -297,8 +329,7 @@ def _run_scrape_profile_bg(
         task.status = "done"
         task.finished_at = datetime.utcnow()
         db.commit()
-        if auto_save:
-            _auto_save_from_task(db, task, save_status)
+        _after_scrape_done(db, task, auto_save, save_status)
         logger.info("[InfluencerScrape task#{}] done for {}", task_id, task.url)
     except Exception as e:  # noqa: BLE001
         logger.exception("[InfluencerScrape task#{}] failed: {}", task_id, e)
@@ -785,13 +816,13 @@ def _stage_urls(
     if not urls:
         raise HTTPException(status_code=400, detail="没有可导入的链接")
     batch_name = (batch or "").strip() or _default_batch_name(db, user.id)
-    cross_index = influencer_service.cross_user_url_index(db, user)
+    cross_index = influencer_service.cross_user_index(db, user)
     created: list[InfluencerScrapeTask] = []
     for u in urls:
         row_platform = plat
         if row_platform == "auto":
             row_platform = detect_platform(u) or fallback
-        other = cross_index.get(influencer_service.normalize_fb_url(u))
+        other = cross_index.match(row_platform, url=u)
         task = InfluencerScrapeTask(
             owner_id=user.id,
             platform=row_platform,
@@ -1151,7 +1182,7 @@ async def import_influencers(
     seen: set[str] = set()
     tasks: list[InfluencerScrapeTask] = []
     task_url_index = _scrape_task_url_index(db, user.id)
-    cross_index = influencer_service.cross_user_url_index(db, user)
+    cross_index = influencer_service.cross_user_index(db, user)
     cross_user_conflicts: list[ImportConflictOut] = []
     for row in rows:
         url = col(row, "url")
@@ -1163,10 +1194,6 @@ async def import_influencers(
             duplicated += 1
             continue
         seen.add(key)
-        other = cross_index.get(key)
-        if other:
-            cross_user_conflicts.append(ImportConflictOut(url=url, owner=other))
-            continue
         row_platform = (
             plat
             if plat != "auto"
@@ -1176,6 +1203,10 @@ async def import_influencers(
                 or fallback
             )
         )
+        other = cross_index.match(row_platform, url=url)
+        if other:
+            cross_user_conflicts.append(ImportConflictOut(url=url, owner=other))
+            continue
         social = SocialPlatform(row_platform) if row_platform in {
             p.value for p in SocialPlatform
         } else SocialPlatform.other
@@ -1560,6 +1591,10 @@ def save_scrape_profile(
         raise HTTPException(status_code=404, detail="task not found")
     if task.status != "done" or not isinstance(task.result, dict) or not task.result:
         raise HTTPException(status_code=400, detail="该任务尚未抓取完成，无法存入")
+    other = _cross_user_hit_for_task(db, task)
+    if other:
+        _mark_task_cross_user_skipped(db, task, other)
+        raise HTTPException(status_code=400, detail=task.error)
     notes = payload.notes if payload else None
     if (task.platform or "facebook") == "instagram":
         inf, created = influencer_service.create_influencer_from_ig_form(
