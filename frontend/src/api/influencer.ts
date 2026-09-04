@@ -399,7 +399,7 @@ export const influencerApi = {
     status?: string
   }) =>
     http.get<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile', {
-      params: { limit: 100, ...(params || {}) },
+      params: { limit: 1000, ...(params || {}) },
     }),
   batchStageScrapeProfiles: (data: {
     urls: string[]

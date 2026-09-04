@@ -1300,7 +1300,7 @@ async def import_influencers(
 
 @router.get("/scrape-profile", response_model=list[InfluencerScrapeTaskOut])
 def list_scrape_profiles(
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=2000),
     platform: str | None = None,
     batch: str | None = None,
     status_eq: str | None = Query(None, alias="status"),
