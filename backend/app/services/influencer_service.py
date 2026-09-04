@@ -169,9 +169,8 @@ def find_duplicate(
     fb_author_id: Optional[str] = None,
     fb_page_id: Optional[str] = None,
     fb_page_url: Optional[str] = None,
-    email: Optional[str] = None,
 ) -> Optional[Influencer]:
-    """根据作者 id（群组帖子作者 user.id）/ 页面 id / 主页链接 / email 查重。
+    """根据作者 id（群组帖子作者 user.id）/ 页面 id / 主页链接查重（不按邮箱合并）。
 
     账号维度（author_id / page_id / url）先比 Facebook 关联账号（链接按归一化比对），
     再兼容旧的主表 fb_* 字段。已软删除（``deleted_at`` 有值）的达人不参与查重。
@@ -214,8 +213,6 @@ def find_duplicate(
         conds.append(Influencer.fb_page_id == fb_page_id)
     if fb_page_url:
         conds.append(Influencer.fb_page_url == fb_page_url)
-    if email:
-        conds.append(Influencer.email == email)
     if not conds:
         return None
     return db.query(Influencer).filter(*alive, or_(*conds)).first()
@@ -625,7 +622,6 @@ def create_influencer_from_form(
         owner_id=owner_id,
         fb_page_id=account.get("page_id"),
         fb_page_url=account.get("url"),
-        email=data.get("email"),
     )
     if existing:
         link_outreach_logs_for_influencer(db, existing)
@@ -1036,7 +1032,6 @@ def create_from_scrape(
         owner_id=owner_id,
         fb_page_id=account.get("page_id"),
         fb_page_url=account.get("url"),
-        email=profile_data.get("email"),
     )
     if existing:
         # 把当前 post + page_profile 上挂的所有源帖子统一关联过去
@@ -1131,7 +1126,6 @@ def create_from_group_post(
         fb_author_id=str(post.user_id) if post.user_id else None,
         fb_page_id=account.get("page_id"),
         fb_page_url=account.get("url"),
-        email=profile_data.get("email"),
     )
     if existing:
         post.influencer_id = existing.id

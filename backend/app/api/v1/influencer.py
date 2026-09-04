@@ -147,7 +147,6 @@ def _scrape_task_out(
                 owner_id=task.owner_id,
                 fb_page_id=result.get("fb_page_id"),
                 fb_page_url=result.get("fb_page_url"),
-                email=result.get("email"),
             )
         out.influencer_id = existing.id if existing else task.influencer_id
     return out
@@ -1250,7 +1249,6 @@ async def import_influencers(
         } else SocialPlatform.other
 
         # 查重容忍 http/https、www、尾斜杠、query 等写法差异
-        email = col(row, "email") or None
         existing = None
         for variant in _url_variants(url):
             if row_platform == "facebook":
@@ -1279,8 +1277,6 @@ async def import_influencers(
             )
             if len(same) == 1:
                 account_id = same[0][0]
-        if existing is None and email:
-            existing = influencer_service.find_duplicate(db, owner_id=user.id, email=email)
         if existing is None and not create_missing:
             skipped += 1
             continue
@@ -1621,7 +1617,7 @@ def save_scrape_profile(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """把某个已完成的抓取任务结果存入建联达人库（按主页ID/邮箱去重）。
+    """把某个已完成的抓取任务结果存入建联达人库（按主页ID/主页链接去重）。
 
     命中已有达人时复用、不重复创建，并通过 created=False 告知前端。
     """
