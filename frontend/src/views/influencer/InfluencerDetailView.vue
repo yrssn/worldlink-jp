@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -14,6 +14,8 @@ import {
   type SocialPlatform
 } from '@/api/influencer'
 import InfluencerProfileFields from './InfluencerProfileFields.vue'
+import { bitbrowserApi, type BitBrowserWindow } from '@/api/bitbrowser'
+import { dmApi, type DmContent, type DmOutreachJobDetail } from '@/api/dm'
 
 const route = useRoute()
 const router = useRouter()
@@ -21,6 +23,100 @@ const id = computed(() => Number(route.params.id))
 const detail = ref<InfluencerDetail | null>(null)
 const sourcePosts = ref<InfluencerSourcePost[]>([])
 const outreachLogs = ref<DmOutreachLog[]>([])
+
+// ─── 对当前达人（再次）私信：后台任务，成功/失败都记到下方私信记录 ───
+const dmDialogVisible = ref(false)
+const dmWindows = ref<BitBrowserWindow[]>([])
+const dmContents = ref<DmContent[]>([])
+const dmBrowserId = ref('')
+const dmContentId = ref<number | null>(null)
+const dmPlatform = ref<'facebook' | 'instagram'>('facebook')
+const dmLoading = ref(false)
+const dmRunning = ref(false)
+const dmJob = ref<DmOutreachJobDetail | null>(null)
+let dmJobTimer: ReturnType<typeof setInterval> | null = null
+
+const dmPlatformAvailable = computed(() => {
+  const accounts = detail.value?.social_accounts || []
+  return {
+    facebook: accounts.some((a) => a.platform === 'facebook' && a.url),
+    instagram: accounts.some((a) => a.platform === 'instagram' && (a.url || a.handle)),
+  }
+})
+
+function windowLabel(w: BitBrowserWindow) {
+  const parts = [w.seq != null ? `#${w.seq}` : '', w.name || '', w.remark || '']
+  return parts.filter(Boolean).join(' ') || w.browser_id
+}
+
+async function openDmDialog() {
+  dmPlatform.value = dmPlatformAvailable.value.facebook || !dmPlatformAvailable.value.instagram ? 'facebook' : 'instagram'
+  dmDialogVisible.value = true
+  dmLoading.value = true
+  try {
+    const [windows, contents] = await Promise.all([
+      bitbrowserApi.listWindows(),
+      dmApi.listContents({ active_only: true }),
+    ])
+    dmWindows.value = windows
+    dmContents.value = contents
+  } finally {
+    dmLoading.value = false
+  }
+}
+
+function stopDmJobPolling() {
+  if (dmJobTimer) {
+    clearInterval(dmJobTimer)
+    dmJobTimer = null
+  }
+}
+
+async function pollDmJob(jobId: number) {
+  try {
+    const j = await dmApi.getOutreachJob(jobId)
+    dmJob.value = j
+    if (j.status === 'done' || j.status === 'cancelled') {
+      stopDmJobPolling()
+      outreachLogs.value = await influencerApi.listOutreachLogs(id.value).catch(() => [])
+      const log = j.logs[0]
+      if (log?.status === 'success') ElMessage.success('私信已发送')
+      else ElMessage.error(`私信失败：${log?.error || j.error || '未知原因'}`)
+    }
+  } catch {
+    stopDmJobPolling()
+  }
+}
+
+async function startDm() {
+  if (!dmBrowserId.value) {
+    ElMessage.warning('请选择浏览器窗口')
+    return
+  }
+  if (dmContentId.value == null) {
+    ElMessage.warning('请选择私信内容')
+    return
+  }
+  dmRunning.value = true
+  try {
+    const job = await dmApi.createOutreachJob({
+      influencer_ids: [id.value],
+      browser_id: dmBrowserId.value,
+      content_id: dmContentId.value,
+      platform: dmPlatform.value,
+    })
+    dmDialogVisible.value = false
+    dmJob.value = { ...job, logs: [] }
+    stopDmJobPolling()
+    dmJobTimer = setInterval(() => pollDmJob(job.id), 3000)
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    dmRunning.value = false
+  }
+}
+
+onUnmounted(stopDmJobPolling)
 
 const socialDialog = ref(false)
 /** 正在编辑的账号 id；undefined = 新增 */
@@ -539,9 +635,40 @@ onMounted(() => {
     </el-table>
     <el-empty v-else description="暂无来源帖子" />
 
-    <h4 style="margin: 20px 0 8px">私信记录（发给该达人的私信：内容、窗口、时间）</h4>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin: 20px 0 8px">
+      <h4 style="margin: 0">私信记录（谁发的、用哪个窗口、发了什么、成功/失败）</h4>
+      <div style="display: flex; align-items: center; gap: 8px">
+        <el-tag
+          v-if="dmJob && (dmJob.status === 'pending' || dmJob.status === 'running')"
+          size="small"
+          type="primary"
+        >
+          私信任务 #{{ dmJob.id }} 发送中…
+        </el-tag>
+        <el-button
+          type="success"
+          plain
+          size="small"
+          :disabled="!dmPlatformAvailable.facebook && !dmPlatformAvailable.instagram"
+          @click="openDmDialog"
+        >
+          {{ outreachLogs.length ? '再次私信' : '私信' }}
+        </el-button>
+      </div>
+    </div>
     <el-table v-if="outreachLogs.length" :data="outreachLogs" border>
       <el-table-column prop="created_at" label="时间" width="170" />
+      <el-table-column label="结果" width="80">
+        <template #default="{ row }">
+          <el-tooltip v-if="row.status === 'failed'" :content="row.error || '失败'" placement="top">
+            <el-tag size="small" type="danger">失败</el-tag>
+          </el-tooltip>
+          <el-tag v-else size="small" type="success">成功</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="发送人" width="100">
+        <template #default="{ row }">{{ row.owner_name || row.owner_id || '-' }}</template>
+      </el-table-column>
       <el-table-column prop="content_title" label="内容" width="160" />
       <el-table-column label="正文">
         <template #default="{ row }">
@@ -558,9 +685,48 @@ onMounted(() => {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="browser_id" label="窗口" width="140" />
+      <el-table-column label="窗口" width="160">
+        <template #default="{ row }">
+          <div>{{ row.browser_name || row.browser_id || '-' }}</div>
+          <div v-if="row.browser_name && row.browser_id" style="color: #909399; font-size: 12px">{{ row.browser_id }}</div>
+        </template>
+      </el-table-column>
+      <el-table-column label="失败原因 / 任务" min-width="160">
+        <template #default="{ row }">
+          <div v-if="row.error" style="color: #f56c6c; white-space: pre-wrap">{{ row.error }}</div>
+          <div v-if="row.job_id" style="color: #909399; font-size: 12px">批量任务 #{{ row.job_id }}</div>
+        </template>
+      </el-table-column>
     </el-table>
     <el-empty v-else description="暂无私信记录" />
+
+    <el-dialog v-model="dmDialogVisible" title="私信该达人" width="520px">
+      <el-form label-width="100px" v-loading="dmLoading">
+        <el-form-item label="平台">
+          <el-radio-group v-model="dmPlatform" size="small">
+            <el-radio-button value="facebook" :disabled="!dmPlatformAvailable.facebook">Facebook</el-radio-button>
+            <el-radio-button value="instagram" :disabled="!dmPlatformAvailable.instagram">Instagram</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="浏览器窗口">
+          <el-select v-model="dmBrowserId" placeholder="选择用于发私信的窗口" filterable style="width: 100%">
+            <el-option v-for="w in dmWindows" :key="w.browser_id" :label="windowLabel(w)" :value="w.browser_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="私信内容">
+          <el-select v-model="dmContentId" placeholder="选择内容库中的私信内容" filterable style="width: 100%">
+            <el-option v-for="c in dmContents" :key="c.id" :label="c.title" :value="c.id" />
+          </el-select>
+        </el-form-item>
+        <div style="color: #909399; font-size: 12px; margin-left: 100px">
+          后台在选中窗口打开达人主页、点「发消息」并发送所选内容（含图片），发送人、窗口、内容、成功/失败都会记入私信记录
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="dmDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dmRunning" @click="startDm">开始发送</el-button>
+      </template>
+    </el-dialog>
 
 
     <el-dialog

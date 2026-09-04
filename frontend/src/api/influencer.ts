@@ -144,6 +144,12 @@ export interface DmOutreachLog {
   images_count: number
   text_sent: boolean
   images_sent: number
+  job_id?: number | null
+  browser_name?: string | null
+  status: 'success' | 'failed'
+  error?: string | null
+  owner_id?: number | null
+  owner_name?: string | null
   created_at: string
 }
 

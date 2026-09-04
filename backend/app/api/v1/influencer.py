@@ -1680,21 +1680,29 @@ def list_influencer_outreach_logs(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """该达人的私信建联发送记录（各看各的：仅返回当前用户发送的记录）。"""
+    """该达人的私信建联发送记录（含成功/失败），按当前用户的数据范围返回，并带上发送人用户名。"""
     inf = db.get(Influencer, iid)
     if not inf or not can_view(inf, user):
         raise HTTPException(status_code=404, detail="influencer not found")
     influencer_service.link_outreach_logs_for_influencer(db, inf)
     rows = (
-        db.query(DmOutreachLog)
-        .filter(
-            DmOutreachLog.influencer_id == iid,
-            DmOutreachLog.owner_id == user.id,
-        )
+        owner_filter(db.query(DmOutreachLog), DmOutreachLog, user)
+        .filter(DmOutreachLog.influencer_id == iid)
         .order_by(DmOutreachLog.id.desc())
         .all()
     )
-    return rows
+    owner_ids = {r.owner_id for r in rows}
+    names = (
+        dict(db.query(User.id, User.username).filter(User.id.in_(owner_ids)).all())
+        if owner_ids
+        else {}
+    )
+    out: list[DmOutreachLogOut] = []
+    for r in rows:
+        d = DmOutreachLogOut.model_validate(r).model_dump()
+        d["owner_name"] = names.get(r.owner_id)
+        out.append(DmOutreachLogOut(**d))
+    return out
 
 
 @router.get("/{iid}/posts")

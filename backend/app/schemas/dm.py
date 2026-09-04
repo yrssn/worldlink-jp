@@ -138,4 +138,56 @@ class DmOutreachLogOut(BaseModel):
     images_count: int = 0
     text_sent: bool = False
     images_sent: int = 0
+    job_id: Optional[int] = None
+    browser_name: Optional[str] = None
+    status: str = "success"
+    error: Optional[str] = None
+    owner_id: Optional[int] = None
+    owner_name: Optional[str] = Field(None, description="发送人用户名")
     created_at: datetime
+
+
+class DmOutreachJobCreate(BaseModel):
+    """从达人库对已入库达人发起一次批量私信任务。"""
+
+    influencer_ids: list[int] = Field(..., min_length=1, description="达人 ID 列表")
+    browser_id: str = Field(..., min_length=1, description="BitBrowser 窗口 ID")
+    content_id: int = Field(..., description="私信内容库内容 ID")
+    platform: str = Field("facebook", description="平台：facebook / instagram")
+    interval_min: int = Field(60, ge=0, le=86400, description="每条之间最少等待秒数")
+    interval_max: int = Field(180, ge=0, le=86400, description="每条之间最多等待秒数（区间内随机）")
+
+
+class DmOutreachJobTarget(BaseModel):
+    influencer_id: int
+    url: str
+    display_name: Optional[str] = None
+
+
+class DmOutreachJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: int
+    owner_name: Optional[str] = None
+    platform: str
+    browser_id: str
+    browser_name: Optional[str] = None
+    content_id: Optional[int] = None
+    content_title: Optional[str] = None
+    targets: Optional[list[DmOutreachJobTarget]] = None
+    interval_min: int = 0
+    interval_max: int = 0
+    total: int = 0
+    sent: int = 0
+    failed: int = 0
+    status: str
+    current_url: Optional[str] = None
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class DmOutreachJobDetailOut(DmOutreachJobOut):
+    logs: list[DmOutreachLogOut] = []

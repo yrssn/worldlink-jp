@@ -1,4 +1,5 @@
 import http from './http'
+import type { DmOutreachLog } from './influencer'
 
 export interface DmCategory {
   id: number
@@ -59,6 +60,39 @@ export interface DmUploadResult {
   name: string
 }
 
+export interface DmOutreachJobTarget {
+  influencer_id: number
+  url: string
+  display_name?: string | null
+}
+
+export interface DmOutreachJob {
+  id: number
+  owner_id: number
+  owner_name?: string | null
+  platform: string
+  browser_id: string
+  browser_name?: string | null
+  content_id?: number | null
+  content_title?: string | null
+  targets?: DmOutreachJobTarget[] | null
+  interval_min: number
+  interval_max: number
+  total: number
+  sent: number
+  failed: number
+  status: 'pending' | 'running' | 'done' | 'cancelled'
+  current_url?: string | null
+  error?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+}
+
+export interface DmOutreachJobDetail extends DmOutreachJob {
+  logs: DmOutreachLog[]
+}
+
 export const dmApi = {
   listCategories: (activeOnly = false) =>
     http.get<unknown, DmCategory[]>('/dm/categories', { params: activeOnly ? { active_only: true } : {} }),
@@ -86,6 +120,20 @@ export const dmApi = {
     platform?: string
     source_task_id?: number
   }) => http.post<unknown, DmOutreachResult>('/dm/outreach/start', data, { timeout: 300000 }),
+
+  createOutreachJob: (data: {
+    influencer_ids: number[]
+    browser_id: string
+    content_id: number
+    platform: string
+    interval_min?: number
+    interval_max?: number
+  }) => http.post<unknown, DmOutreachJob>('/dm/outreach/jobs', data),
+  listOutreachJobs: (limit = 20) =>
+    http.get<unknown, DmOutreachJob[]>('/dm/outreach/jobs', { params: { limit } }),
+  getOutreachJob: (id: number) => http.get<unknown, DmOutreachJobDetail>(`/dm/outreach/jobs/${id}`),
+  cancelOutreachJob: (id: number) =>
+    http.post<unknown, DmOutreachJob>(`/dm/outreach/jobs/${id}/cancel`),
 
   uploadImage: (file: File) => {
     const fd = new FormData()

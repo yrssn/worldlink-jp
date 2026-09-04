@@ -1,7 +1,9 @@
 """私信内容：分类 + 模板（标题、正文、图片等）。"""
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Integer, JSON, String, Text
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -79,3 +81,42 @@ class DmOutreachLog(Base, TimestampMixin):
     images_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="内容含图片数")
     text_sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="正文是否发出")
     images_sent: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="实际发出图片数")
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dm_outreach_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    browser_name: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="窗口名称快照")
+    status: Mapped[str] = mapped_column(
+        String(16), default="success", nullable=False, comment="success / failed"
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True, comment="失败原因")
+
+
+class DmOutreachJob(Base, TimestampMixin):
+    """一次批量私信任务：用哪个窗口、发哪条内容，发给哪批达人，逐条结果记在 DmOutreachLog.job_id。"""
+
+    __tablename__ = "dm_outreach_jobs"
+
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    platform: Mapped[str] = mapped_column(String(32), default="facebook", nullable=False)
+    browser_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    browser_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dm_contents.id", ondelete="SET NULL"), nullable=True
+    )
+    content_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: 待发送的达人：[{influencer_id, url, display_name}]
+    targets: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #: 每条之间随机等待的秒数区间，避免连续发送触发风控
+    interval_min: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    interval_max: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
+    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: pending / running / done / cancelled
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False, index=True)
+    current_url: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="正在发送的主页")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

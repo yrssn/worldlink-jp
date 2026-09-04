@@ -45,6 +45,7 @@ def create_all() -> None:
     _ensure_social_account_platform_column()
     _ensure_social_account_profile_columns()
     _ensure_influencer_profile_columns()
+    _ensure_dm_outreach_log_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -213,6 +214,35 @@ def _ensure_influencer_country_column() -> None:
         "ALTER TABLE influencers ADD COLUMN country_id INT NULL",
         "CREATE INDEX ix_influencers_country_id ON influencers (country_id)",
     ):
+        try:
+            logger.info("[schema-patch] {}", sql)
+            with engine.begin() as conn:
+                conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_dm_outreach_log_columns() -> None:
+    """为 dm_outreach_logs 表补齐批量私信任务相关列（job_id / browser_name / status / error）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "dm_outreach_logs" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("dm_outreach_logs")}
+    patches: list[str] = []
+    if "job_id" not in cols:
+        patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN job_id INT NULL")
+        patches.append("ALTER TABLE dm_outreach_logs ADD INDEX ix_dm_outreach_logs_job_id (job_id)")
+    if "browser_name" not in cols:
+        patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN browser_name VARCHAR(512) NULL")
+    if "status" not in cols:
+        patches.append(
+            "ALTER TABLE dm_outreach_logs ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'success'"
+        )
+    if "error" not in cols:
+        patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN error TEXT NULL")
+    for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)
             with engine.begin() as conn:

@@ -1,19 +1,27 @@
 """私信内容：分类、模板、图片上传。"""
 from __future__ import annotations
 
+import random
 import threading
+import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import httpx
+from loguru import logger
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
-from app.core.deps import get_current_user, get_db, scope_query
-from app.models.dm import DmCategory, DmContent, DmOutreachLog
+from app.core.deps import can_view, get_current_user, get_db, scope_query
+from app.db.session import SessionLocal
+from app.models.bitbrowser import BitBrowserWindow
+from app.models.dm import DmCategory, DmContent, DmOutreachJob, DmOutreachLog
+from app.models.influencer import Influencer
 from app.models.influencer_scrape_task import InfluencerScrapeTask
+from app.models.social_account import InfluencerSocialAccount, SocialPlatform
 from app.models.user import User
 from app.services.influencer_service import (
     build_ig_profile_url,
@@ -27,6 +35,10 @@ from app.schemas.dm import (
     DmContentOut,
     DmContentUpdate,
     DmImageItem,
+    DmOutreachJobCreate,
+    DmOutreachJobDetailOut,
+    DmOutreachJobOut,
+    DmOutreachLogOut,
     DmOutreachOut,
     DmOutreachStart,
     DmUploadOut,
@@ -35,6 +47,8 @@ from app.api.v1.influencer import _run_scrape_profile_bg
 from app.services.fb_dm_automation import open_profile_and_message
 
 router = APIRouter(prefix="/dm", tags=["dm"])
+
+_JOB_CANCEL_POLL_SECONDS = 5
 
 _ALLOWED_IMAGE_SUFFIX = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -306,32 +320,84 @@ def delete_dm_content(
 # ----- 私信建联自动化 -----
 
 
+def _browser_name(db: Session, owner_id: int, browser_id: str) -> str | None:
+    row = (
+        db.query(BitBrowserWindow.name)
+        .filter(
+            BitBrowserWindow.owner_id == owner_id,
+            BitBrowserWindow.browser_id == browser_id,
+        )
+        .first()
+    )
+    return row[0] if row and row[0] else None
+
+
 def _record_outreach_log(
     db: Session,
     user: User,
     url: str,
     browser_id: str,
     content: DmContent,
-    result: dict,
+    result: dict | None,
     platform: str = "facebook",
-) -> None:
-    """私信发送成功后记录一条发送日志，并按主页 URL 关联到已入库达人（同一 owner）。"""
-    influencer_id = match_influencer_id_by_url(db, user.id, url, platform)
+    *,
+    error: str | None = None,
+    influencer_id: int | None = None,
+    job_id: int | None = None,
+) -> DmOutreachLog:
+    """记录一条私信发送日志（成功/失败都记），并按主页 URL 关联到已入库达人（同一 owner）。"""
+    if influencer_id is None:
+        influencer_id = match_influencer_id_by_url(db, user.id, url, platform)
     images = content.images if isinstance(content.images, list) else []
+    result = result or {}
+    text_sent = bool(result.get("text_sent"))
+    images_sent = int(result.get("images_sent") or 0)
+    ok = error is None and (text_sent or images_sent > 0)
+    if not ok and error is None:
+        error = "未能发出消息（未找到发消息按钮或输入框）"
     log = DmOutreachLog(
         owner_id=user.id,
         influencer_id=influencer_id,
         url=url,
         browser_id=browser_id or None,
+        browser_name=_browser_name(db, user.id, browser_id) if browser_id else None,
         content_id=content.id,
         content_title=content.title,
         content_text=content.content,
         images_count=len(images),
-        text_sent=bool(result.get("text_sent")),
-        images_sent=int(result.get("images_sent") or 0),
+        text_sent=text_sent,
+        images_sent=images_sent,
+        status="success" if ok else "failed",
+        error=None if ok else (error or "")[:4000],
+        job_id=job_id,
     )
     db.add(log)
     db.commit()
+    return log
+
+
+def _resolve_content_image_paths(content: DmContent) -> list[Path]:
+    image_paths: list[Path] = []
+    images = content.images if isinstance(content.images, list) else []
+    upload_root = _dm_upload_root()
+    media_prefix = "/api/v1/dm/media/"
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        rel = str(img.get("path") or "").strip()
+        if not rel:
+            # 兼容早期数据：path 缺失时从 media URL 反推相对路径
+            u = str(img.get("url") or "").strip()
+            if media_prefix in u:
+                rel = u.split(media_prefix, 1)[1]
+        if not rel:
+            continue
+        p = (upload_root / rel).resolve()
+        if upload_root.resolve() not in p.parents:
+            continue
+        if p.is_file():
+            image_paths.append(p)
+    return image_paths
 
 
 @router.post("/outreach/start", response_model=DmOutreachOut)
@@ -355,29 +421,11 @@ def start_dm_outreach(
     target_url = (
         build_ig_profile_url(body.url) if platform == "instagram" else body.url.strip()
     )
-    image_paths: list[Path] = []
-    images = content.images if isinstance(content.images, list) else []
-    upload_root = _dm_upload_root()
-    media_prefix = "/api/v1/dm/media/"
-    for img in images:
-        if not isinstance(img, dict):
-            continue
-        rel = str(img.get("path") or "").strip()
-        if not rel:
-            # 兼容早期数据：path 缺失时从 media URL 反推相对路径
-            u = str(img.get("url") or "").strip()
-            if media_prefix in u:
-                rel = u.split(media_prefix, 1)[1]
-        if not rel:
-            continue
-        p = (upload_root / rel).resolve()
-        if upload_root.resolve() not in p.parents:
-            continue
-        if p.is_file():
-            image_paths.append(p)
+    image_paths = _resolve_content_image_paths(content)
+    browser_id = body.browser_id.strip()
     try:
         result = open_profile_and_message(
-            body.browser_id.strip(),
+            browser_id,
             target_url,
             user,
             db,
@@ -386,16 +434,18 @@ def start_dm_outreach(
             platform=platform,
         )
     except ValueError as e:
+        _record_outreach_log(db, user, target_url, browser_id, content, None, platform, error=str(e))
         raise HTTPException(status_code=400, detail=str(e)) from e
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"连接 BitBrowser/CDP 失败: {e}") from e
+        msg = f"连接 BitBrowser/CDP 失败: {e}"
+        _record_outreach_log(db, user, target_url, browser_id, content, None, platform, error=msg)
+        raise HTTPException(status_code=502, detail=msg) from e
     except RuntimeError as e:
+        _record_outreach_log(db, user, target_url, browser_id, content, None, platform, error=str(e))
         raise HTTPException(status_code=502, detail=str(e)) from e
+    _record_outreach_log(db, user, target_url, browser_id, content, result, platform)
     scrape_task_id: int | None = None
     if result.get("text_sent") or result.get("images_sent"):
-        _record_outreach_log(
-            db, user, target_url, body.browser_id.strip(), content, result, platform
-        )
         # 私信发出后自动抓主页并入库；若来自暂存列表则复用同一行任务，避免重复
         task: InfluencerScrapeTask | None = None
         if body.source_task_id:
@@ -434,6 +484,267 @@ def start_dm_outreach(
         final_url=(str(result["final_url"]) if result.get("final_url") else None),
         open_hint=result.get("open_hint"),
     )
+
+
+# ----- 批量私信任务（对已入库达人）-----
+
+
+def _influencer_target_url(db: Session, inf: Influencer, platform: str) -> str | None:
+    """取达人在指定平台的主页链接：优先关联账号，FB 兼容旧 fb_page_url。"""
+    try:
+        plat = SocialPlatform(platform)
+    except ValueError:
+        return None
+    rows = (
+        db.query(InfluencerSocialAccount.url, InfluencerSocialAccount.handle)
+        .filter(
+            InfluencerSocialAccount.influencer_id == inf.id,
+            InfluencerSocialAccount.platform == plat,
+        )
+        .order_by(InfluencerSocialAccount.id.asc())
+        .all()
+    )
+    for u, _h in rows:
+        if u and u.strip():
+            return u.strip()
+    if platform == "instagram":
+        for _u, h in rows:
+            if h and h.strip():
+                return h.strip()
+    if platform == "facebook" and inf.fb_page_url:
+        return inf.fb_page_url.strip()
+    return None
+
+
+def _job_out(db: Session, job: DmOutreachJob, with_logs: bool = False):
+    owner = db.get(User, job.owner_id)
+    data = DmOutreachJobOut.model_validate(job).model_dump()
+    data["owner_name"] = owner.username if owner else None
+    if not with_logs:
+        return DmOutreachJobOut(**data)
+    logs = (
+        db.query(DmOutreachLog)
+        .filter(DmOutreachLog.job_id == job.id)
+        .order_by(DmOutreachLog.id.asc())
+        .all()
+    )
+    out_logs = []
+    for lg in logs:
+        d = DmOutreachLogOut.model_validate(lg).model_dump()
+        d["owner_name"] = owner.username if owner else None
+        out_logs.append(DmOutreachLogOut(**d))
+    return DmOutreachJobDetailOut(**data, logs=out_logs)
+
+
+def _wait_unless_cancelled(db: Session, job_id: int, seconds: int) -> bool:
+    """分段 sleep，期间任务被取消则提前返回 False。"""
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        time.sleep(min(remaining, _JOB_CANCEL_POLL_SECONDS))
+        db.expire_all()
+        job = db.get(DmOutreachJob, job_id)
+        if not job or job.status == "cancelled":
+            return False
+
+
+def _run_dm_outreach_job_bg(job_id: int) -> None:
+    """后台线程：逐个达人发送，每条成功/失败都写入 DmOutreachLog（job_id 关联）。"""
+    db = SessionLocal()
+    try:
+        job = db.get(DmOutreachJob, job_id)
+        if not job or job.status != "pending":
+            return
+        user = db.get(User, job.owner_id)
+        content = db.get(DmContent, job.content_id) if job.content_id else None
+        job.status = "running"
+        job.started_at = datetime.utcnow()
+        db.commit()
+        if not user or not content:
+            job.status = "done"
+            job.error = "发送人或私信内容已不存在"
+            job.finished_at = datetime.utcnow()
+            db.commit()
+            return
+        image_paths = _resolve_content_image_paths(content)
+        targets = job.targets if isinstance(job.targets, list) else []
+        for idx, t in enumerate(targets):
+            if idx > 0:
+                # 每条之间随机等待，等待期间可被取消
+                wait_s = random.randint(
+                    min(job.interval_min, job.interval_max),
+                    max(job.interval_min, job.interval_max),
+                )
+                job.current_url = None
+                db.commit()
+                if not _wait_unless_cancelled(db, job_id, wait_s):
+                    break
+            db.refresh(job)
+            if job.status == "cancelled":
+                break
+            url = str(t.get("url") or "").strip()
+            inf_id = t.get("influencer_id")
+            job.current_url = url
+            db.commit()
+            result: dict | None = None
+            error: str | None = None
+            try:
+                result = open_profile_and_message(
+                    job.browser_id,
+                    url,
+                    user,
+                    db,
+                    message_text=content.content,
+                    image_paths=image_paths,
+                    platform=job.platform,
+                )
+            except httpx.HTTPError as e:
+                error = f"连接 BitBrowser/CDP 失败: {e}"
+            except Exception as e:  # noqa: BLE001
+                error = str(e) or e.__class__.__name__
+            db.rollback()
+            log = _record_outreach_log(
+                db,
+                user,
+                url,
+                job.browser_id,
+                content,
+                result,
+                job.platform,
+                error=error,
+                influencer_id=int(inf_id) if inf_id else None,
+                job_id=job.id,
+            )
+            job = db.get(DmOutreachJob, job_id)
+            if log.status == "success":
+                job.sent += 1
+            else:
+                job.failed += 1
+            db.commit()
+        job = db.get(DmOutreachJob, job_id)
+        if job.status != "cancelled":
+            job.status = "done"
+        job.current_url = None
+        job.finished_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("dm outreach job {} crashed: {}", job_id, e)
+        db.rollback()
+        job = db.get(DmOutreachJob, job_id)
+        if job:
+            job.status = "done"
+            job.error = str(e)[:4000]
+            job.finished_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/outreach/jobs", response_model=DmOutreachJobOut)
+def create_dm_outreach_job(
+    body: DmOutreachJobCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """对已入库达人发起一次批量私信（可二次私信），后台逐个发送，每条结果记入达人私信记录。"""
+    content = (
+        scope_query(db.query(DmContent), DmContent, user)
+        .filter(DmContent.id == body.content_id)
+        .first()
+    )
+    if not content:
+        raise HTTPException(status_code=404, detail="私信内容不存在")
+    platform = (body.platform or "facebook").strip().lower()
+    if platform not in ("facebook", "instagram"):
+        raise HTTPException(status_code=400, detail="仅支持 facebook / instagram 私信")
+    ids = list(dict.fromkeys(body.influencer_ids))
+    infs = db.query(Influencer).filter(Influencer.id.in_(ids)).all()
+    by_id = {i.id: i for i in infs}
+    targets: list[dict] = []
+    missing: list[str] = []
+    for iid in ids:
+        inf = by_id.get(iid)
+        if not inf or not can_view(inf, user):
+            raise HTTPException(status_code=404, detail=f"达人 #{iid} 不存在")
+        url = _influencer_target_url(db, inf, platform)
+        if platform == "instagram" and url:
+            url = build_ig_profile_url(url)
+        if not url:
+            missing.append(inf.display_name or f"#{iid}")
+            continue
+        targets.append({"influencer_id": inf.id, "url": url, "display_name": inf.display_name})
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"以下达人没有 {platform} 主页链接，无法私信：{'、'.join(missing[:10])}",
+        )
+    browser_id = body.browser_id.strip()
+    job = DmOutreachJob(
+        owner_id=user.id,
+        platform=platform,
+        browser_id=browser_id,
+        browser_name=_browser_name(db, user.id, browser_id),
+        content_id=content.id,
+        content_title=content.title,
+        targets=targets,
+        interval_min=min(body.interval_min, body.interval_max),
+        interval_max=max(body.interval_min, body.interval_max),
+        total=len(targets),
+        status="pending",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    threading.Thread(target=_run_dm_outreach_job_bg, args=(job.id,), daemon=True).start()
+    return _job_out(db, job)
+
+
+@router.get("/outreach/jobs", response_model=list[DmOutreachJobOut])
+def list_dm_outreach_jobs(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = (
+        scope_query(db.query(DmOutreachJob), DmOutreachJob, user)
+        .order_by(DmOutreachJob.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_job_out(db, j) for j in rows]
+
+
+@router.get("/outreach/jobs/{job_id}", response_model=DmOutreachJobDetailOut)
+def get_dm_outreach_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    job = db.get(DmOutreachJob, job_id)
+    if not job or not can_view(job, user):
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return _job_out(db, job, with_logs=True)
+
+
+@router.post("/outreach/jobs/{job_id}/cancel", response_model=DmOutreachJobOut)
+def cancel_dm_outreach_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """取消：当前正在发的一条会发完，后续不再发送。"""
+    job = db.get(DmOutreachJob, job_id)
+    if not job or job.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.status in ("pending", "running"):
+        if job.status == "pending":
+            job.finished_at = datetime.utcnow()
+        job.status = "cancelled"
+        db.commit()
+        db.refresh(job)
+    return _job_out(db, job)
 
 
 # ----- 上传 -----
