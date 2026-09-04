@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -29,26 +29,33 @@ from app.services import avatar_cache
 def normalize_fb_url(u: Optional[str]) -> str:
     """规范化主页链接用于匹配：去空白、去 http(s):// 与 www.、去 query/fragment、去尾部斜杠、转小写。
 
-    与回填 SQL（backend/sql/2026_social_account_fields.sql）里的归一化规则保持一致。
+    ``profile.php?id=数字`` 这类链接的身份全在 id 参数上，保留 ``?id=`` 参与比对，
+    归一为 ``facebook.com/profile.php?id=数字``。
     """
     s = (u or "").strip()
     if not s:
         return ""
-    s = s.split("?", 1)[0].split("#", 1)[0].strip()
-    low = s.lower()
+    s = s.split("#", 1)[0].strip()
+    path, _, query = s.partition("?")
+    low = path.strip().lower()
     for prefix in ("https://", "http://"):
         if low.startswith(prefix):
             low = low[len(prefix):]
             break
     if low.startswith("www."):
         low = low[4:]
-    return low.rstrip("/")
+    low = low.rstrip("/")
+    if low.endswith("/profile.php") and query:
+        pid = dict(parse_qsl(query.rstrip("/"), keep_blank_values=False)).get("id", "").strip()
+        if pid:
+            return f"{low}?id={pid}"
+    return low
 
 
 def handle_from_url(url: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
     """从主页链接末段解析账号 handle；``profile.php?id=`` 这类链接末段无意义，退化用 fallback（如 page_id）。"""
     norm = normalize_fb_url(url)
-    if not norm or "/" not in norm or norm.endswith("profile.php"):
+    if not norm or "/" not in norm or "/profile.php" in norm:
         return fallback or None
     seg = norm.rsplit("/", 1)[-1]
     return seg or fallback or None

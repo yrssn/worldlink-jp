@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
+from urllib.parse import parse_qsl
 
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -124,7 +125,14 @@ def _defer_homepage_scrape(task: ScrapeTask) -> bool:
 def _norm_fb_profile_url(u: str) -> str:
     if not u or not isinstance(u, str):
         return ""
-    s = u.strip().split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    raw = u.strip().split("#", 1)[0]
+    s, _, query = raw.partition("?")
+    s = s.rstrip("/")
+    # profile.php?id=数字 的身份全在 id 参数上，保留它，否则所有个人主页会被归成同一个
+    if s.lower().endswith("/profile.php") and query:
+        pid = dict(parse_qsl(query.rstrip("/"))).get("id", "").strip()
+        if pid:
+            s = f"{s}?id={pid}"
     s = s.replace("://m.facebook.com", "://www.facebook.com")
     s = s.replace("://l.facebook.com", "://www.facebook.com")
     s = s.replace("://facebook.com", "://www.facebook.com")
