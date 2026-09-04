@@ -42,3 +42,10 @@ def test_match_for_form():
     assert cross_user_match_for_form(idx, "facebook", {"fb_page_id": "100001", "fb_page_url": "x"}) == "cindy"
     assert cross_user_match_for_form(idx, "instagram", {"ig_username": "kol_a"}) == "cindy"
     assert cross_user_match_for_form(CrossUserIndex(), "instagram", {"ig_username": "kol_a"}) is None
+
+
+def test_profile_php_without_id_never_matches():
+    assert normalize_fb_url("https://www.facebook.com/profile.php") == ""
+    assert normalize_fb_url("https://www.facebook.com/profile.php?id=100001") == "facebook.com/profile.php?id=100001"
+    idx = _index()
+    assert idx.match("facebook", url="https://facebook.com/profile.php") is None

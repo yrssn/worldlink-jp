@@ -1865,7 +1865,7 @@ onUnmounted(() => {
                 size="small"
                 @click="router.push(`/influencers/${row.influencer_id}`)"
               >
-                已入库
+                已入库 #{{ row.influencer_id }}
               </el-button>
               <el-button
                 v-else

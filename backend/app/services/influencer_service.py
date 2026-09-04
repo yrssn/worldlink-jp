@@ -45,10 +45,10 @@ def normalize_fb_url(u: Optional[str]) -> str:
     if low.startswith("www."):
         low = low[4:]
     low = low.rstrip("/")
-    if low.endswith("/profile.php") and query:
+    if low.endswith("/profile.php"):
         pid = dict(parse_qsl(query.rstrip("/"), keep_blank_values=False)).get("id", "").strip()
-        if pid:
-            return f"{low}?id={pid}"
+        # 没有 id 的 profile.php 不代表任何具体主页，返回空避免所有个人主页互相判重
+        return f"{low}?id={pid}" if pid else ""
     return low
 
 
