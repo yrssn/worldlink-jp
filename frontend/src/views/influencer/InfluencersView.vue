@@ -341,6 +341,9 @@ const taskPlaceholder = computed(
 )
 const taskStarting = ref(false)
 const tasks = ref<InfluencerScrapeTask[]>([])
+const tasksTotal = ref(0)
+const tasksPage = ref(1)
+const tasksPageSize = ref(50)
 const tasksLoading = ref(false)
 const savingTaskId = ref<number | null>(null)
 const runningTaskId = ref<number | null>(null)
@@ -478,10 +481,19 @@ function scheduleTaskPolling() {
 async function loadTasks() {
   tasksLoading.value = true
   try {
-    tasks.value = await influencerApi.listScrapeProfiles({
+    const r = await influencerApi.listScrapeProfiles({
+      page: tasksPage.value,
+      page_size: tasksPageSize.value,
       platform: filterPlatform.value || undefined,
       status: filterStatus.value || undefined,
     })
+    tasks.value = r.items
+    tasksTotal.value = r.total
+    if (r.total > 0 && r.items.length === 0 && tasksPage.value > 1) {
+      tasksPage.value = Math.max(1, Math.ceil(r.total / tasksPageSize.value))
+      await loadTasks()
+      return
+    }
   } finally {
     tasksLoading.value = false
   }
@@ -494,7 +506,13 @@ function openTaskDialog() {
   taskPlatform.value = scrapablePlatformOptions.value[0]?.platform || 'facebook'
   batchImportUrls.value = ''
   detectItems.value = []
+  tasksPage.value = 1
   loadPlatformOptions()
+  loadTasks()
+}
+
+function resetTasksPage() {
+  tasksPage.value = 1
   loadTasks()
 }
 
@@ -1689,7 +1707,7 @@ onUnmounted(() => {
 
       <!-- 工具条：筛选 + 刷新 -->
       <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center">
-        <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 140px" @change="loadTasks">
+        <el-select v-model="filterPlatform" placeholder="全部平台" clearable style="width: 140px" @change="resetTasksPage">
           <el-option
             v-for="p in platformOptions"
             :key="p.platform"
@@ -1697,7 +1715,7 @@ onUnmounted(() => {
             :value="p.platform"
           />
         </el-select>
-        <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 120px" @change="loadTasks">
+        <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 120px" @change="resetTasksPage">
           <el-option label="待处理" value="staged" />
           <el-option label="已区别开" value="skipped" />
           <el-option label="抓取中" value="running" />
@@ -1868,6 +1886,16 @@ onUnmounted(() => {
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        v-model:current-page="tasksPage"
+        v-model:page-size="tasksPageSize"
+        :total="tasksTotal"
+        :page-sizes="[20, 50, 100, 200]"
+        layout="total, sizes, prev, pager, next"
+        style="margin-top: 12px; justify-content: flex-end; display: flex"
+        @current-change="loadTasks"
+        @size-change="resetTasksPage"
+      />
     </el-dialog>
 
     <el-dialog v-model="scrapeOptVisible" title="抓取选项" width="460px">

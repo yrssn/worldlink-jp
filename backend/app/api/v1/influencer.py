@@ -45,6 +45,7 @@ from app.schemas.influencer import (
     InfluencerScrapeSaveResult,
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
+    InfluencerScrapeTaskPageOut,
     InfluencerScrapeTaskSaveRequest,
     InfluencerScrapeTaskUpdate,
     InfluencerUpdate,
@@ -1298,16 +1299,17 @@ async def import_influencers(
     )
 
 
-@router.get("/scrape-profile", response_model=list[InfluencerScrapeTaskOut])
+@router.get("/scrape-profile", response_model=InfluencerScrapeTaskPageOut)
 def list_scrape_profiles(
-    limit: int = Query(100, ge=1, le=2000),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
     platform: str | None = None,
     batch: str | None = None,
     status_eq: str | None = Query(None, alias="status"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """抓取/暂存任务列表：按创建时间倒序，支持按 平台 / 批次 / 状态 过滤。"""
+    """抓取/暂存任务列表：按创建时间倒序分页，支持按 平台 / 批次 / 状态 过滤。"""
     q = db.query(InfluencerScrapeTask)
     q = owner_filter(q, InfluencerScrapeTask, user)
     if platform:
@@ -1320,8 +1322,16 @@ def list_scrape_profiles(
             q = q.filter(InfluencerScrapeTask.batch == b)
     if status_eq:
         q = q.filter(InfluencerScrapeTask.status == status_eq)
-    tasks = q.order_by(InfluencerScrapeTask.id.desc()).limit(limit).all()
-    return [_scrape_task_out(db, t) for t in tasks]
+    total = q.count()
+    tasks = (
+        q.order_by(InfluencerScrapeTask.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return InfluencerScrapeTaskPageOut(
+        items=[_scrape_task_out(db, t) for t in tasks], total=total
+    )
 
 
 @router.get("/scrape-profile-batches", response_model=list[InfluencerScrapeBatchOut])

@@ -393,14 +393,16 @@ export const influencerApi = {
   getScrapeProfile: (taskId: number) =>
     http.get<unknown, InfluencerScrapeTask>(`/influencers/scrape-profile/${taskId}`),
   listScrapeProfiles: (params?: {
-    limit?: number
+    page?: number
+    page_size?: number
     platform?: ScrapePlatform
     batch?: string
     status?: string
   }) =>
-    http.get<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile', {
-      params: { limit: 1000, ...(params || {}) },
-    }),
+    http.get<unknown, { items: InfluencerScrapeTask[]; total: number }>(
+      '/influencers/scrape-profile',
+      { params: { page: 1, page_size: 50, ...(params || {}) } },
+    ),
   batchStageScrapeProfiles: (data: {
     urls: string[]
     /** 'auto' = 后端按链接正则逐条识别平台 */

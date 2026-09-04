@@ -248,6 +248,11 @@ class InfluencerScrapeTaskOut(BaseModel):
     social_account_id: Optional[int] = None
 
 
+class InfluencerScrapeTaskPageOut(BaseModel):
+    items: list[InfluencerScrapeTaskOut]
+    total: int
+
+
 class InfluencerScrapeBatchRunRequest(BaseModel):
     """整批操作：按批次名（可选限定平台）把暂存/失败的任务一次性丢进抓取队列。"""
 
