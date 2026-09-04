@@ -1831,19 +1831,35 @@ onUnmounted(() => {
         <el-table-column label="粉丝" width="90">
           <template #default="{ row }">{{ row.result?.fb_followers ?? row.result?.followers ?? '—' }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="110">
+        <el-table-column label="状态" width="170">
           <template #default="{ row }">
             <el-tag size="small" :type="SCRAPE_STATUS_TAG[row.status] || 'info'">
               {{ SCRAPE_STATUS_TEXT[row.status] || row.status }}
             </el-tag>
+            <el-tooltip
+              v-if="row.duplicate_of"
+              :content="`该主页已在对照账号「${row.duplicate_of}」名下，属于重复`"
+              placement="top"
+            >
+              <el-tag size="small" type="danger" effect="dark" style="margin-left: 4px">
+                与 {{ row.duplicate_of }} 重复
+              </el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="270" fixed="right">
           <template #default="{ row }">
             <template v-if="row.status === 'done'">
               <el-button link type="primary" size="small" @click="viewTask(row)">查看</el-button>
+              <el-tooltip
+                v-if="row.duplicate_of && !row.influencer_id"
+                :content="`已在账号「${row.duplicate_of}」名下，不入库`"
+                placement="top"
+              >
+                <span style="color: #f56c6c; font-size: 12px; cursor: help; margin: 0 8px">重复不入库</span>
+              </el-tooltip>
               <el-button
-                v-if="row.influencer_id"
+                v-else-if="row.influencer_id"
                 link
                 type="success"
                 size="small"
@@ -1881,6 +1897,13 @@ onUnmounted(() => {
                 <span style="color: #f56c6c; font-size: 12px; cursor: help">失败原因</span>
               </el-tooltip>
             </template>
+            <el-tooltip
+              v-else-if="row.status === 'skipped'"
+              :content="row.error || `该链接已在对照账号「${row.duplicate_of || ''}」名下，已区别开不抓取`"
+              placement="top"
+            >
+              <span style="color: #e6a23c; font-size: 12px; cursor: help">重复原因</span>
+            </el-tooltip>
             <span v-else style="color: #909399; font-size: 12px">抓取中…</span>
             <el-button link type="danger" size="small" @click="deleteTask(row)">删除</el-button>
           </template>

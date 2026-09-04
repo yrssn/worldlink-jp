@@ -246,6 +246,8 @@ class InfluencerScrapeTaskOut(BaseModel):
     influencer_id: Optional[int] = None
     # 一键抓取时绑定的关联账号 id（结果回写到该账号）
     social_account_id: Optional[int] = None
+    # 与哪个对照账号（用户名）名下的主页重复，前端据此标红
+    duplicate_of: Optional[str] = None
 
 
 class InfluencerScrapeTaskPageOut(BaseModel):

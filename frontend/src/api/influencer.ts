@@ -267,7 +267,7 @@ export interface InfluencerScrapeTask {
   platform: ScrapePlatform
   batch?: string | null
   url: string
-  status: 'staged' | 'pending' | 'running' | 'done' | 'failed' | 'contacted'
+  status: 'staged' | 'skipped' | 'pending' | 'running' | 'done' | 'failed' | 'contacted'
   error?: string | null
   result?: ScrapeTaskResult | null
   created_at: string
@@ -275,6 +275,8 @@ export interface InfluencerScrapeTask {
   influencer_id?: number | null
   /** 列表「一键抓取」时绑定的关联账号，结果回写到该账号 */
   social_account_id?: number | null
+  /** 与哪个对照账号（用户名）名下的主页重复；未配置对照账号或未命中为空 */
+  duplicate_of?: string | null
 }
 
 export interface InfluencerScrapeBatch {

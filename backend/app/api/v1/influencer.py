@@ -91,9 +91,46 @@ def _country_or_400(db: Session, country_id: int | None) -> Country | None:
     return row
 
 
-def _scrape_task_out(db: Session, task: InfluencerScrapeTask) -> InfluencerScrapeTaskOut:
-    """把任务序列化为输出，并补上「该主页是否已入库达人」的 influencer_id。"""
+def _cross_user_index_for_owner(
+    db: Session, owner_id: int, cache: dict[int, influencer_service.CrossUserIndex] | None = None
+) -> influencer_service.CrossUserIndex:
+    if cache is not None and owner_id in cache:
+        return cache[owner_id]
+    owner = db.get(User, owner_id)
+    index = (
+        influencer_service.cross_user_index(db, owner)
+        if owner is not None
+        else influencer_service.CrossUserIndex()
+    )
+    if cache is not None:
+        cache[owner_id] = index
+    return index
+
+
+def _task_duplicate_of(
+    db: Session,
+    task: InfluencerScrapeTask,
+    cache: dict[int, influencer_service.CrossUserIndex] | None = None,
+) -> str | None:
+    """该任务（按原始链接 + 抓取结果里的页面 ID / 用户名）和哪个对照账号重复，没配对照账号或未命中返回 None。"""
+    index = _cross_user_index_for_owner(db, task.owner_id, cache)
+    if not index:
+        return None
+    if isinstance(task.result, dict) and task.result:
+        hit = influencer_service.cross_user_match_for_form(index, task.platform, task.result)
+        if hit:
+            return hit
+    return index.match(task.platform, url=task.url)
+
+
+def _scrape_task_out(
+    db: Session,
+    task: InfluencerScrapeTask,
+    index_cache: dict[int, influencer_service.CrossUserIndex] | None = None,
+) -> InfluencerScrapeTaskOut:
+    """把任务序列化为输出，并补上「该主页是否已入库达人」的 influencer_id 和「与哪个对照账号重复」。"""
     out = InfluencerScrapeTaskOut.model_validate(task)
+    out.duplicate_of = _task_duplicate_of(db, task, index_cache)
     result = task.result if isinstance(task.result, dict) else None
     if result:
         if (task.platform or "facebook") == "instagram":
@@ -836,7 +873,8 @@ def _stage_urls(
     db.commit()
     for t in created:
         db.refresh(t)
-    return [_scrape_task_out(db, t) for t in created]
+    index_cache = {user.id: cross_index}
+    return [_scrape_task_out(db, t, index_cache) for t in created]
 
 
 @router.post("/scrape-profile/batch", response_model=list[InfluencerScrapeTaskOut])
@@ -1360,8 +1398,9 @@ def list_scrape_profiles(
         .limit(page_size)
         .all()
     )
+    index_cache: dict[int, influencer_service.CrossUserIndex] = {}
     return InfluencerScrapeTaskPageOut(
-        items=[_scrape_task_out(db, t) for t in tasks], total=total
+        items=[_scrape_task_out(db, t, index_cache) for t in tasks], total=total
     )
 
 
