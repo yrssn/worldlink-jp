@@ -10,6 +10,8 @@ import {
   SOCIAL_PLATFORM_OPTIONS,
   type ImportFieldOption,
   type ImportPreview,
+  type ScrapeStageResult,
+  type StageSkipped,
   type Influencer,
   type InfluencerScrapeTask,
   type PlatformDetectItem,
@@ -631,6 +633,29 @@ async function deleteAllTasks() {
   }
 }
 
+// 导入时按链接查重被跳过的明细
+const stageSkipped = ref<StageSkipped[]>([])
+const stageSkippedVisible = ref(false)
+
+const stageSkipKindLabel: Record<string, string> = {
+  self_task: '暂存已有',
+  self_influencer: '达人库已有',
+  cross_user: '对照账号重复',
+  batch: '本次重复',
+}
+
+function showStageResult(res: ScrapeStageResult, prefix: string) {
+  const n = res.created.length
+  const k = res.skipped.length
+  if (k > 0) {
+    stageSkipped.value = res.skipped
+    stageSkippedVisible.value = true
+    ElMessage.warning(`${prefix} ${n} 条，${k} 条链接重复已跳过`)
+  } else {
+    ElMessage.success(`${prefix} ${n} 条到待处理列表`)
+  }
+}
+
 async function importBatch() {
   const urls = parsedBatchUrls.value
   if (!urls.length) {
@@ -639,13 +664,13 @@ async function importBatch() {
   }
   batchImporting.value = true
   try {
-    const created = await influencerApi.batchStageScrapeProfiles({
+    const res = await influencerApi.batchStageScrapeProfiles({
       urls,
       platform: batchPlatform.value,
     })
     batchImportUrls.value = ''
     detectItems.value = []
-    ElMessage.success(`已导入 ${created.length} 条到待处理列表`)
+    showStageResult(res, '已导入')
     filterPlatform.value = ''
     filterStatus.value = ''
     await loadTasks()
@@ -693,11 +718,11 @@ async function submitStageUpload() {
   }
   uploading.value = true
   try {
-    const created = await influencerApi.uploadScrapeBatch(stageFile.value, batchPlatform.value, {
+    const res = await influencerApi.uploadScrapeBatch(stageFile.value, batchPlatform.value, {
       url_column: stageForm.url_column,
       has_header: stageForm.has_header,
     })
-    ElMessage.success(`已从表格导入 ${created.length} 条到待处理列表`)
+    showStageResult(res, '已从表格导入')
     stageVisible.value = false
     stageFile.value = null
     filterPlatform.value = ''
@@ -2283,6 +2308,32 @@ onUnmounted(() => {
         >
           存入达人库
         </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="stageSkippedVisible"
+      :title="`链接重复已跳过（${stageSkipped.length} 条）`"
+      width="760px"
+      append-to-body
+    >
+      <el-table :data="stageSkipped" border size="small" max-height="460">
+        <el-table-column label="链接" min-width="300">
+          <template #default="{ row }">
+            <a :href="row.url" target="_blank" rel="noopener">{{ row.url }}</a>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.kind === 'cross_user' ? 'danger' : 'warning'">
+              {{ stageSkipKindLabel[row.kind] || row.kind }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="reason" label="原因" min-width="220" />
+      </el-table>
+      <template #footer>
+        <el-button type="primary" @click="stageSkippedVisible = false">知道了</el-button>
       </template>
     </el-dialog>
 

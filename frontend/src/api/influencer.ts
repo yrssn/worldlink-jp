@@ -298,6 +298,22 @@ export interface InfluencerScrapeBatch {
   done: number
 }
 
+export interface StageSkipped {
+  url: string
+  /** self_task = 暂存/任务里已有；self_influencer = 达人库已入库；cross_user = 对照账号名下；batch = 本次重复 */
+  kind: 'self_task' | 'self_influencer' | 'cross_user' | 'batch'
+  reason: string
+  task_id?: number | null
+  influencer_id?: number | null
+  owner?: string | null
+}
+
+export interface ScrapeStageResult {
+  created: InfluencerScrapeTask[]
+  skipped: StageSkipped[]
+  total: number
+}
+
 export interface ScrapeBatchActionResult {
   affected: number
   skipped: number
@@ -418,7 +434,7 @@ export const influencerApi = {
     fallback_platform?: ScrapePlatform
     batch?: string | null
   }) =>
-    http.post<unknown, InfluencerScrapeTask[]>('/influencers/scrape-profile/batch', data),
+    http.post<unknown, ScrapeStageResult>('/influencers/scrape-profile/batch', data),
   listScrapeBatches: () =>
     http.get<unknown, InfluencerScrapeBatch[]>('/influencers/scrape-profile-batches'),
   runScrapeBatch: (data: {
@@ -454,7 +470,7 @@ export const influencerApi = {
     fd.append('platform', platform)
     if (options?.url_column !== undefined) fd.append('url_column', String(options.url_column))
     if (options?.has_header !== undefined) fd.append('has_header', String(options.has_header))
-    return http.post<unknown, InfluencerScrapeTask[]>(
+    return http.post<unknown, ScrapeStageResult>(
       '/influencers/scrape-profile/batch/upload',
       fd,
     )

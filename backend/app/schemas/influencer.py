@@ -318,6 +318,26 @@ class ImportResultOut(BaseModel):
     cross_user_conflicts: list[ImportConflictOut] = Field(default_factory=list)
 
 
+class StageSkippedOut(BaseModel):
+    """批量导入暂存时按链接查重被跳过的一条。"""
+
+    url: str
+    #: self_task = 暂存/任务里已有；self_influencer = 达人库已入库；cross_user = 对照账号名下；batch = 本次重复
+    kind: str
+    reason: str
+    task_id: Optional[int] = None
+    influencer_id: Optional[int] = None
+    owner: Optional[str] = None
+
+
+class InfluencerScrapeStageResult(BaseModel):
+    """批量导入暂存结果：新建的任务 + 因重复跳过的链接。"""
+
+    created: list[InfluencerScrapeTaskOut] = Field(default_factory=list)
+    skipped: list[StageSkippedOut] = Field(default_factory=list)
+    total: int = 0
+
+
 class InfluencerScrapeBatchActionResult(BaseModel):
     """整批操作结果。"""
 

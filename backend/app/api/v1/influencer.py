@@ -43,6 +43,7 @@ from app.schemas.influencer import (
     InfluencerScrapeBatchRunRequest,
     InfluencerScrapeRunRequest,
     InfluencerScrapeSaveResult,
+    InfluencerScrapeStageResult,
     InfluencerScrapeTaskCreate,
     InfluencerScrapeTaskOut,
     InfluencerScrapeTaskPageOut,
@@ -56,6 +57,7 @@ from app.schemas.influencer import (
     SocialAccountOut,
     SocialAccountScrapeRequest,
     SocialAccountUpdate,
+    StageSkippedOut,
 )
 from app.services import apify_service, avatar_cache, influencer_import, influencer_service
 from app.utils.csv_export import build_csv, csv_response
@@ -211,11 +213,7 @@ def _parse_save_status(value: str | None) -> InfluencerStatus | None:
 
 def _cross_user_hit_for_task(db: Session, task: InfluencerScrapeTask) -> str | None:
     """抓取结果出来后再拿 FB 页面 ID / IG 用户名去对照账号名下复查一次（导入时只有链接，同一主页不同写法这时才能识别）。"""
-    owner = db.get(User, task.owner_id)
-    if owner is None or not isinstance(task.result, dict):
-        return None
-    index = influencer_service.cross_user_index(db, owner)
-    return influencer_service.cross_user_match_for_form(index, task.platform, task.result)
+    return _task_duplicate_of(db, task)
 
 
 def _mark_task_cross_user_skipped(db: Session, task: InfluencerScrapeTask, other: str) -> None:
@@ -833,50 +831,156 @@ def _stage_urls(
     platform: str | None,
     fallback_platform: str | None,
     batch: str | None,
-) -> list[InfluencerScrapeTaskOut]:
-    """把一批链接去重后写入暂存区（status=staged），逐条按链接识别平台。"""
+) -> InfluencerScrapeStageResult:
+    """把一批链接写入暂存区（status=staged），逐条按链接识别平台。
+
+    导入时按链接查重（本次重复 / 本账号暂存任务 / 本账号达人库 / 对照账号），重复的不写入，在 skipped 里回原因。
+    """
     plat = (platform or "auto").strip().lower()
     if plat != "auto" and plat not in KNOWN_PLATFORMS:
         raise HTTPException(status_code=400, detail="不支持的抓取平台")
     fallback = (fallback_platform or "facebook").strip().lower()
     if fallback not in KNOWN_PLATFORMS:
         raise HTTPException(status_code=400, detail="不支持的兼容平台")
-    seen: set[str] = set()
     urls: list[str] = []
     for raw in raw_urls:
         u = (raw or "").strip()
-        if not u or u in seen:
-            continue
-        seen.add(u)
-        urls.append(u)
+        if u:
+            urls.append(u)
     if not urls:
         raise HTTPException(status_code=400, detail="没有可导入的链接")
-    batch_name = (batch or "").strip() or _default_batch_name(db, user.id)
     cross_index = influencer_service.cross_user_index(db, user)
-    created: list[InfluencerScrapeTask] = []
+    own_tasks = _own_task_url_index(db, user.id)
+    skipped: list[StageSkippedOut] = []
+    pending: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for u in urls:
         row_platform = plat
         if row_platform == "auto":
             row_platform = detect_platform(u) or fallback
+        key = _stage_url_key(row_platform, u) or u.lower()
+        if key in seen:
+            skipped.append(StageSkippedOut(url=u, kind="batch", reason="本次导入里重复"))
+            continue
+        seen.add(key)
+        hit = own_tasks.get(key)
+        if hit is not None:
+            tid, iid, tstatus = hit
+            reason = (
+                f"已在暂存/任务列表 #{tid}"
+                + (f"，且已入库达人 #{iid}" if iid else f"（{_TASK_STATUS_LABEL.get(tstatus, tstatus)}）")
+            )
+            skipped.append(
+                StageSkippedOut(
+                    url=u, kind="self_task", reason=reason, task_id=tid, influencer_id=iid
+                )
+            )
+            continue
+        iid = _own_influencer_id_by_url(db, user.id, row_platform, u)
+        if iid is not None:
+            skipped.append(
+                StageSkippedOut(
+                    url=u,
+                    kind="self_influencer",
+                    reason=f"达人库已入库 #{iid}",
+                    influencer_id=iid,
+                )
+            )
+            continue
         other = cross_index.match(row_platform, url=u)
-        task = InfluencerScrapeTask(
-            owner_id=user.id,
-            platform=row_platform,
-            url=u,
-            batch=batch_name,
-            status="skipped" if other else "staged",
-            error=f"主页链接已在账号「{other}」名下，已区别开不抓取" if other else None,
-        )
-        db.add(task)
-        created.append(task)
-    db.commit()
-    for t in created:
-        db.refresh(t)
+        if other:
+            skipped.append(
+                StageSkippedOut(
+                    url=u, kind="cross_user", reason=f"与账号「{other}」重复", owner=other
+                )
+            )
+            continue
+        pending.append((row_platform, u))
+    created: list[InfluencerScrapeTask] = []
+    if pending:
+        batch_name = (batch or "").strip() or _default_batch_name(db, user.id)
+        for row_platform, u in pending:
+            task = InfluencerScrapeTask(
+                owner_id=user.id,
+                platform=row_platform,
+                url=u,
+                batch=batch_name,
+                status="staged",
+            )
+            db.add(task)
+            created.append(task)
+        db.commit()
+        for t in created:
+            db.refresh(t)
     index_cache = {user.id: cross_index}
-    return [_scrape_task_out(db, t, index_cache) for t in created]
+    return InfluencerScrapeStageResult(
+        created=[_scrape_task_out(db, t, index_cache) for t in created],
+        skipped=skipped,
+        total=len(urls),
+    )
 
 
-@router.post("/scrape-profile/batch", response_model=list[InfluencerScrapeTaskOut])
+_TASK_STATUS_LABEL = {
+    "staged": "待处理",
+    "pending": "排队中",
+    "running": "抓取中",
+    "done": "已抓取",
+    "failed": "抓取失败",
+    "skipped": "已跳过",
+}
+
+
+def _stage_url_key(platform: str, url: str) -> str:
+    """导入查重用的链接归一化键：IG 允许只填用户名，先补成标准主页链接再归一。"""
+    if platform == "instagram":
+        return influencer_service.normalize_fb_url(influencer_service.build_ig_profile_url(url))
+    return influencer_service.normalize_fb_url(url)
+
+
+def _own_task_url_index(db: Session, owner_id: int) -> dict[str, tuple[int, int | None, str]]:
+    """本账号所有暂存/抓取任务的 归一化链接 -> (任务 id, 已入库达人 id, 状态)。"""
+    rows = (
+        db.query(
+            InfluencerScrapeTask.id,
+            InfluencerScrapeTask.platform,
+            InfluencerScrapeTask.url,
+            InfluencerScrapeTask.influencer_id,
+            InfluencerScrapeTask.status,
+        )
+        .filter(InfluencerScrapeTask.owner_id == owner_id)
+        .order_by(InfluencerScrapeTask.id.asc())
+        .all()
+    )
+    index: dict[str, tuple[int, int | None, str]] = {}
+    for tid, platform, url, iid, status in rows:
+        key = _stage_url_key(platform or "facebook", url)
+        if not key:
+            continue
+        prev = index.get(key)
+        # 同一链接多条任务时优先保留已入库的那条
+        if prev is None or (iid and not prev[1]):
+            index[key] = (tid, iid, status)
+    return index
+
+
+def _own_influencer_id_by_url(
+    db: Session, owner_id: int, platform: str, url: str
+) -> int | None:
+    """按链接（IG 兼容用户名）查本账号达人库里是否已入库。"""
+    if platform == "instagram":
+        handle = apify_service.normalize_ig_username(url) or None
+        inf = influencer_service.find_duplicate_social(
+            db,
+            owner_id,
+            SocialPlatform.instagram,
+            handle=handle,
+            url=influencer_service.build_ig_profile_url(url),
+        )
+        return inf.id if inf else None
+    return influencer_service.match_influencer_id_by_url(db, owner_id, url, platform)
+
+
+@router.post("/scrape-profile/batch", response_model=InfluencerScrapeStageResult)
 def batch_stage_scrape_profiles(
     payload: InfluencerScrapeBatchCreate,
     db: Session = Depends(get_db),
@@ -896,7 +1000,7 @@ def batch_stage_scrape_profiles(
     )
 
 
-@router.post("/scrape-profile/batch/upload", response_model=list[InfluencerScrapeTaskOut])
+@router.post("/scrape-profile/batch/upload", response_model=InfluencerScrapeStageResult)
 async def upload_scrape_profile_batch(
     file: UploadFile = File(..., description="主页链接表格：xlsx / csv / txt"),
     platform: str = Form("auto"),
