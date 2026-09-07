@@ -44,7 +44,7 @@ from app.schemas.dm import (
     DmUploadOut,
 )
 from app.api.v1.influencer import _run_scrape_profile_bg
-from app.services.fb_dm_automation import open_profile_and_message
+from app.services.fb_dm_automation import DmCancelled, open_profile_and_message
 
 router = APIRouter(prefix="/dm", tags=["dm"])
 
@@ -544,10 +544,16 @@ def _wait_unless_cancelled(db: Session, job_id: int, seconds: int) -> bool:
         if remaining <= 0:
             return True
         time.sleep(min(remaining, _JOB_CANCEL_POLL_SECONDS))
-        db.expire_all()
-        job = db.get(DmOutreachJob, job_id)
-        if not job or job.status == "cancelled":
+        if _job_cancelled(db, job_id):
             return False
+
+
+def _job_cancelled(db: Session, job_id: int) -> bool:
+    """结束当前事务后重新读：MySQL REPEATABLE READ 下同一事务内反复 SELECT 看不到别的连接提交的取消。"""
+    db.commit()
+    db.expire_all()
+    job = db.get(DmOutreachJob, job_id)
+    return not job or job.status == "cancelled"
 
 
 def _run_dm_outreach_job_bg(job_id: int) -> None:
@@ -581,9 +587,9 @@ def _run_dm_outreach_job_bg(job_id: int) -> None:
                 db.commit()
                 if not _wait_unless_cancelled(db, job_id, wait_s):
                     break
-            db.refresh(job)
-            if job.status == "cancelled":
+            if _job_cancelled(db, job_id):
                 break
+            job = db.get(DmOutreachJob, job_id)
             url = str(t.get("url") or "").strip()
             inf_id = t.get("influencer_id")
             job.current_url = url
@@ -599,7 +605,12 @@ def _run_dm_outreach_job_bg(job_id: int) -> None:
                     message_text=content.content,
                     image_paths=image_paths,
                     platform=job.platform,
+                    should_stop=lambda: _job_cancelled(db, job_id),
                 )
+            except DmCancelled:
+                # 取消时还没发出：不记失败、不计数，直接结束
+                db.rollback()
+                break
             except httpx.HTTPError as e:
                 error = f"连接 BitBrowser/CDP 失败: {e}"
             except Exception as e:  # noqa: BLE001

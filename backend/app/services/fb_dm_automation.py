@@ -80,6 +80,24 @@ _FOCUS_CHAT_INPUT_JS = """
 })()
 """
 
+# 确认消息真的发进了聊天窗：在输入框所在的聊天容器（包含 Messenger 面板的最近祖先）里找正文开头
+_CHAT_HAS_TEXT_JS = """
+(() => {
+%s
+  if (!boxes.length) return { found: false, reason: 'no-textbox' };
+  const needle = %%s;
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  let root = boxes[boxes.length - 1];
+  for (let i = 0; i < 12 && root.parentElement; i++) {
+    root = root.parentElement;
+    if (root.querySelector('[data-pagelet^="MWOpenThread"], [data-pagelet^="MWChatTab"], [role="grid"], [role="log"]')) break;
+    if (root.matches('[role="dialog"], [role="complementary"], [role="main"]')) break;
+  }
+  const hay = norm(root.innerText);
+  return { found: hay.includes(needle), scoped: root !== document.body };
+})()
+""" % _CHAT_BOXES_JS
+
 _CHAT_INPUT_TEXT_JS = """
 (() => {
 %s
@@ -164,6 +182,10 @@ _SET_FILE_INPUT_JS_TEMPLATE = """
 """
 
 
+class DmCancelled(Exception):
+    """任务在发送前被取消。"""
+
+
 def _message_button_js() -> str:
     return _CLICK_MESSAGE_JS % json.dumps(list(_MESSAGE_BUTTON_TEXTS), ensure_ascii=False)
 
@@ -177,10 +199,12 @@ def open_profile_and_message(
     image_paths: "list[Path] | None" = None,
     progress: "Callable[[str], None] | None" = None,
     platform: str = "facebook",
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> dict[str, object]:
     """在指定 BitBrowser 窗口中打开达人主页、点「发消息」，并在聊天小窗发送正文/图片。
 
     platform: "facebook" 或 "instagram"，仅影响发图方式与日志文案。
+    should_stop: 每个关键步骤前调用，返回 True 则招 DmCancelled（不会发出消息）。
     返回 dict：page_opened / message_clicked / matched_text / text_sent /
     images_sent / final_url。
     """
@@ -196,9 +220,14 @@ def open_profile_and_message(
             except Exception as e:  # noqa: BLE001
                 logger.debug("[{}] progress 回调失败: {}", tag, e)
 
+    def _check_stop() -> None:
+        if should_stop is not None and should_stop():
+            raise DmCancelled("任务已取消，未发送")
+
     url = (profile_url or "").strip()
     if not url:
         raise ValueError("达人主页链接不能为空")
+    _check_stop()
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
 
@@ -234,10 +263,12 @@ def open_profile_and_message(
         page.call("Page.bringToFront")
         _wait_page_ready(page)
         _log("主页加载完成，查找「发消息」按钮")
+        _check_stop()
         message_clicked, matched_text = _click_message_button(page)
         if message_clicked:
             _log(f"已点击「{matched_text}」按钮，等待聊天小窗打开")
             time.sleep(2)
+            _check_stop()
             if message_text or image_paths:
                 text_sent, images_sent = _send_chat_message(
                     page, message_text, image_paths or [], _log, platform
@@ -288,8 +319,15 @@ def _send_chat_message(
         _press_enter(page)
         time.sleep(1.5)
         remaining = page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5)
-        text_sent = not str(remaining or "").strip()
-        _log(f"正文发送{'成功' if text_sent else '可能失败（输入框未清空）'}")
+        cleared = not str(remaining or "").strip()
+        appeared = cleared and _wait_text_in_chat(page, text)
+        text_sent = cleared and appeared
+        if text_sent:
+            _log("正文发送成功（聊天窗内已出现该消息）")
+        elif not cleared:
+            _log("正文发送失败：输入框未清空")
+        else:
+            _log("正文发送未确认：输入框已清空但聊天窗内未看到该消息，按失败记录，请在窗口内核对")
     if platform == "instagram":
         images_sent = _send_images_ig(page, image_paths, _log)
         return text_sent, images_sent
@@ -367,6 +405,26 @@ def _send_images_ig(
         images_sent += 1
         _log(f"图片 {path.name} 已发送")
     return images_sent
+
+
+def _wait_text_in_chat(page: CdpPage, text: str, timeout: float = 8) -> bool:
+    """发送后在聊天容器里等到正文开头出现（排除帖子评论区）。"""
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), text.strip())
+    needle = " ".join(first_line.split())[:60]
+    if not needle:
+        return True
+    js = _CHAT_HAS_TEXT_JS % json.dumps(needle, ensure_ascii=False)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            result = page.evaluate(js, timeout=5)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[FB DM] check sent text skipped: {}", e)
+            result = None
+        if isinstance(result, dict) and result.get("found"):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _wait_pending_attachment(
