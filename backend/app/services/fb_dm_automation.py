@@ -29,9 +29,10 @@ _CLICK_MESSAGE_JS = """
 (() => {
   const texts = %s;
   const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  // 只认主页头部的按钮：帖子（role=article）里的「Message / 私信」链接不算
   const candidates = Array.from(
     document.querySelectorAll('div[role="button"], a[role="button"], a[role="link"], button')
-  );
+  ).filter((el) => el.offsetParent !== null && !el.closest('[role="article"], [role="feed"], [data-pagelet^="MW"]'));
   for (const el of candidates) {
     const label = norm(el.getAttribute('aria-label'));
     const text = norm(el.innerText);
@@ -48,14 +49,31 @@ _CLICK_MESSAGE_JS = """
 """
 
 
-# 定位聊天小窗里的消息输入框（contenteditable 的 textbox）并聚焦
-_FOCUS_CHAT_INPUT_JS = """
-(() => {
+# 只取聊天小窗（Messenger 组合框 MWComposer / aria-label「发消息给…」/ 占位符 Aa）里的输入框，
+# 绝不能落到主页帖子下面的「写评论…」框上。
+_CHAT_BOXES_JS = """
+  const isChatBox = (el) => {
+    if (el.closest('[role="article"]')) return false;
+    if (el.closest('[data-pagelet="MWComposer"], [data-pagelet^="MWChat"], [data-pagelet^="MWOpenThread"]')) return true;
+    const label = (el.getAttribute('aria-label') || '').trim();
+    const ph = (el.getAttribute('aria-placeholder') || '').trim();
+    if (/评论|評論|comment|コメント|reply|回复|回覆/i.test(label + ' ' + ph)) return false;
+    if (ph === 'Aa') return true;
+    // FB 小窗：aria-label「发消息给 xxx」；IG 聊天页：aria-label「消息」/ 占位符「Message...」
+    return /^(发消息给|發送訊息給|发讯息给|Message |メッセージ)/.test(label)
+      || /^(消息|訊息|Message|メッセージ|メッセージを送信)$/.test(label)
+      || /Message\\.{3}|发消息|發送訊息|メッセージ/.test(ph);
+  };
   const boxes = Array.from(
     document.querySelectorAll('div[role="textbox"][contenteditable="true"]')
-  ).filter((el) => el.offsetParent !== null);
+  ).filter((el) => el.offsetParent !== null && isChatBox(el));
+"""
+
+_FOCUS_CHAT_INPUT_JS = """
+(() => {
+%s
   if (!boxes.length) return { focused: false };
-  const el = boxes[boxes.length - 1];
+  const el = boxes[boxes.length - 1];""" % _CHAT_BOXES_JS + """
   el.scrollIntoView({ block: 'center' });
   el.focus();
   return { focused: true, label: (el.getAttribute('aria-label') || '').trim() };
@@ -64,10 +82,8 @@ _FOCUS_CHAT_INPUT_JS = """
 
 _CHAT_INPUT_TEXT_JS = """
 (() => {
-  const boxes = Array.from(
-    document.querySelectorAll('div[role="textbox"][contenteditable="true"]')
-  ).filter((el) => el.offsetParent !== null);
-  if (!boxes.length) return null;
+%s
+  if (!boxes.length) return null;""" % _CHAT_BOXES_JS + """
   return (boxes[boxes.length - 1].innerText || '').trim();
 })()
 """
@@ -109,9 +125,7 @@ _HAS_PENDING_ATTACHMENT_JS = """
 # 把 base64 图片以粘贴事件注入聊天输入框（FB 支持粘贴图片）
 _PASTE_IMAGE_JS_TEMPLATE = """
 (() => {
-  const boxes = Array.from(
-    document.querySelectorAll('div[role="textbox"][contenteditable="true"]')
-  ).filter((el) => el.offsetParent !== null);
+""" + _CHAT_BOXES_JS.replace("%", "%%") + """
   if (!boxes.length) return { pasted: false, reason: 'no-textbox' };
   const el = boxes[boxes.length - 1];
   el.focus();
