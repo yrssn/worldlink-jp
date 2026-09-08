@@ -354,7 +354,8 @@ def _record_outreach_log(
     images_sent = int(result.get("images_sent") or 0)
     ok = error is None and (text_sent or images_sent > 0)
     if not ok and error is None:
-        error = "未能发出消息（未找到发消息按钮或输入框）"
+        reason = result.get("fail_reason")
+        error = f"未能发出消息：{reason}" if reason else "未能发出消息（未找到发消息按钮或输入框）"
     log = DmOutreachLog(
         owner_id=user.id,
         influencer_id=influencer_id,

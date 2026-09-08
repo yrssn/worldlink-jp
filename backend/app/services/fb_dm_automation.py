@@ -257,27 +257,35 @@ def open_profile_and_message(
     text_sent = False
     images_sent = 0
     final_url = url
-    with CdpPage(page_ws, user_id=user.id) as page:
-        page.call("Page.enable")
-        page.call("Runtime.enable")
-        page.call("Page.bringToFront")
-        _wait_page_ready(page)
-        _log("主页加载完成，查找「发消息」按钮")
-        _check_stop()
-        message_clicked, matched_text = _click_message_button(page)
-        if message_clicked:
-            _log(f"已点击「{matched_text}」按钮，等待聊天小窗打开")
-            time.sleep(2)
+    fail_reason: str | None = None
+    try:
+        with CdpPage(page_ws, user_id=user.id) as page:
+            page.call("Page.enable")
+            page.call("Runtime.enable")
+            page.call("Page.bringToFront")
+            _wait_page_ready(page)
+            _log("主页加载完成，查找「发消息」按钮")
             _check_stop()
-            if message_text or image_paths:
-                text_sent, images_sent = _send_chat_message(
-                    page, message_text, image_paths or [], _log, platform
-                )
-        else:
-            _log(f"未找到「发消息」按钮（可能未登录 {site_name}，或对方未开放私信）")
-        final_url = str(page.evaluate("window.location.href", timeout=5) or url)
-    # 私信发出后关闭刚打开的标签页，避免窗口内标签堆积卡顿
-    if text_sent or images_sent:
+            message_clicked, matched_text = _click_message_button(page)
+            if not message_clicked:
+                fail_reason = f"未找到「发消息」按钮（可能未登录 {site_name}、页面未加载完或对方未开放私信）"
+                _log(fail_reason)
+            elif message_text or image_paths:
+                _log(f"已点击「{matched_text}」按钮，等待聊天小窗打开")
+                _check_stop()
+                if not _open_chat_window(page, _log):
+                    fail_reason = "已点「发消息」但聊天小窗未打开（重试 3 次仍未出现输入框）"
+                    _log(fail_reason)
+                else:
+                    _check_stop()
+                    text_sent, images_sent = _send_chat_message(
+                        page, message_text, image_paths or [], _log, platform
+                    )
+                    if not (text_sent or images_sent):
+                        fail_reason = "聊天小窗已打开但消息未发出（聊天窗内未看到该消息）"
+            final_url = str(page.evaluate("window.location.href", timeout=5) or url)
+    finally:
+        # 成功失败都关掉刚开的标签页，避免窗口内标签堆积
         try:
             cdp_transport.close_target(browser_ws, target_id, user.id)
             _log("已关闭私信标签页")
@@ -290,8 +298,20 @@ def open_profile_and_message(
         "text_sent": text_sent,
         "images_sent": images_sent,
         "final_url": final_url,
+        "fail_reason": fail_reason,
         "open_hint": open_result.get("hint"),
     }
+
+
+def _open_chat_window(page: CdpPage, _log: "Callable[[str], None]", retries: int = 3) -> bool:
+    """点完「发消息」后等聊天输入框出现；没出现就再点一次按钮（首次点击偶尔不生效）。"""
+    for i in range(retries):
+        if _focus_chat_input(page, attempts=10, interval=1.0):
+            return True
+        if i < retries - 1:
+            _log(f"聊天小窗未打开，再点一次「发消息」（第 {i + 2} 次）")
+            _click_message_button(page, attempts=5)
+    return False
 
 
 # 兼容旧调用方（历史代码里叫 open_fb_profile_and_message）
@@ -306,7 +326,7 @@ def _send_chat_message(
     platform: str = "facebook",
 ) -> tuple[bool, int]:
     """在已打开的聊天小窗里发送正文与图片，返回 (text_sent, images_sent)。"""
-    if not _focus_chat_input(page):
+    if not _focus_chat_input(page, attempts=3):
         _log("未找到聊天输入框，无法自动发送（小窗可能未打开）")
         return False, 0
     text_sent = False
@@ -504,11 +524,16 @@ def _wait_page_ready(page: CdpPage, timeout: float = 20) -> None:
 
 
 def _click_message_button(
-    page: CdpPage, attempts: int = 10, interval: float = 1.0
+    page: CdpPage, attempts: int = 25, interval: float = 1.0
 ) -> tuple[bool, str | None]:
-    """轮询查找并点击「发消息」按钮（页面内容为异步渲染）。"""
+    """轮询查找并点击「发消息」按钮（页面内容为异步渲染，慢的主页要等 20 秒以上）。"""
     js = _message_button_js()
-    for _ in range(attempts):
+    for i in range(attempts):
+        if i and i % 5 == 0:
+            try:
+                page.evaluate("window.scrollTo(0, 0)", timeout=5)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[FB DM] scroll top skipped: {}", e)
         try:
             result = page.evaluate(js, timeout=10)
         except Exception as e:  # noqa: BLE001
