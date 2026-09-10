@@ -584,6 +584,39 @@ def _safe_list_pages(browser_ws: str, user_id: int) -> list[dict[str, object]]:
         return []
 
 
+# 首次给公主页发消息时，小窗里会先弹「开始」确认按钮，点了才出输入框
+_CLICK_START_JS = """
+(() => {
+  const root = document.querySelector('[data-wl-target="1"]') || document.body;
+  const re = /^(开始|開始|Get started|Start|はじめる|始める)$/i;
+  const btn = Array.from(root.querySelectorAll('[role="button"]')).find(
+    (el) => el.offsetParent !== null && re.test((el.innerText || '').trim())
+  );
+  if (!btn) return null;
+  const r = btn.getBoundingClientRect();
+  btn.click();
+  return { text: (btn.innerText || '').trim(), x: r.left + r.width / 2, y: r.top + r.height / 2 };
+})()
+"""
+
+
+def _click_start_button(page: CdpPage, _log: "Callable[[str], None]") -> bool:
+    try:
+        hit = page.evaluate(_CLICK_START_JS, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[FB DM] click start button skipped: {}", e)
+        return False
+    if not isinstance(hit, dict):
+        return False
+    _log(f"小窗里有「{hit.get('text')}」确认按钮，先点它")
+    _pause(0.6, 1.2)
+    try:
+        _click_at(page, float(hit["x"]), float(hit["y"]))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[FB DM] click start button by mouse skipped: {}", e)
+    return True
+
+
 def _open_chat_window(
     page: CdpPage, _log: "Callable[[str], None]", profile_name: str, retries: int = 3
 ) -> bool:
@@ -595,6 +628,9 @@ def _open_chat_window(
                 return True
             if panel and panel.get("blocked"):
                 return False
+            if panel and panel.get("hasBox") is False and _click_start_button(page, _log):
+                time.sleep(1.5)
+                continue
             time.sleep(1.0)
         if i < retries - 1:
             _log(f"聊天小窗未打开，再点一次「发消息」（第 {i + 2} 次）")
