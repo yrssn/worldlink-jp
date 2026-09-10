@@ -183,29 +183,48 @@ _SET_FILE_INPUT_JS_TEMPLATE = """
 """
 
 
-# 关掉页面上所有已打开的聊天小窗（FB 会把上次没关的小窗带到新标签页，不关的话会误发到上一个人的窗口）
-_CLOSE_CHAT_WINDOWS_JS = """
+# 枚举页面上所有聊天小窗：从每个 MWChatTabHeader 往上找到“只包含这一个头部”的最大祖先即为该小窗。
+# FB 会把上次没关的小窗带到新标签页，所以判“能不能发 / 发没发出”都必须只看当前达人自己那个小窗。
+_CHAT_PANELS_JS = """
 (() => {
-  const labels = ['关闭聊天窗口', '关闭聊天', '關閉聊天室', '關閉聊天視窗', '關閉', 'Close chat', 'Close', 'チャットを閉じる', '閉じる'];
-  const inChat = (el) => el.closest('[data-pagelet^="MWChat"], [data-pagelet^="MWOpenThread"], [data-pagelet="MWComposer"]');
-  const btns = Array.from(document.querySelectorAll('div[role="button"][aria-label], a[role="button"][aria-label]'))
-    .filter((el) => el.offsetParent !== null && labels.includes((el.getAttribute('aria-label') || '').trim()) && inChat(el));
-  btns.forEach((el) => el.click());
-  return { closed: btns.length };
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  const blockedPat = /你无法发消息给|你無法傳送訊息|无法发送消息|You can't message|You cannot message|can't reply to this conversation|このアカウントにメッセージを送信できません|メッセージを送信できません/i;
+  const closeLabels = ['关闭聊天窗口', '关闭聊天', '關閉聊天室', '關閉聊天視窗', '關閉', 'Close chat', 'Close', 'チャットを閉じる', '閉じる'];
+  const headers = Array.from(document.querySelectorAll('[data-pagelet="MWChatTabHeader"]')).filter((h) => h.offsetParent !== null);
+  const rectOf = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height }; };
+  return headers.map((h) => {
+    let root = h;
+    while (root.parentElement && root.parentElement !== document.body
+      && root.parentElement.querySelectorAll('[data-pagelet="MWChatTabHeader"]').length === 1
+      && !root.parentElement.querySelector('[role="main"], [role="banner"], [role="navigation"], [role="article"], h1')) {
+      root = root.parentElement;
+    }
+    const nameEl = h.querySelector('h1, h2, span[dir="auto"], span');
+    const name = norm((nameEl && nameEl.innerText) || h.innerText.split('\\n')[0]);
+    const box = Array.from(root.querySelectorAll('div[role="textbox"][contenteditable="true"]'))
+      .find((el) => el.offsetParent !== null && !el.closest('[role="article"]'));
+    const closeBtn = Array.from(h.querySelectorAll('[role="button"][aria-label]'))
+      .find((el) => closeLabels.includes(norm(el.getAttribute('aria-label'))));
+    const text = norm(root.innerText);
+    const m = text.match(blockedPat);
+    return {
+      name,
+      hasBox: !!box,
+      blocked: !box && !!m,
+      blockedText: m ? m[0] : null,
+      close: closeBtn ? rectOf(closeBtn) : null,
+    };
+  });
 })()
 """
 
-# 聊天小窗里的“不能发”提示（非好友 / 对方限制私信）：此时没有输入框，直接判失败
-_CHAT_BLOCKED_JS = """
+# 当前主页的名字（用来在多个小窗里认出当前达人自己的那个）
+_PROFILE_NAME_JS = """
 (() => {
-  const pats = /你无法发消息给|你無法傳送訊息|无法发送消息|You can't message|You cannot message|can't reply to this conversation|このアカウントにメッセージを送信できません|メッセージを送信できません/i;
-  const panels = Array.from(document.querySelectorAll('[data-pagelet^="MWOpenThread"], [data-pagelet^="MWChatTab"], [data-pagelet="MWComposer"]'));
-  for (const p of panels) {
-    const t = (p.innerText || '').replace(/\\s+/g, ' ');
-    const m = t.match(pats);
-    if (m) return { blocked: true, text: m[0] };
-  }
-  return { blocked: false };
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  const h1 = Array.from(document.querySelectorAll('h1')).find((el) => el.offsetParent !== null && norm(el.innerText));
+  if (h1) return norm(h1.innerText);
+  return norm((document.title || '').replace(/\\s*[|\\-–]\\s*(Facebook|Instagram).*$/i, ''));
 })()
 """
 
@@ -219,33 +238,86 @@ def _pause(lo: float = 1.0, hi: float = 2.5) -> None:
     time.sleep(random.uniform(lo, hi))
 
 
-def _close_chat_windows(page: CdpPage, _log: "Callable[[str], None]", rounds: int = 3) -> int:
-    """关掉页面上所有聊天小窗，返回关掉的数量。"""
+def _chat_panels(page: CdpPage) -> list[dict[str, object]]:
+    try:
+        result = page.evaluate(_CHAT_PANELS_JS, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[FB DM] list chat panels skipped: {}", e)
+        return []
+    return [p for p in result if isinstance(p, dict)] if isinstance(result, list) else []
+
+
+def _profile_name(page: CdpPage) -> str:
+    try:
+        return str(page.evaluate(_PROFILE_NAME_JS, timeout=10) or "").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[FB DM] read profile name skipped: {}", e)
+        return ""
+
+
+def _same_person(panel_name: object, profile_name: str) -> bool:
+    a = " ".join(str(panel_name or "").split()).lower()
+    b = " ".join(profile_name.split()).lower()
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
+def _click_at(page: CdpPage, x: float, y: float) -> None:
+    """用真实鼠标事件点坐标（FB 的关闭按钮对 element.click() 不一定响应）。"""
+    common = {"x": x, "y": y, "button": "left", "clickCount": 1}
+    page.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, timeout=10)
+    page.call("Input.dispatchMouseEvent", {"type": "mousePressed", **common}, timeout=10)
+    page.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **common}, timeout=10)
+
+
+def _close_chat_windows(
+    page: CdpPage,
+    _log: "Callable[[str], None]",
+    keep_name: str | None = None,
+    rounds: int = 3,
+) -> int:
+    """关掉页面上的聊天小窗（keep_name 不为空时保留这个人的），返回关掉的数量。"""
     total = 0
     for _ in range(rounds):
-        try:
-            result = page.evaluate(_CLOSE_CHAT_WINDOWS_JS, timeout=10)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[FB DM] close chat windows skipped: {}", e)
+        targets = [
+            p for p in _chat_panels(page)
+            if isinstance(p.get("close"), dict) and not (keep_name and _same_person(p.get("name"), keep_name))
+        ]
+        if not targets:
             break
-        n = int(result.get("closed") or 0) if isinstance(result, dict) else 0
-        if not n:
-            break
-        total += n
-        _pause(0.8, 1.5)
+        for p in targets:
+            rect = p["close"]
+            if not isinstance(rect, dict) or not float(rect.get("w") or 0):
+                continue
+            try:
+                _click_at(page, float(rect["x"]), float(rect["y"]))
+                total += 1
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[FB DM] close chat panel {} skipped: {}", p.get("name"), e)
+            _pause(0.6, 1.2)
     if total:
-        _log(f"已关掉 {total} 个页面上残留的聊天小窗")
+        _log(f"已关掉 {total} 个其它聊天小窗")
     return total
 
 
-def _chat_blocked_text(page: CdpPage) -> str | None:
-    try:
-        result = page.evaluate(_CHAT_BLOCKED_JS, timeout=10)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("[FB DM] check chat blocked skipped: {}", e)
-        return None
-    if isinstance(result, dict) and result.get("blocked"):
-        return str(result.get("text") or "无法发消息")
+def _target_panel(page: CdpPage, profile_name: str) -> dict[str, object] | None:
+    """找当前达人自己的小窗：先按名字，其次取唯一一个有输入框的。"""
+    panels = _chat_panels(page)
+    for p in panels:
+        if _same_person(p.get("name"), profile_name):
+            return p
+    with_box = [p for p in panels if p.get("hasBox")]
+    if len(with_box) == 1:
+        return with_box[0]
+    return None
+
+
+def _chat_blocked_text(page: CdpPage, profile_name: str) -> str | None:
+    """只看当前达人自己的小窗里有没有“你无法发消息”；别人的旧窗口不算。"""
+    panel = _target_panel(page, profile_name)
+    if panel and panel.get("blocked"):
+        return str(panel.get("blockedText") or "无法发消息")
     return None
 
 
@@ -328,9 +400,10 @@ def open_profile_and_message(
             page.call("Page.bringToFront")
             _wait_page_ready(page)
             _pause(1.5, 3.0)
+            profile_name = _profile_name(page)
             # 先清掉页面上已经开着的聊天小窗，保证下面只有当前这个人的窗口
             _close_chat_windows(page, _log)
-            _log("主页加载完成，查找「发消息」按钮")
+            _log(f"主页加载完成（{profile_name or '未识别到名字'}），查找「发消息」按钮")
             _check_stop()
             message_clicked, matched_text = _click_message_button(page)
             if not message_clicked:
@@ -340,8 +413,10 @@ def open_profile_and_message(
                 _log(f"已点击「{matched_text}」按钮，等待聊天小窗打开")
                 _pause(1.5, 3.0)
                 _check_stop()
-                opened = _open_chat_window(page, _log)
-                blocked = _chat_blocked_text(page)
+                opened = _open_chat_window(page, _log, profile_name)
+                # 只保留当前达人的小窗，别人的旧窗口关掉，避免发错人 / 误判
+                _close_chat_windows(page, _log, keep_name=profile_name)
+                blocked = _chat_blocked_text(page, profile_name)
                 if blocked:
                     fail_reason = f"对方不接受私信：{blocked}"
                     _log(fail_reason)
@@ -378,12 +453,14 @@ def open_profile_and_message(
     }
 
 
-def _open_chat_window(page: CdpPage, _log: "Callable[[str], None]", retries: int = 3) -> bool:
+def _open_chat_window(
+    page: CdpPage, _log: "Callable[[str], None]", profile_name: str, retries: int = 3
+) -> bool:
     """点完「发消息」后等聊天输入框出现；没出现就再点一次按钮（首次点击偶尔不生效）。"""
     for i in range(retries):
         if _focus_chat_input(page, attempts=10, interval=1.0):
             return True
-        if _chat_blocked_text(page):
+        if _chat_blocked_text(page, profile_name):
             return False
         if i < retries - 1:
             _log(f"聊天小窗未打开，再点一次「发消息」（第 {i + 2} 次）")
