@@ -269,7 +269,8 @@ _PROFILE_NAME_JS = """
   const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
   const h1 = Array.from(document.querySelectorAll('h1')).find((el) => el.offsetParent !== null && norm(el.innerText));
   if (h1) return norm(h1.innerText);
-  return norm((document.title || '').replace(/\\s*[|\\-–]\\s*(Facebook|Instagram).*$/i, ''));
+  const t = norm((document.title || '').replace(/^\\(\\d+\\)\\s*/, '').replace(/\\s*[|\\-–]\\s*(Facebook|Instagram).*$/i, ''));
+  return /^(facebook|instagram|messenger)$/i.test(t) ? '' : t;
 })()
 """
 
@@ -502,6 +503,7 @@ def open_profile_and_message(
                 _log(f"页面上有 {len(leftovers)} 个残留聊天小窗，先全部关掉")
                 _close_chat_windows(page, _log)
                 _pause(0.8, 1.5)
+            before_names = {str(p.get("name") or "") for p in _chat_panels(page)}
             _log(f"主页加载完成（{profile_name or '未识别到名字'}），查找「发消息」按钮")
             _check_stop()
             message_clicked, matched_text = _click_message_button(page)
@@ -512,12 +514,19 @@ def open_profile_and_message(
                 _log(f"已点击「{matched_text}」按钮，等待聊天小窗打开")
                 _pause(1.5, 3.0)
                 _check_stop()
+                # 进来时已把小窗全关了，点完「发消息」后新冒出来的那个就是当前达人的（主页名字读不到也不影响）
+                new_names = [str(p.get("name") or "") for p in _wait_chat_panels(page, timeout=8) if str(p.get("name") or "") not in before_names]
+                if len(new_names) == 1 and new_names[0]:
+                    if not _same_person(new_names[0], profile_name):
+                        _log(f"新打开的小窗是「{new_names[0]}」，以它为当前达人")
+                    profile_name = new_names[0]
                 opened = _open_chat_window(page, _log, profile_name)
-                # 再关一遍名字不是当前达人的小窗，然后锁定当前达人的小窗
-                _close_chat_windows(page, _log, keep_name=profile_name)
+                # 只有认出了当前达人的名字，才去关其它小窗；认不出就不乱关
+                if profile_name:
+                    _close_chat_windows(page, _log, keep_name=profile_name)
                 target = _mark_target(page, profile_name)
                 if target:
-                    _log(f"锁定聊天小窗「{target.get('name') or '?'}」")
+                    _log(f"锁定聊天小窗「{target.get('name') or profile_name or '?'}」")
                 blocked = _chat_blocked_text(page, profile_name)
                 if blocked:
                     fail_reason = f"对方不接受私信：{blocked}"
