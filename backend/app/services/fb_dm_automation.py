@@ -80,7 +80,13 @@ _FOCUS_CHAT_INPUT_JS = """
   const el = boxes[boxes.length - 1];""" % _CHAT_BOXES_JS + """
   el.scrollIntoView({ block: 'center' });
   el.focus();
-  return { focused: true, label: (el.getAttribute('aria-label') || '').trim() };
+  const r = el.getBoundingClientRect();
+  return {
+    focused: true,
+    label: (el.getAttribute('aria-label') || '').trim(),
+    active: document.activeElement === el,
+    rect: { x: r.left + Math.min(r.width / 2, 40), y: r.top + r.height / 2, w: r.width, h: r.height },
+  };
 })()
 """
 
@@ -94,7 +100,8 @@ _CHAT_HAS_TEXT_JS = """
   let root = boxes[boxes.length - 1];
   for (let i = 0; i < 12 && root.parentElement; i++) {
     root = root.parentElement;
-    if (root.querySelector('[data-pagelet^="MWOpenThread"], [data-pagelet^="MWChatTab"], [role="grid"], [role="log"]')) break;
+    if (root.matches('[data-wl-target="1"]')) break;
+    if (root.querySelector('[data-pagelet^="MWOpenThread"], [data-pagelet^="MWChatTab"], [data-pagelet="MWMessageList"], [role="grid"], [role="log"]')) break;
     if (root.matches('[role="dialog"], [role="complementary"], [role="main"]')) break;
   }
   const hay = norm(root.innerText);
@@ -522,7 +529,7 @@ def open_profile_and_message(
                         page, message_text, image_paths or [], _log, platform
                     )
                     if not (text_sent or images_sent):
-                        fail_reason = "聊天小窗已打开但消息未发出（聊天窗内未看到该消息）"
+                        fail_reason = "聊天小窗已打开但消息未发出（详见任务日志）"
                 _pause(1.0, 2.0)
                 _close_chat_windows(page, _log)
             final_url = str(page.evaluate("window.location.href", timeout=5) or url)
@@ -599,20 +606,30 @@ def _send_chat_message(
     text = (message_text or "").strip()
     if text:
         _log("输入私信正文")
-        page.call("Input.insertText", {"text": text}, timeout=15)
-        _pause(0.8, 1.8)
-        _press_enter(page)
-        time.sleep(1.5)
-        remaining = page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5)
-        cleared = not str(remaining or "").strip()
-        appeared = cleared and _wait_text_in_chat(page, text)
-        text_sent = cleared and appeared
-        if text_sent:
-            _log("正文发送成功（聊天窗内已出现该消息）")
-        elif not cleared:
-            _log("正文发送失败：输入框未清空")
+        typed = _type_into_chat_box(page, text)
+        if not typed:
+            _log("正文发送失败：文字没能输进聊天输入框（重试 3 次）")
         else:
-            _log("正文发送未确认：输入框已清空但聊天窗内未看到该消息，按失败记录，请在窗口内核对")
+            _pause(0.8, 1.8)
+            _press_enter(page)
+            time.sleep(1.5)
+            remaining = page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5)
+            cleared = not str(remaining or "").strip()
+            if not cleared:
+                _pause(0.8, 1.5)
+                _press_enter(page)
+                time.sleep(1.5)
+                remaining = page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5)
+                cleared = not str(remaining or "").strip()
+            appeared = cleared and _wait_text_in_chat(page, text, timeout=12)
+            # 文字确认输进了当前达人的聊天框、回车后框也清空了，就是发出去了；窗内能看到消息只是额外佐证
+            text_sent = cleared
+            if appeared:
+                _log("正文发送成功（聊天窗内已出现该消息）")
+            elif cleared:
+                _log("正文已发出（文字已输进聊天框且回车后清空，但窗内暂未渲染出该消息）")
+            else:
+                _log("正文发送失败：回车后输入框未清空")
     if platform == "instagram":
         images_sent = _send_images_ig(page, image_paths, _log)
         return text_sent, images_sent
@@ -746,7 +763,10 @@ def _submit_attachment(page: CdpPage, _log: "Callable[[str], None]") -> bool:
     return _wait_pending_attachment(page, appear=False, timeout=10)
 
 
-def _focus_chat_input(page: CdpPage, attempts: int = 8, interval: float = 1.0) -> bool:
+def _focus_chat_input(
+    page: CdpPage, attempts: int = 8, interval: float = 1.0, *, mouse: bool = False
+) -> bool:
+    """聚焦聊天输入框；mouse=True 时额外用真实鼠标点一下框（光 focus() 偶尔拿不到输入焦点）。"""
     for _ in range(attempts):
         try:
             result = page.evaluate(_FOCUS_CHAT_INPUT_JS, timeout=10)
@@ -754,9 +774,45 @@ def _focus_chat_input(page: CdpPage, attempts: int = 8, interval: float = 1.0) -
             logger.debug("[FB DM] focus chat input skipped: {}", e)
             result = None
         if isinstance(result, dict) and result.get("focused"):
+            rect = result.get("rect")
+            if mouse and isinstance(rect, dict) and float(rect.get("w") or 0):
+                try:
+                    _click_at(page, float(rect["x"]), float(rect["y"]))
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("[FB DM] click chat input skipped: {}", e)
+                time.sleep(0.4)
             return True
         time.sleep(interval)
     return False
+
+
+def _type_into_chat_box(page: CdpPage, text: str, attempts: int = 3) -> bool:
+    """把正文输进当前达人的聊天框，并确认框里真的有了文字；第一次不行就改用鼠标点框后重输。"""
+    first = " ".join(next((ln for ln in text.splitlines() if ln.strip()), text).split())[:20]
+    for i in range(attempts):
+        if not _focus_chat_input(page, attempts=2, mouse=i > 0):
+            continue
+        page.call("Input.insertText", {"text": text}, timeout=15)
+        time.sleep(0.6)
+        current = " ".join(str(page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5) or "").split())
+        if first and first in current:
+            return True
+        if current:
+            # 框里有别的残留内容，全选删掉再重试，避免发出拼接的文字
+            _select_all_and_delete(page)
+        time.sleep(0.8)
+    return False
+
+
+def _select_all_and_delete(page: CdpPage) -> None:
+    for t, extra in (("keyDown", {"modifiers": 2, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65}),
+                     ("keyUp", {"modifiers": 2, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65}),
+                     ("keyDown", {"key": "Delete", "code": "Delete", "windowsVirtualKeyCode": 46}),
+                     ("keyUp", {"key": "Delete", "code": "Delete", "windowsVirtualKeyCode": 46})):
+        try:
+            page.call("Input.dispatchKeyEvent", {"type": t, **extra}, timeout=10)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[FB DM] clear chat input skipped: {}", e)
 
 
 def _press_enter(page: CdpPage) -> None:
