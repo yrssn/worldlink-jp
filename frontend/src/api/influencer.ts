@@ -121,6 +121,12 @@ export interface Influencer extends InfluencerProfileFields {
   owner_id: number
   owner_name?: string | null
   has_outreach?: boolean
+  /** 最后一次私信结果：success / failed，空 = 没私信过 */
+  outreach_status?: 'success' | 'failed' | null
+  /** 最后一次私信时间 */
+  outreach_at?: string | null
+  /** 最后一次私信的失败原因 */
+  outreach_error?: string | null
   /** 关联的社交账号（列表内直接展示：平台 + 账号 + 粉丝） */
   accounts?: SocialAccount[]
   /** 各关联账号粉丝数最大值，列表展示 & 区间筛选口径 */
@@ -388,6 +394,12 @@ export const influencerApi = {
     platform_id?: number
     followers_min?: number
     followers_max?: number
+    /** 私信结果：success / failed / none（未私信） */
+    outreach_status?: string
+    /** 私信时间起（YYYY-MM-DD） */
+    outreach_start?: string
+    /** 私信时间止（YYYY-MM-DD） */
+    outreach_end?: string
     sort?: 'id_desc' | 'followers_desc' | 'followers_asc'
   }) => http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
   listPlatformOptions: () =>
@@ -522,6 +534,9 @@ export const influencerApi = {
     platform_id?: number
     followers_min?: number
     followers_max?: number
+    outreach_status?: string
+    outreach_start?: string
+    outreach_end?: string
   }) =>
     download(
       { url: '/influencers/export', method: 'GET', params },

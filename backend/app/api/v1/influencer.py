@@ -428,8 +428,13 @@ INFLUENCER_CSV_COLUMNS = [
     ("群名称", "group_name"),
     ("标签", "tags"),
     ("备注", "notes"),
+    ("私信结果", lambda r: OUTREACH_STATUS_TEXT.get(getattr(r, "outreach_status", None) or "", "未私信")),
+    ("私信时间", lambda r: getattr(r, "outreach_at", None) or ""),
+    ("私信失败原因", lambda r: getattr(r, "outreach_error", None) or ""),
     ("创建时间", "created_at"),
 ]
+
+OUTREACH_STATUS_TEXT = {"success": "已私信", "failed": "私信失败"}
 
 
 def _followers_expr():
@@ -457,6 +462,34 @@ def _account_keyword_exists(like: str):
     )
 
 
+def _latest_outreach_id_expr():
+    """该达人最后一条私信记录的 id（私信结果/私信时间都以最后一条为准）。"""
+    from sqlalchemy import func, select
+
+    return (
+        select(func.max(DmOutreachLog.id))
+        .where(DmOutreachLog.influencer_id == Influencer.id)
+        .correlate(Influencer)
+        .scalar_subquery()
+    )
+
+
+def _parse_day(value: str | None, *, end: bool = False) -> datetime | None:
+    """把 ``YYYY-MM-DD`` / ``YYYY-MM-DD HH:MM:SS`` 解析为时间点，end=True 时为当天末尾。"""
+    if not value:
+        return None
+    text = value.strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if end and fmt == "%Y-%m-%d":
+            return dt.replace(hour=23, minute=59, second=59)
+        return dt
+    raise HTTPException(status_code=400, detail=f"时间格式不正确：{value}")
+
+
 def _apply_influencer_filters(
     q,
     keyword: str | None,
@@ -466,8 +499,11 @@ def _apply_influencer_filters(
     country_id: int | None = None,
     followers_min: int | None = None,
     followers_max: int | None = None,
+    outreach_status: str | None = None,
+    outreach_start: str | None = None,
+    outreach_end: str | None = None,
 ):
-    """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台 / 粉丝区间）。"""
+    """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台 / 粉丝区间 / 私信结果与时间）。"""
     if keyword:
         like = f"%{keyword}%"
         q = q.filter(
@@ -501,7 +537,34 @@ def _apply_influencer_filters(
             q = q.filter(followers >= followers_min)
         if followers_max is not None:
             q = q.filter(followers <= followers_max)
+    q = _apply_outreach_filters(q, outreach_status, outreach_start, outreach_end)
     return q
+
+
+def _apply_outreach_filters(
+    q,
+    outreach_status: str | None,
+    outreach_start: str | None,
+    outreach_end: str | None,
+):
+    """按私信结果（成功/失败/未私信）与最后一次私信时间过滤，口径与列表展示一致。"""
+    from sqlalchemy import exists
+
+    start = _parse_day(outreach_start)
+    end = _parse_day(outreach_end, end=True)
+    status = (outreach_status or "").strip()
+    if not status and start is None and end is None:
+        return q
+    if status == "none":
+        return q.filter(~exists().where(DmOutreachLog.influencer_id == Influencer.id))
+    conds = [DmOutreachLog.id == _latest_outreach_id_expr()]
+    if status in ("success", "failed"):
+        conds.append(DmOutreachLog.status == status)
+    if start is not None:
+        conds.append(DmOutreachLog.created_at >= start)
+    if end is not None:
+        conds.append(DmOutreachLog.created_at <= end)
+    return q.filter(exists().where(*conds))
 
 
 @router.get("", response_model=Page[InfluencerOut])
@@ -515,6 +578,11 @@ def list_influencers(
     platform_id: int | None = Query(None, description="关联平台 id，0 = 未关联"),
     followers_min: int | None = Query(None, ge=0, description="粉丝数下限"),
     followers_max: int | None = Query(None, ge=0, description="粉丝数上限"),
+    outreach_status: str | None = Query(
+        None, description="私信结果：success / failed / none（未私信），按最后一次私信"
+    ),
+    outreach_start: str | None = Query(None, description="私信时间起（YYYY-MM-DD）"),
+    outreach_end: str | None = Query(None, description="私信时间止（YYYY-MM-DD）"),
     sort: str = Query("id_desc", description="id_desc / followers_desc / followers_asc"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -527,7 +595,7 @@ def list_influencers(
     q = owner_filter(q, Influencer, user)
     q = _apply_influencer_filters(
         q, keyword, status_eq, country, platform_id, country_id,
-        followers_min, followers_max,
+        followers_min, followers_max, outreach_status, outreach_start, outreach_end,
     )
     total = q.count()
     if sort == "followers_desc":
@@ -537,7 +605,7 @@ def list_influencers(
     else:
         q = q.order_by(Influencer.id.desc())
     items = q.offset((page - 1) * page_size).limit(page_size).all()
-    _mark_has_outreach(db, items)
+    _mark_outreach_state(db, items)
     _attach_accounts(db, items)
     return Page[InfluencerOut](total=total, page=page, page_size=page_size, items=items)
 
@@ -566,20 +634,32 @@ def _attach_accounts(db: Session, items: list[Influencer]) -> None:
         i.followers = max(counts) if counts else None
 
 
-def _mark_has_outreach(db: Session, items: list[Influencer]) -> None:
-    """给列表里的达人标注 has_outreach（是否已私信过）。"""
+def _mark_outreach_state(db: Session, items: list[Influencer]) -> None:
+    """给列表里的达人标注最后一次私信的结果 / 时间 / 失败原因。"""
+    from sqlalchemy import func
+
     ids = [i.id for i in items]
     if not ids:
         return
-    contacted = {
+    latest_ids = [
         row[0]
-        for row in db.query(DmOutreachLog.influencer_id)
+        for row in db.query(func.max(DmOutreachLog.id))
         .filter(DmOutreachLog.influencer_id.in_(ids))
-        .distinct()
+        .group_by(DmOutreachLog.influencer_id)
         .all()
-    }
+    ]
+    logs = (
+        db.query(DmOutreachLog).filter(DmOutreachLog.id.in_(latest_ids)).all()
+        if latest_ids
+        else []
+    )
+    latest = {log.influencer_id: log for log in logs}
     for i in items:
-        i.has_outreach = i.id in contacted
+        log = latest.get(i.id)
+        i.has_outreach = log is not None
+        i.outreach_status = log.status if log else None
+        i.outreach_at = log.created_at if log else None
+        i.outreach_error = log.error if log and log.status != "success" else None
 
 
 @router.get("/export")
@@ -591,6 +671,9 @@ def export_influencers(
     platform_id: int | None = None,
     followers_min: int | None = Query(None, ge=0),
     followers_max: int | None = Query(None, ge=0),
+    outreach_status: str | None = None,
+    outreach_start: str | None = None,
+    outreach_end: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -603,10 +686,11 @@ def export_influencers(
     q = owner_filter(q, Influencer, user)
     q = _apply_influencer_filters(
         q, keyword, status_eq, country, platform_id, country_id,
-        followers_min, followers_max,
+        followers_min, followers_max, outreach_status, outreach_start, outreach_end,
     )
     rows = q.order_by(Influencer.id.desc()).all()
     _attach_accounts(db, rows)
+    _mark_outreach_state(db, rows)
     data = build_csv(rows, INFLUENCER_CSV_COLUMNS)
     return csv_response("influencers.csv", data)
 
@@ -1765,13 +1849,7 @@ def get_influencer(
         p.id for p in db.query(Post.id).filter(Post.influencer_id == iid).all()
     ]
     influencer_service.link_outreach_logs_for_influencer(db, inf)
-    has_outreach = (
-        db.query(DmOutreachLog.id)
-        .filter(DmOutreachLog.influencer_id == iid)
-        .first()
-        is not None
-    )
-    inf.has_outreach = has_outreach
+    _mark_outreach_state(db, [inf])
     out = InfluencerDetailOut.model_validate(inf)
     out.social_accounts = [SocialAccountOut.model_validate(s) for s in socials]
     out.source_post_ids = post_ids

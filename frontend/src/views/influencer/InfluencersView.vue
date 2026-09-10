@@ -48,7 +48,20 @@ const platformFilter = ref<number | undefined>(undefined)
 /** 粉丝数区间筛选（口径：各关联账号粉丝取最大值） */
 const followersMin = ref<number | undefined>(undefined)
 const followersMax = ref<number | undefined>(undefined)
+/** 私信结果筛选：success = 已私信成功，failed = 私信失败，none = 未私信 */
+const outreachStatusFilter = ref<string>('')
+/** 私信时间筛选：最后一次私信时间落在该区间 */
+const outreachRange = ref<[string, string] | null>(null)
 const sort = ref<'id_desc' | 'followers_desc' | 'followers_asc'>('id_desc')
+
+/** 当前筛选里的私信条件，列表与导出共用 */
+function outreachParams() {
+  return {
+    outreach_status: outreachStatusFilter.value || undefined,
+    outreach_start: outreachRange.value?.[0] || undefined,
+    outreach_end: outreachRange.value?.[1] || undefined,
+  }
+}
 const loading = ref(false)
 
 // 关联平台字典（「平台管理」）与国家字典（「国家管理」）
@@ -71,6 +84,15 @@ async function loadPlatformOptions() {
   } catch {
     /* 拦截器已提示 */
   }
+}
+
+/** 私信标签的悬浮说明：最后一次私信的时间，失败时再带上原因 */
+function outreachTip(row: Influencer) {
+  const when = row.outreach_at ? `私信时间：${row.outreach_at}` : '已私信过'
+  if (row.outreach_status === 'failed') {
+    return `${when}（失败：${row.outreach_error || '未知原因'}）`
+  }
+  return when
 }
 
 /** 列表展示的关联账号：平台 + 账号名（title 优先，其次 handle）+ 链接 + 粉丝 */
@@ -1135,6 +1157,7 @@ async function refresh() {
       platform_id: platformFilter.value ?? undefined,
       followers_min: followersMin.value ?? undefined,
       followers_max: followersMax.value ?? undefined,
+      ...outreachParams(),
       sort: sort.value,
     })
     list.value = r.items
@@ -1206,6 +1229,7 @@ async function exportList() {
     platform_id: platformFilter.value ?? undefined,
     followers_min: followersMin.value ?? undefined,
     followers_max: followersMax.value ?? undefined,
+    ...outreachParams(),
   })
 }
 
@@ -1217,6 +1241,8 @@ function resetFilters() {
   platformFilter.value = undefined
   followersMin.value = undefined
   followersMax.value = undefined
+  outreachStatusFilter.value = ''
+  outreachRange.value = null
   sort.value = 'id_desc'
   page.value = 1
   refresh()
@@ -1422,6 +1448,25 @@ onUnmounted(() => {
           style="width: 110px"
         />
       </div>
+      <el-select
+        v-model="outreachStatusFilter"
+        placeholder="私信结果"
+        clearable
+        style="width: 130px"
+      >
+        <el-option label="已私信（成功）" value="success" />
+        <el-option label="私信失败" value="failed" />
+        <el-option label="未私信" value="none" />
+      </el-select>
+      <el-date-picker
+        v-model="outreachRange"
+        type="daterange"
+        value-format="YYYY-MM-DD"
+        range-separator="-"
+        start-placeholder="私信时间起"
+        end-placeholder="私信时间止"
+        style="width: 260px"
+      />
       <el-button type="primary" @click="(page = 1), refresh()">搜索</el-button>
       <el-button @click="resetFilters">重置</el-button>
     </div>
@@ -1453,7 +1498,18 @@ onUnmounted(() => {
                 </el-avatar>
                 <div>
                   <div>{{ row.display_name }}</div>
-                  <el-tag v-if="row.has_outreach" size="small" type="success">已私信</el-tag>
+                  <el-tooltip
+                    v-if="row.outreach_status || row.has_outreach"
+                    placement="top"
+                    :content="outreachTip(row)"
+                  >
+                    <el-tag
+                      size="small"
+                      :type="row.outreach_status === 'failed' ? 'danger' : 'success'"
+                    >
+                      {{ row.outreach_status === 'failed' ? '私信失败' : '已私信' }}
+                    </el-tag>
+                  </el-tooltip>
                 </div>
               </div>
             </template>

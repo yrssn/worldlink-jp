@@ -151,6 +151,12 @@ class InfluencerOut(InfluencerBase):
     owner_id: int
     owner_name: Optional[str] = None
     has_outreach: bool = False
+    #: 最后一次私信结果：success / failed，None = 没私信过
+    outreach_status: Optional[str] = None
+    #: 最后一次私信时间
+    outreach_at: Optional[datetime] = None
+    #: 最后一次私信的失败原因（成功时为空）
+    outreach_error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
