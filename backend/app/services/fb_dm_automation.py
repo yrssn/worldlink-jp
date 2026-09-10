@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import random
 import time
 from pathlib import Path
 from typing import Callable
@@ -182,8 +183,70 @@ _SET_FILE_INPUT_JS_TEMPLATE = """
 """
 
 
+# 关掉页面上所有已打开的聊天小窗（FB 会把上次没关的小窗带到新标签页，不关的话会误发到上一个人的窗口）
+_CLOSE_CHAT_WINDOWS_JS = """
+(() => {
+  const labels = ['关闭聊天窗口', '关闭聊天', '關閉聊天室', '關閉聊天視窗', '關閉', 'Close chat', 'Close', 'チャットを閉じる', '閉じる'];
+  const inChat = (el) => el.closest('[data-pagelet^="MWChat"], [data-pagelet^="MWOpenThread"], [data-pagelet="MWComposer"]');
+  const btns = Array.from(document.querySelectorAll('div[role="button"][aria-label], a[role="button"][aria-label]'))
+    .filter((el) => el.offsetParent !== null && labels.includes((el.getAttribute('aria-label') || '').trim()) && inChat(el));
+  btns.forEach((el) => el.click());
+  return { closed: btns.length };
+})()
+"""
+
+# 聊天小窗里的“不能发”提示（非好友 / 对方限制私信）：此时没有输入框，直接判失败
+_CHAT_BLOCKED_JS = """
+(() => {
+  const pats = /你无法发消息给|你無法傳送訊息|无法发送消息|You can't message|You cannot message|can't reply to this conversation|このアカウントにメッセージを送信できません|メッセージを送信できません/i;
+  const panels = Array.from(document.querySelectorAll('[data-pagelet^="MWOpenThread"], [data-pagelet^="MWChatTab"], [data-pagelet="MWComposer"]'));
+  for (const p of panels) {
+    const t = (p.innerText || '').replace(/\\s+/g, ' ');
+    const m = t.match(pats);
+    if (m) return { blocked: true, text: m[0] };
+  }
+  return { blocked: false };
+})()
+"""
+
+
 class DmCancelled(Exception):
     """任务在发送前被取消。"""
+
+
+def _pause(lo: float = 1.0, hi: float = 2.5) -> None:
+    """操作之间随机停一下，避免动作太机械。"""
+    time.sleep(random.uniform(lo, hi))
+
+
+def _close_chat_windows(page: CdpPage, _log: "Callable[[str], None]", rounds: int = 3) -> int:
+    """关掉页面上所有聊天小窗，返回关掉的数量。"""
+    total = 0
+    for _ in range(rounds):
+        try:
+            result = page.evaluate(_CLOSE_CHAT_WINDOWS_JS, timeout=10)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[FB DM] close chat windows skipped: {}", e)
+            break
+        n = int(result.get("closed") or 0) if isinstance(result, dict) else 0
+        if not n:
+            break
+        total += n
+        _pause(0.8, 1.5)
+    if total:
+        _log(f"已关掉 {total} 个页面上残留的聊天小窗")
+    return total
+
+
+def _chat_blocked_text(page: CdpPage) -> str | None:
+    try:
+        result = page.evaluate(_CHAT_BLOCKED_JS, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[FB DM] check chat blocked skipped: {}", e)
+        return None
+    if isinstance(result, dict) and result.get("blocked"):
+        return str(result.get("text") or "无法发消息")
+    return None
 
 
 def _message_button_js() -> str:
@@ -264,6 +327,9 @@ def open_profile_and_message(
             page.call("Runtime.enable")
             page.call("Page.bringToFront")
             _wait_page_ready(page)
+            _pause(1.5, 3.0)
+            # 先清掉页面上已经开着的聊天小窗，保证下面只有当前这个人的窗口
+            _close_chat_windows(page, _log)
             _log("主页加载完成，查找「发消息」按钮")
             _check_stop()
             message_clicked, matched_text = _click_message_button(page)
@@ -272,17 +338,26 @@ def open_profile_and_message(
                 _log(fail_reason)
             elif message_text or image_paths:
                 _log(f"已点击「{matched_text}」按钮，等待聊天小窗打开")
+                _pause(1.5, 3.0)
                 _check_stop()
-                if not _open_chat_window(page, _log):
+                opened = _open_chat_window(page, _log)
+                blocked = _chat_blocked_text(page)
+                if blocked:
+                    fail_reason = f"对方不接受私信：{blocked}"
+                    _log(fail_reason)
+                elif not opened:
                     fail_reason = "已点「发消息」但聊天小窗未打开（重试 3 次仍未出现输入框）"
                     _log(fail_reason)
                 else:
                     _check_stop()
+                    _pause(1.0, 2.0)
                     text_sent, images_sent = _send_chat_message(
                         page, message_text, image_paths or [], _log, platform
                     )
                     if not (text_sent or images_sent):
                         fail_reason = "聊天小窗已打开但消息未发出（聊天窗内未看到该消息）"
+                _pause(1.0, 2.0)
+                _close_chat_windows(page, _log)
             final_url = str(page.evaluate("window.location.href", timeout=5) or url)
     finally:
         # 成功失败都关掉刚开的标签页，避免窗口内标签堆积
@@ -308,6 +383,8 @@ def _open_chat_window(page: CdpPage, _log: "Callable[[str], None]", retries: int
     for i in range(retries):
         if _focus_chat_input(page, attempts=10, interval=1.0):
             return True
+        if _chat_blocked_text(page):
+            return False
         if i < retries - 1:
             _log(f"聊天小窗未打开，再点一次「发消息」（第 {i + 2} 次）")
             _click_message_button(page, attempts=5)
@@ -335,7 +412,7 @@ def _send_chat_message(
     if text:
         _log("输入私信正文")
         page.call("Input.insertText", {"text": text}, timeout=15)
-        time.sleep(0.5)
+        _pause(0.8, 1.8)
         _press_enter(page)
         time.sleep(1.5)
         remaining = page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5)
