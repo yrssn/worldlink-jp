@@ -152,7 +152,11 @@ class DmOutreachJobCreate(BaseModel):
 
     influencer_ids: list[int] = Field(..., min_length=1, description="达人 ID 列表")
     browser_id: str = Field(..., min_length=1, description="BitBrowser 窗口 ID")
-    content_id: int = Field(..., description="私信内容库内容 ID")
+    content_id: Optional[int] = Field(None, description="私信内容库内容 ID（单选，兼容旧参数）")
+    content_ids: list[int] = Field(
+        default_factory=list,
+        description="备选私信内容 ID：多选时每条从里面随机挑一条发",
+    )
     platform: str = Field("facebook", description="平台：facebook / instagram")
     interval_min: int = Field(60, ge=0, le=86400, description="每条之间最少等待秒数")
     interval_max: int = Field(180, ge=0, le=86400, description="每条之间最多等待秒数（区间内随机）")
@@ -175,6 +179,8 @@ class DmOutreachJobOut(BaseModel):
     browser_name: Optional[str] = None
     content_id: Optional[int] = None
     content_title: Optional[str] = None
+    #: 备选私信内容 ID（多选时随机发）
+    content_ids: Optional[list[int]] = None
     targets: Optional[list[DmOutreachJobTarget]] = None
     interval_min: int = 0
     interval_max: int = 0

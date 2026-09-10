@@ -29,7 +29,8 @@ const dmDialogVisible = ref(false)
 const dmWindows = ref<BitBrowserWindow[]>([])
 const dmContents = ref<DmContent[]>([])
 const dmBrowserId = ref('')
-const dmContentId = ref<number | null>(null)
+/** 私信内容可多选，发送时从选中的里面随机挑一条 */
+const dmContentIds = ref<number[]>([])
 const dmPlatform = ref<'facebook' | 'instagram'>('facebook')
 const dmLoading = ref(false)
 const dmRunning = ref(false)
@@ -93,7 +94,7 @@ async function startDm() {
     ElMessage.warning('请选择浏览器窗口')
     return
   }
-  if (dmContentId.value == null) {
+  if (dmContentIds.value.length === 0) {
     ElMessage.warning('请选择私信内容')
     return
   }
@@ -102,7 +103,7 @@ async function startDm() {
     const job = await dmApi.createOutreachJob({
       influencer_ids: [id.value],
       browser_id: dmBrowserId.value,
-      content_id: dmContentId.value,
+      content_ids: [...dmContentIds.value],
       platform: dmPlatform.value,
     })
     dmDialogVisible.value = false
@@ -714,7 +715,15 @@ onMounted(() => {
           </el-select>
         </el-form-item>
         <el-form-item label="私信内容">
-          <el-select v-model="dmContentId" placeholder="选择内容库中的私信内容" filterable style="width: 100%">
+          <el-select
+            v-model="dmContentIds"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="可多选，发送时从选中的内容里随机挑一条"
+            filterable
+            style="width: 100%"
+          >
             <el-option v-for="c in dmContents" :key="c.id" :label="c.title" :value="c.id" />
           </el-select>
         </el-form-item>

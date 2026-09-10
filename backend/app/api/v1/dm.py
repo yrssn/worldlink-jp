@@ -557,6 +557,17 @@ def _job_cancelled(db: Session, job_id: int) -> bool:
     return not job or job.status == "cancelled"
 
 
+def _job_contents(db: Session, job: DmOutreachJob) -> list[DmContent]:
+    """任务可用的私信内容：多选时全部取出（发送时随机挑一条），兼容只有 content_id 的老任务。"""
+    ids = [int(i) for i in (job.content_ids or []) if i]
+    if not ids and job.content_id:
+        ids = [job.content_id]
+    if not ids:
+        return []
+    found = {c.id: c for c in db.query(DmContent).filter(DmContent.id.in_(ids)).all()}
+    return [found[i] for i in ids if i in found]
+
+
 def _run_dm_outreach_job_bg(job_id: int) -> None:
     """后台线程：逐个达人发送，每条成功/失败都写入 DmOutreachLog（job_id 关联）。"""
     db = SessionLocal()
@@ -565,17 +576,17 @@ def _run_dm_outreach_job_bg(job_id: int) -> None:
         if not job or job.status != "pending":
             return
         user = db.get(User, job.owner_id)
-        content = db.get(DmContent, job.content_id) if job.content_id else None
+        contents = _job_contents(db, job)
         job.status = "running"
         job.started_at = datetime.utcnow()
         db.commit()
-        if not user or not content:
+        if not user or not contents:
             job.status = "done"
             job.error = "发送人或私信内容已不存在"
             job.finished_at = datetime.utcnow()
             db.commit()
             return
-        image_paths = _resolve_content_image_paths(content)
+        image_paths_by_content = {c.id: _resolve_content_image_paths(c) for c in contents}
         targets = job.targets if isinstance(job.targets, list) else []
         for idx, t in enumerate(targets):
             if idx > 0:
@@ -597,6 +608,9 @@ def _run_dm_outreach_job_bg(job_id: int) -> None:
             db.commit()
             result: dict | None = None
             error: str | None = None
+            # 多选内容时每条随机挑一条发，避免同一套文案连续重复
+            content = random.choice(contents)
+            image_paths = image_paths_by_content.get(content.id, [])
             try:
                 result = open_profile_and_message(
                     job.browser_id,
@@ -660,14 +674,25 @@ def create_dm_outreach_job(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """对已入库达人发起一次批量私信（可二次私信），后台逐个发送，每条结果记入达人私信记录。"""
-    content = (
-        scope_query(db.query(DmContent), DmContent, user)
-        .filter(DmContent.id == body.content_id)
-        .first()
+    """对已入库达人发起一次批量私信（可二次私信），后台逐个发送，每条结果记入达人私信记录。
+
+    私信内容可多选（content_ids），发每一条时从选中的几条里随机挑一条。
+    """
+    content_ids = list(
+        dict.fromkeys([*(body.content_ids or []), *([body.content_id] if body.content_id else [])])
     )
-    if not content:
+    if not content_ids:
+        raise HTTPException(status_code=400, detail="请至少选一条私信内容")
+    contents = (
+        scope_query(db.query(DmContent), DmContent, user)
+        .filter(DmContent.id.in_(content_ids))
+        .all()
+    )
+    found = {c.id: c for c in contents}
+    if len(found) != len(content_ids):
         raise HTTPException(status_code=404, detail="私信内容不存在")
+    contents = [found[cid] for cid in content_ids]
+    content = contents[0]
     platform = (body.platform or "facebook").strip().lower()
     if platform not in ("facebook", "instagram"):
         raise HTTPException(status_code=400, detail="仅支持 facebook / instagram 私信")
@@ -699,7 +724,10 @@ def create_dm_outreach_job(
         browser_id=browser_id,
         browser_name=_browser_name(db, user.id, browser_id),
         content_id=content.id,
-        content_title=content.title,
+        content_title=(
+            content.title if len(contents) == 1 else f"{content.title} 等 {len(contents)} 条（随机）"
+        ),
+        content_ids=content_ids,
         targets=targets,
         interval_min=min(body.interval_min, body.interval_max),
         interval_max=max(body.interval_min, body.interval_max),

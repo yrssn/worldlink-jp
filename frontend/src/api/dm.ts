@@ -75,6 +75,8 @@ export interface DmOutreachJob {
   browser_name?: string | null
   content_id?: number | null
   content_title?: string | null
+  /** 备选私信内容 ID（多选时每条随机挑一条发） */
+  content_ids?: number[] | null
   targets?: DmOutreachJobTarget[] | null
   interval_min: number
   interval_max: number
@@ -124,7 +126,8 @@ export const dmApi = {
   createOutreachJob: (data: {
     influencer_ids: number[]
     browser_id: string
-    content_id: number
+    /** 备选私信内容：多选时后台每条随机挑一条发 */
+    content_ids: number[]
     platform: string
     interval_min?: number
     interval_max?: number

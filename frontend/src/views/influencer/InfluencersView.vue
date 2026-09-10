@@ -831,7 +831,14 @@ const dmDialogVisible = ref(false)
 const dmWindows = ref<BitBrowserWindow[]>([])
 const dmContents = ref<DmContent[]>([])
 const dmBrowserId = ref('')
-const dmContentId = ref<number | null>(null)
+/** 私信内容可多选，发每一条时从选中的里面随机挑一条 */
+const dmContentIds = ref<number[]>([])
+
+/** 从选中的私信内容里随机挑一条 */
+function pickDmContentId() {
+  const ids = dmContentIds.value
+  return ids[Math.floor(Math.random() * ids.length)]
+}
 // 每条之间随机等待区间（分 + 秒）
 const dmIntervalMinM = ref(1)
 const dmIntervalMinS = ref(0)
@@ -1005,7 +1012,7 @@ async function startDmOutreach() {
     ElMessage.warning('请选择浏览器窗口')
     return
   }
-  if (dmContentId.value == null) {
+  if (dmContentIds.value.length === 0) {
     ElMessage.warning('请选择私信内容')
     return
   }
@@ -1016,7 +1023,7 @@ async function startDmOutreach() {
       const job = await dmApi.createOutreachJob({
         influencer_ids: dmInfluencerRows.value.map((r) => r.id),
         browser_id: dmBrowserId.value,
-        content_id: dmContentId.value,
+        content_ids: [...dmContentIds.value],
         platform: dmPlatform.value,
         interval_min: dmIntervalRange.value.min,
         interval_max: dmIntervalRange.value.max,
@@ -1035,7 +1042,7 @@ async function startDmOutreach() {
           const r = await dmApi.startOutreach({
             url: row.url,
             browser_id: dmBrowserId.value,
-            content_id: dmContentId.value,
+            content_id: pickDmContentId(),
             platform: row.platform,
             source_task_id: row.id,
           })
@@ -1053,7 +1060,7 @@ async function startDmOutreach() {
     const r = await dmApi.startOutreach({
       url: dmUrl.value,
       browser_id: dmBrowserId.value,
-      content_id: dmContentId.value,
+      content_id: pickDmContentId(),
       platform: dmPlatform.value,
       source_task_id: dmSourceTaskId.value ?? undefined,
     })
@@ -2192,9 +2199,20 @@ onUnmounted(() => {
           </el-select>
         </el-form-item>
         <el-form-item label="私信内容">
-          <el-select v-model="dmContentId" placeholder="选择内容库中的私信内容" filterable style="width: 100%">
+          <el-select
+            v-model="dmContentIds"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="可多选，每条从选中的内容里随机挑一条发"
+            filterable
+            style="width: 100%"
+          >
             <el-option v-for="c in dmContents" :key="c.id" :label="c.title" :value="c.id" />
           </el-select>
+          <div v-if="dmContentIds.length > 1" style="color: #909399; font-size: 12px; line-height: 1.6">
+            已选 {{ dmContentIds.length }} 条，每条私信从里面随机挑一条发，避免同一套文案重复触发风控
+          </div>
         </el-form-item>
         <el-form-item v-if="dmInfluencerRows.length > 1" label="随机间隔">
           <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px">

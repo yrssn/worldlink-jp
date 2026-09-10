@@ -106,6 +106,8 @@ class DmOutreachJob(Base, TimestampMixin):
         ForeignKey("dm_contents.id", ondelete="SET NULL"), nullable=True
     )
     content_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: 备选私信内容 ID：多选时每条从里面随机挑一条发，降低重复文案的风控概率
+    content_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     #: 待发送的达人：[{influencer_id, url, display_name}]
     targets: Mapped[list | None] = mapped_column(JSON, nullable=True)
     #: 每条之间随机等待的秒数区间，避免连续发送触发风控

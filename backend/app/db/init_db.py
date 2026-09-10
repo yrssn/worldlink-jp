@@ -46,6 +46,7 @@ def create_all() -> None:
     _ensure_social_account_profile_columns()
     _ensure_influencer_profile_columns()
     _ensure_dm_outreach_log_columns()
+    _ensure_dm_outreach_job_columns()
     env = (settings.app_env or "").strip().lower()
     if env in ("dev", "development", "local", ""):
         _dev_auto_alter()
@@ -249,6 +250,25 @@ def _ensure_dm_outreach_log_columns() -> None:
                 conn.execute(text(sql))
         except Exception as e:  # noqa: BLE001
             logger.warning("[schema-patch] failed: {} -> {}", sql, e)
+
+
+def _ensure_dm_outreach_job_columns() -> None:
+    """为 dm_outreach_jobs 补齐 content_ids（私信内容多选，发送时随机挑一条）。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "dm_outreach_jobs" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("dm_outreach_jobs")}
+    if "content_ids" in cols:
+        return
+    sql = "ALTER TABLE dm_outreach_jobs ADD COLUMN content_ids JSON NULL"
+    try:
+        logger.info("[schema-patch] {}", sql)
+        with engine.begin() as conn:
+            conn.execute(text(sql))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[schema-patch] failed: {} -> {}", sql, e)
 
 
 def _ensure_influencer_scrape_task_columns() -> None:
