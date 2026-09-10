@@ -439,8 +439,11 @@ def open_profile_and_message(
     tag = "IG DM" if platform == "instagram" else "FB DM"
     site_name = "Instagram" if platform == "instagram" else "Facebook"
 
+    steps: list[str] = []
+
     def _log(message: str) -> None:
         logger.info("[{}] {}", tag, message)
+        steps.append(message)
         if progress is not None:
             try:
                 progress(message)
@@ -548,6 +551,10 @@ def open_profile_and_message(
                 _log(f"关闭私信标签页失败：{e}")
             else:
                 _log("已关闭私信标签页")
+    if fail_reason and not (text_sent or images_sent):
+        # 把关键步骤附在失败原因后面，任务列表里直接能看到卡在哪一步
+        trail = " → ".join(s for s in steps[-8:] if s != fail_reason)
+        fail_reason = f"{fail_reason}｜步骤：{trail}"[:1500]
     return {
         "page_opened": True,
         "message_clicked": message_clicked,
@@ -606,7 +613,7 @@ def _send_chat_message(
     text = (message_text or "").strip()
     if text:
         _log("输入私信正文")
-        typed = _type_into_chat_box(page, text)
+        typed = _type_into_chat_box(page, text, _log)
         if not typed:
             _log("正文发送失败：文字没能输进聊天输入框（重试 3 次）")
         else:
@@ -786,17 +793,31 @@ def _focus_chat_input(
     return False
 
 
-def _type_into_chat_box(page: CdpPage, text: str, attempts: int = 3) -> bool:
+def _type_into_chat_box(
+    page: CdpPage, text: str, _log: "Callable[[str], None]", attempts: int = 3
+) -> bool:
     """把正文输进当前达人的聊天框，并确认框里真的有了文字；第一次不行就改用鼠标点框后重输。"""
     first = " ".join(next((ln for ln in text.splitlines() if ln.strip()), text).split())[:20]
     for i in range(attempts):
         if not _focus_chat_input(page, attempts=2, mouse=i > 0):
+            _log(f"第 {i + 1} 次输入：没找到当前小窗的输入框")
             continue
-        page.call("Input.insertText", {"text": text}, timeout=15)
+        if i < attempts - 1:
+            page.call("Input.insertText", {"text": text}, timeout=15)
+        else:
+            # 最后一次改成逐字敲键（有的编辑器不吃 insertText）
+            for ch in text:
+                if ch == "\n":
+                    for t in ("keyDown", "keyUp"):
+                        page.call("Input.dispatchKeyEvent", {"type": t, "key": "Enter", "code": "Enter", "modifiers": 8, "windowsVirtualKeyCode": 13, **({"text": "\r"} if t == "keyDown" else {})}, timeout=10)
+                else:
+                    page.call("Input.dispatchKeyEvent", {"type": "char", "text": ch}, timeout=10)
+                time.sleep(random.uniform(0.02, 0.08))
         time.sleep(0.6)
         current = " ".join(str(page.evaluate(_CHAT_INPUT_TEXT_JS, timeout=5) or "").split())
         if first and first in current:
             return True
+        _log(f"第 {i + 1} 次输入后框内内容不对（看到：{current[:40] or '空'}），换鼠标点框重试")
         if current:
             # 框里有别的残留内容，全选删掉再重试，避免发出拼接的文字
             _select_all_and_delete(page)
