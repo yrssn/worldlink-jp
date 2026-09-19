@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { bitbrowserApi, type BitBrowserSettings } from '@/api/bitbrowser'
+import { bitbrowserApi, type BitBrowserSettings, type RelayStatus } from '@/api/bitbrowser'
 import { relayConnected, useBitBrowserRelay } from '@/composables/useBitBrowserRelay'
 
 const { reconnect: relayReconnect } = useBitBrowserRelay()
@@ -20,6 +20,29 @@ const health = ref<{
 } | null>(null)
 
 const connReady = computed(() => !!(bbSettings.value?.local_url || '').trim())
+
+const relayStatus = ref<RelayStatus | null>(null)
+let relayStatusTimer: ReturnType<typeof setInterval> | null = null
+
+async function loadRelayStatus() {
+  try {
+    relayStatus.value = await bitbrowserApi.relayStatus()
+  } catch {
+    relayStatus.value = null
+  }
+}
+
+/** 后端实际会走的中继（与 bitbrowser_relay.py::_route_key 的优先级一致） */
+const activeRelay = computed<'own_agent' | 'shared_agent' | 'page' | null>(() => {
+  const s = relayStatus.value
+  if (!s) return relayConnected.value ? 'page' : null
+  if (s.own_agent) return 'own_agent'
+  if (s.shared_agent) return 'shared_agent'
+  if (s.page_relay || relayConnected.value) return 'page'
+  return null
+})
+
+const backendOrigin = computed(() => (typeof window === 'undefined' ? '' : window.location.origin))
 
 /** 当前页是否在「本机」打开（公网 IP / 域名访问管理端时，易误以为 127.0.0.1 指自己电脑） */
 const accessFromRemoteHost = computed(() => {
@@ -83,7 +106,12 @@ async function saveBbSettings() {
 
 onMounted(async () => {
   await loadBbSettings()
-  await checkHealth()
+  await Promise.all([checkHealth(), loadRelayStatus()])
+  relayStatusTimer = setInterval(loadRelayStatus, 5000)
+})
+
+onUnmounted(() => {
+  if (relayStatusTimer) clearInterval(relayStatusTimer)
 })
 </script>
 
@@ -118,37 +146,71 @@ onMounted(async () => {
       <template #title>你正在通过公网访问管理端</template>
       <div style="font-size: 12px; line-height: 1.65; margin-top: 4px">
         当前站点不是 localhost，若仍使用 127.0.0.1，检测一定指向<strong>云服务器自己</strong>，无法直连你电脑上的比特浏览器。<br />
-        <strong style="color: #67c23a">✓ 推荐方案（内置，无需外部工具）</strong>：保持此管理端页面在浏览器中<strong>保持打开</strong>，
-        系统会自动建立「浏览器中继」——后端的请求通过你的浏览器转发到本机 BitBrowser，下方中继状态显示绿色「已连接」即可正常使用。<br />
-        其他方案：内网穿透（frp/ngrok）或前后端均跑在本机。
+        <strong style="color: #67c23a">✓ 推荐方案</strong>：在你自己装有 BitBrowser 的电脑上跑「中继 Agent」小程序（见下方），
+        用你的系统账号登录后它会主动反连后端，后端对你的所有 BitBrowser 调用都经它转发，不依赖别人的电脑，也不用保持网页打开。<br />
+        备选：保持此管理端页面在 BitBrowser 同一台电脑的浏览器中打开，系统会自动建立「页面中继」；或内网穿透（frp/ngrok）。
       </div>
     </el-alert>
 
-    <!-- 浏览器中继状态卡片 -->
+    <!-- 中继状态卡片 -->
     <el-card shadow="never" style="margin-bottom: 14px; max-width: 900px">
       <template #header>
-        <div style="display:flex;align-items:center;gap:10px">
-          <span style="font-weight:600">浏览器中继状态</span>
-          <el-tag :type="relayConnected ? 'success' : 'info'" size="small" effect="plain">
-            {{ relayConnected ? '✓ 已连接' : '未连接' }}
-          </el-tag>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-weight:600">中继状态</span>
+          <el-tag v-if="activeRelay === 'own_agent'" type="success" size="small" effect="plain">✓ 专属 Agent 已连接</el-tag>
+          <el-tag v-else-if="activeRelay === 'shared_agent'" type="success" size="small" effect="plain">✓ 共享 Agent 已连接</el-tag>
+          <el-tag v-else-if="activeRelay === 'page'" type="warning" size="small" effect="plain">✓ 页面中继已连接</el-tag>
+          <el-tag v-else type="info" size="small" effect="plain">未连接</el-tag>
         </div>
       </template>
       <div style="font-size:12px;color:#606266;line-height:1.8">
         <p style="margin:0 0 6px">
-          中继运行时，后端调用 BitBrowser 会自动通过此页面的 WebSocket 连接转发到你本机的
-          <code>{{ bbSettings?.local_url || 'http://127.0.0.1:54345' }}</code>，
-          无需任何外部工具。<strong>保持此浏览器标签页打开即可</strong>。
+          后端调用 BitBrowser（Local API 与窗口 CDP）会按优先级走：
+          <strong>你自己电脑上的专属 Agent</strong> → 全员共用的共享 Agent → 本页面中继。
+          目标地址为中继所在电脑上的 <code>{{ bbSettings?.local_url || 'http://127.0.0.1:54345' }}</code>。
         </p>
-        <p style="margin:0 0 6px">
-          窗口打开后的 CDP 调试连接（<code>ws://127.0.0.1:…</code>）同样会经此页面中继转发，
-          自动化流程（Zoho / Apify / 验证码邮箱等）在公网部署下也能直接操作你本机的窗口。
-        </p>
-        <div v-if="relayConnected" style="color:#67c23a">✓ 中继已连接，本机 BitBrowser 请求将通过浏览器转发。</div>
-        <div v-else style="color:#909399">中继未连接。若已配置本地服务地址，点「重新连接」或刷新页面。</div>
+        <div v-if="activeRelay === 'own_agent'" style="color:#67c23a">
+          ✓ 你的专属 Agent 在线，BitBrowser 请求全部经你自己的电脑转发，不受其他人电脑断网影响。
+        </div>
+        <div v-else-if="activeRelay === 'shared_agent'" style="color:#e6a23c">
+          目前走的是共享 Agent（别人电脑上的 BitBrowser）。建议在自己电脑上启动专属 Agent，启动后会自动优先使用。
+        </div>
+        <div v-else-if="activeRelay === 'page'" style="color:#e6a23c">
+          目前走的是页面中继：仅当本页面开在 BitBrowser 同一台电脑上且<strong>标签页保持打开</strong>时可用。
+        </div>
+        <div v-else style="color:#909399">中继未连接。请按下方步骤启动专属 Agent，或点「重新连接页面中继」。</div>
       </div>
-      <div style="margin-top:12px">
-        <el-button size="small" type="primary" plain :disabled="relayConnected" @click="relayReconnect">重新连接中继</el-button>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <el-button size="small" plain @click="loadRelayStatus">刷新状态</el-button>
+        <el-button size="small" type="primary" plain :disabled="relayConnected" @click="relayReconnect">重新连接页面中继</el-button>
+      </div>
+    </el-card>
+
+    <!-- 专属 Agent 安装指引 -->
+    <el-card shadow="never" style="margin-bottom: 14px; max-width: 900px">
+      <template #header>
+        <span style="font-weight:600">在自己电脑上启动专属中继 Agent（Windows / macOS）</span>
+      </template>
+      <div style="font-size:12px;color:#606266;line-height:1.8">
+        <ol style="margin:0;padding-left:18px">
+          <li>
+            从代码仓库 Releases 下载中继程序：Windows 用 <code>BitBrowserRelayAgent-windows-x64.exe</code>；
+            Mac 用 <code>BitBrowserRelayAgent-macos-arm64.zip</code>（Apple 芯片 M1/M2/M3/M4）或
+            <code>BitBrowserRelayAgent-macos-x86_64.zip</code>（Intel 芯片），解压后得到 <code>BitBrowserRelayAgent.app</code>。
+          </li>
+          <li>
+            Mac 首次打开若提示「无法打开 / 已损坏」：右键→打开，或在终端执行
+            <code>xattr -cr ~/Downloads/BitBrowserRelayAgent.app</code> 后再打开。
+          </li>
+          <li>
+            在程序里填：后端地址 <code>{{ backendOrigin }}</code>；系统账号 / 密码 填你登录本管理端的账号密码；
+            「共享 Token」留空；BitBrowser Local API 保持 <code>http://127.0.0.1:54345</code>（若 BitBrowser 开了鉴权再填 Local API Token）。
+          </li>
+          <li>点「启动」，日志出现「已连接（专属中继）」，本页上方状态变为「专属 Agent 已连接」即可。程序保持运行（可最小化），断网后会自动重连。</li>
+        </ol>
+        <p style="margin:6px 0 0">
+          下方「本地服务地址」填 <code>http://127.0.0.1:54345</code> 即可——这个地址由你电脑上的 Agent 就地解析。
+        </p>
       </div>
     </el-card>
 

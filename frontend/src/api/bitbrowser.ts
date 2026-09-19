@@ -64,6 +64,17 @@ export interface BitBrowserSyncMeta {
   cached_rows: number
 }
 
+export interface RelayStatus {
+  /** 当前用户是否有任意可用中继 */
+  connected: boolean
+  /** 自己电脑上跑的专属中继 agent 已连接 */
+  own_agent: boolean
+  /** 全员共用的共享中继 agent 已连接 */
+  shared_agent: boolean
+  /** 本浏览器页面中继已连接 */
+  page_relay: boolean
+}
+
 export interface BitBrowserSettings {
   local_url: string | null
   has_api_key: boolean
@@ -168,5 +179,5 @@ export const bitbrowserApi = {
       '/bitbrowser/local-health'
     ),
   relayStatus: () =>
-    http.get<unknown, { connected: boolean }>('/bitbrowser/relay/status')
+    http.get<unknown, RelayStatus>('/bitbrowser/relay/status')
 }

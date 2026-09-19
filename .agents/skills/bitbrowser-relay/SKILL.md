@@ -17,11 +17,14 @@ description: BitBrowser 中继（Local API + CDP WebSocket 反向隧道）的架
 
 方向反过来：不是后端去连 BitBrowser，而是 BitBrowser 那台电脑上的「中继」**主动**连到后端并保持一条 WebSocket 长连接。后端要访问 BitBrowser 时，把请求打包成消息发给中继，中继在 BitBrowser 本机就地执行（fetch Local API / 连本机 CDP WS），再把结果原路回传。因为出站连接不受 NAT/防火墙限制，所以不需要 ngrok/frp/公网 IP。
 
-中继有两种实现，后端按优先级路由（`bitbrowser_relay.py::_route_key`）：
+中继有三种，后端按优先级路由（`bitbrowser_relay.py::_route_key`，从高到低）：
 
-1. **页面中继**（per-user）：管理端前端登录后自动连 `/api/v1/bitbrowser/relay/ws?token=<JWT>`（`useBitBrowserRelay.ts`）。只有当管理页面开在 BitBrowser 同一台电脑上才有用。
-2. **共享 agent 中继**（推荐，全体用户共用）：`backend/scripts/bitbrowser_relay_agent.py` 常驻在 BitBrowser 电脑上，连 `/api/v1/bitbrowser/relay/agent/ws?token=<BITBROWSER_RELAY_AGENT_TOKEN>`，在 `relay_manager` 里注册为 `SHARED_RELAY_KEY = 0`。用户没有自己的页面中继时自动回退到它。
-3. 都没有时：后端直连（仅后端与 BitBrowser 同机的开发场景可用），失败会抛带指引的 RuntimeError。
+1. **专属 agent**（推荐，每人一台）：`backend/scripts/bitbrowser_relay_agent.py`（或打包好的 GUI）跑在使用者自己装有 BitBrowser 的电脑上，用 `--username/--password` 调 `/api/v1/auth/login` 拿 access token，再连 `/api/v1/bitbrowser/relay/agent/ws?token=<JWT>`，在 `relay_manager` 里注册为 `agent_relay_key(user_id) = "agent:<user_id>"`，只服务这个用户。每次重连都重新登录（access token 2 小时过期，但已建立的 WS 不受影响）。
+2. **共享 agent**（全体用户共用一台 BitBrowser 电脑）：同一个脚本用 `--token <BITBROWSER_RELAY_AGENT_TOKEN>` 连同一入口，注册为 `SHARED_RELAY_KEY = 0`。用户没有专属 agent 时回退到它。
+3. **页面中继**（per-user）：管理端前端登录后自动连 `/api/v1/bitbrowser/relay/ws?token=<JWT>`（`useBitBrowserRelay.ts`），键为 `user_id`。只有当管理页面开在 BitBrowser 同一台电脑上才有用。
+4. 都没有时：后端直连（仅后端与 BitBrowser 同机的开发场景可用），失败会抛带指引的 RuntimeError。
+
+`/relay/status` 返回 `connected / own_agent / shared_agent / page_relay`，前端「本机连接」页每 5s 轮询并显示实际在用的中继。
 
 ## WS 消息协议（backend/app/services/bitbrowser_relay.py 顶部注释为准）
 
@@ -52,16 +55,26 @@ CDP 隧道（每个隧道 id 对应中继侧一条到本机 DevTools 的嵌套 W
 5. 中继断开时，隧道以 `OSError` 失败，自动化层把它转成 `CdpConnectionClosed` 快速失败。
 6. Vite dev 代理需要 `ws: true`（`vite.config.ts`），否则前端页面中继的 WS 永远连不上；nginx 反代需要 `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`。
 
-## 部署共享 agent（BitBrowser 电脑上）
+## 部署 agent（BitBrowser 电脑上，Windows / macOS）
 
 ```bash
 pip install websockets httpx
-python bitbrowser_relay_agent.py --server https://后端域名或IP:端口 --token <BITBROWSER_RELAY_AGENT_TOKEN> --bb-api-key <LocalAPI Token>
+# 专属 agent（每人自己的电脑）
+python bitbrowser_relay_agent.py --server https://后端域名或IP:端口 --username <系统账号> --password <密码> [--bb-api-key <LocalAPI Token>]
+# 共享 agent（全员共用一台）
+python bitbrowser_relay_agent.py --server https://后端域名或IP:端口 --token <BITBROWSER_RELAY_AGENT_TOKEN>
 ```
 
-- 后端 `.env`：`BITBROWSER_RELAY_AGENT_TOKEN=<同一令牌>`（留空则禁用 agent 入口），改后重启后端。
-- `--server` 写 http/https 会自动换成 ws/wss；断线 5 秒自动重连。
+- 专属 agent 不需要后端额外配置；共享 agent 需要后端 `.env`：`BITBROWSER_RELAY_AGENT_TOKEN=<同一令牌>`（留空则禁用共享入口），改后重启后端。
+- `--server` 写 http/https 会自动换成 ws/wss；断线 5 秒自动重连；账号密码错误（401/403）直接退出不重试。
 - 用户在系统「本机连接」里地址填 `http://127.0.0.1:54345` 即可（相对路径由 agent 在 BitBrowser 本机解析）。
+
+### GUI 版与打包
+
+- `bitbrowser_relay_agent_gui.py`（PyQt5）：填后端地址 + 系统账号/密码（专属）或共享 Token（共享），配置存 QSettings。
+- `build_gui.py` 用 PyInstaller 在**当前系统**打单文件：Windows 出 `.exe`，macOS 出 `.app` + `ditto` 压的 zip。不能交叉编译。
+- GitHub Actions `.github/workflows/build-relay-agent.yml`：手动触发或 push `relay-agent-v*` tag，一次出 Windows x64 / macOS arm64 / macOS x86_64，tag 触发时自动建 Release 上传三个产物。
+- macOS 产物未签名，首次打开要右键→打开 或 `xattr -cr BitBrowserRelayAgent.app`。
 
 ## 排障速查
 
@@ -71,5 +84,7 @@ python bitbrowser_relay_agent.py --server https://后端域名或IP:端口 --tok
 | `API Token错误，请检查` | Local API 鉴权开了但请求没带 x-api-key | 配 `BITBROWSER_API_KEY` 或 `--bb-api-key` |
 | `Failed to fetch`（list targets） | 走了 `/json/*` HTTP（旧代码）被 CORS 拦截 | 升级到 Target.* 方案 |
 | `无法连接本机 CDP WebSocket` | 页面中继开在别的电脑；或窗口没带 `--remote-allow-origins=*` | agent 跑在 BitBrowser 同机；窗口先关再开 |
-| agent 连接被拒 HTTP 403 | 后端没有 agent 路由（代码旧）或 token 不匹配/未配置 | 更新后端代码、核对 `.env` 令牌并重启 |
+| agent 连接被拒 HTTP 403 | 后端没有 agent 路由（代码旧）；共享 token 不匹配/未配置；专属模式下后端代码旧不认 JWT | 更新后端代码、核对 `.env` 令牌并重启 |
+| agent 日忘「系统账号登录失败」 | 用户名/密码错或账号停用 | 核对后重新启动 |
+| 自己的 agent 在线但请求走了别人电脑 | 专属 agent 用了共享 Token 而非账号密码 | GUI 里清空「共享 Token」，填账号密码 |
 | agent 连接报 HTTP 500 | 后端正在重启/热重载中 | 等 agent 自动重连 |

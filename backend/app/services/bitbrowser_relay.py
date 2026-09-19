@@ -33,9 +33,17 @@ from loguru import logger
 # 共享中继 agent（跑在 BitBrowser 所在电脑的独立脚本）的路由键；真实用户 id 从 1 开始
 SHARED_RELAY_KEY = 0
 
+# 连接表的键：页面中继用用户 id（int），共享 agent 用 SHARED_RELAY_KEY，
+# 用户自己电脑上跑的专属 agent 用 "agent:<user_id>"（与页面中继互不顶掉）
+RelayKey = int | str
+
+
+def agent_relay_key(user_id: int) -> str:
+    return f"agent:{user_id}"
+
 
 class _CdpTunnel:
-    def __init__(self, user_id: int, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, user_id: RelayKey, loop: asyncio.AbstractEventLoop) -> None:
         self.user_id = user_id
         self.opened: asyncio.Future = loop.create_future()
         self.inbox: asyncio.Queue[str | None] = asyncio.Queue()
@@ -44,8 +52,9 @@ class _CdpTunnel:
 
 class BitBrowserRelayManager:
     def __init__(self) -> None:
-        self._connections: dict[int, Any] = {}          # user_id -> WebSocket
+        self._connections: dict[RelayKey, Any] = {}     # RelayKey -> WebSocket
         self._pending: dict[str, asyncio.Future] = {}   # req_id  -> Future
+        self._pending_owner: dict[str, RelayKey] = {}   # req_id  -> 发往哪条中继连接
         self._tunnels: dict[str, _CdpTunnel] = {}       # tunnel_id -> _CdpTunnel
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -55,20 +64,30 @@ class BitBrowserRelayManager:
 
     # ── 连接状态 ────────────────────────────────────────────────────
     def has_relay(self, user_id: int) -> bool:
-        return user_id in self._connections or SHARED_RELAY_KEY in self._connections
+        return self._route_key(user_id) is not None
 
     def has_shared_relay(self) -> bool:
         return SHARED_RELAY_KEY in self._connections
 
-    def connected_user_ids(self) -> list[int]:
+    def has_user_agent(self, user_id: int) -> bool:
+        return agent_relay_key(user_id) in self._connections
+
+    def has_page_relay(self, user_id: int) -> bool:
+        return user_id in self._connections
+
+    def connected_user_ids(self) -> list[RelayKey]:
         return list(self._connections.keys())
 
-    def _route_key(self, user_id: int) -> int | None:
-        """优先共享 agent 中继（跑在 BitBrowser 电脑上），否则回退到用户自己的页面中继。
+    def _route_key(self, user_id: int) -> RelayKey | None:
+        """路由优先级：用户自己电脑上的专属 agent > 共享 agent > 用户的页面中继。
 
-        页面中继可能开在任意用户的电脑上（不一定装有 BitBrowser），
-        而共享 agent 一定与 BitBrowser 同机，能就地访问 Local API 与 CDP。
+        专属 agent 由每位使用者在自己装有 BitBrowser 的电脑上启动（用系统账号登录），
+        一定与该用户的 BitBrowser 同机；共享 agent 是全员共用的一台 BitBrowser 电脑；
+        页面中继只有管理页面开在 BitBrowser 同机时才有用。
         """
+        own = agent_relay_key(user_id)
+        if own in self._connections:
+            return own
         if SHARED_RELAY_KEY in self._connections:
             return SHARED_RELAY_KEY
         if user_id in self._connections:
@@ -76,8 +95,8 @@ class BitBrowserRelayManager:
         return None
 
     # ── WebSocket 生命周期（async，在路由中 await）──────────────────
-    async def connect(self, user_id: int, ws: Any) -> None:
-        """持续接收前端消息，直到 WebSocket 断开。"""
+    async def connect(self, user_id: RelayKey, ws: Any) -> None:
+        """持续接收中继端消息，直到 WebSocket 断开。``user_id`` 为连接表的键（见 RelayKey）。"""
         old = self._connections.get(user_id)
         if old is not None:
             try:
@@ -95,6 +114,7 @@ class BitBrowserRelayManager:
                 if msg_type == "res":
                     req_id = data.get("id")
                     fut = self._pending.pop(req_id, None)
+                    self._pending_owner.pop(req_id, None)
                     if fut is None or fut.done():
                         continue
                     if "error" in data:
@@ -126,12 +146,14 @@ class BitBrowserRelayManager:
         except Exception as e:  # noqa: BLE001
             logger.info("[BitBrowserRelay] user {} relay disconnected: {}", user_id, e)
         finally:
-            self._connections.pop(user_id, None)
-            # 让等待中的请求立即失败
-            for fut in list(self._pending.values()):
-                if not fut.done():
+            if self._connections.get(user_id) is ws:
+                self._connections.pop(user_id, None)
+            # 让发往这条连接、仍在等待的请求立即失败（不影响其他用户的中继）
+            for req_id in [r for r, k in self._pending_owner.items() if k == user_id]:
+                self._pending_owner.pop(req_id, None)
+                fut = self._pending.pop(req_id, None)
+                if fut is not None and not fut.done():
                     fut.set_exception(RuntimeError("BitBrowser 中继连接已断开"))
-            self._pending.clear()
             # 关闭该用户的全部 CDP 隧道
             for tid in [t for t, tu in self._tunnels.items() if tu.user_id == user_id]:
                 tunnel = self._tunnels.pop(tid, None)
@@ -164,6 +186,7 @@ class BitBrowserRelayManager:
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
         self._pending[req_id] = fut
+        self._pending_owner[req_id] = key
         msg: dict[str, Any] = {
             "type": "req",
             "id": req_id,
@@ -180,6 +203,7 @@ class BitBrowserRelayManager:
             return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
+            self._pending_owner.pop(req_id, None)
             raise RuntimeError(f"BitBrowser 中继请求超时（{timeout:.0f}s）")
 
     # ── 同步调用（供 FastAPI 线程池中的同步端点使用）────────────────

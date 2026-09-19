@@ -14,7 +14,7 @@ from app.db.session import SessionLocal
 from app.models.bitbrowser import BitBrowserPlatform, BitBrowserWindow, BitBrowserWindowCatalog
 from app.models.user import User
 from app.core.config import settings
-from app.services.bitbrowser_relay import SHARED_RELAY_KEY, relay_manager
+from app.services.bitbrowser_relay import SHARED_RELAY_KEY, agent_relay_key, relay_manager
 from app.schemas.bitbrowser import (
     BitBrowserCatalogOut,
     BitBrowserCatalogRowOut,
@@ -38,46 +38,62 @@ router = APIRouter(prefix="/bitbrowser", tags=["bitbrowser"])
 
 
 # ── 浏览器中继 WebSocket 入口 ────────────────────────────────────
-@router.websocket("/relay/ws")
-async def bitbrowser_relay_ws(websocket: WebSocket, token: str = Query(...)):
-    """前端页面连接此 WS，充当「本机 BitBrowser → 后端」的反向代理中继。"""
+def _user_id_from_access_token(token: str) -> int | None:
+    """校验登录态 access token，返回对应的活跃用户 id；无效返回 None。"""
     payload = decode_token(token)
     if not payload or payload.get("type") != "access":
-        await websocket.close(code=4001)
-        return
+        return None
     user_id_raw = payload.get("sub")
     if user_id_raw is None:
-        await websocket.close(code=4001)
-        return
+        return None
     try:
         user_id = int(user_id_raw)
     except (TypeError, ValueError):
-        await websocket.close(code=4001)
-        return
+        return None
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if not user or not user.is_active:
-            await websocket.close(code=4001)
-            return
+            return None
     finally:
         db.close()
+    return user_id
+
+
+@router.websocket("/relay/ws")
+async def bitbrowser_relay_ws(websocket: WebSocket, token: str = Query(...)):
+    """前端页面连接此 WS，充当「本机 BitBrowser → 后端」的反向代理中继。"""
+    user_id = _user_id_from_access_token(token)
+    if user_id is None:
+        await websocket.close(code=4001)
+        return
     await websocket.accept()
     logger.info("[BitBrowserRelay] WS accepted for user {}", user_id)
     await relay_manager.connect(user_id, websocket)
 
 
-# ── 共享中继 agent WebSocket 入口（跑在 BitBrowser 所在电脑的独立脚本）──
+# ── 中继 agent WebSocket 入口（跑在 BitBrowser 所在电脑的独立程序）──
 @router.websocket("/relay/agent/ws")
 async def bitbrowser_relay_agent_ws(websocket: WebSocket, token: str = Query(...)):
-    """中继 agent 连接此 WS，为所有系统用户共享转发 BitBrowser Local API 与 CDP。"""
+    """中继 agent 连接此 WS，就地转发 BitBrowser Local API 与 CDP。
+
+    ``token`` 两种取法：
+    - 与 ``.env`` 的 ``BITBROWSER_RELAY_AGENT_TOKEN`` 一致 → 共享 agent，全体用户共用；
+    - 系统账号登录后的 access token → 该用户的专属 agent，只服务自己，路由优先于共享 agent。
+    """
     expected = (settings.bitbrowser_relay_agent_token or "").strip()
-    if not expected or token != expected:
+    if expected and token == expected:
+        await websocket.accept()
+        logger.info("[BitBrowserRelay] shared relay agent connected")
+        await relay_manager.connect(SHARED_RELAY_KEY, websocket)
+        return
+    user_id = _user_id_from_access_token(token)
+    if user_id is None:
         await websocket.close(code=4001)
         return
     await websocket.accept()
-    logger.info("[BitBrowserRelay] shared relay agent connected")
-    await relay_manager.connect(SHARED_RELAY_KEY, websocket)
+    logger.info("[BitBrowserRelay] user {} personal relay agent connected", user_id)
+    await relay_manager.connect(agent_relay_key(user_id), websocket)
 
 
 @router.get("/relay/status")
@@ -85,7 +101,9 @@ def bitbrowser_relay_status(user: User = Depends(get_current_user)):
     """查询当前用户的浏览器中继是否已连接。"""
     return {
         "connected": relay_manager.has_relay(user.id),
+        "own_agent": relay_manager.has_user_agent(user.id),
         "shared_agent": relay_manager.has_shared_relay(),
+        "page_relay": relay_manager.has_page_relay(user.id),
     }
 
 

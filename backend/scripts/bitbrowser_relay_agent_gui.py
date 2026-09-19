@@ -1,7 +1,11 @@
-"""BitBrowser 共享中继 agent —— PyQt5 图形界面版。
+"""BitBrowser 中继 agent —— PyQt5 图形界面版。
 
-包一层 GUI，方便在 BitBrowser 那台 Windows 电脑上不用命令行也能填后端地址 / Token
-并一键启停中继。核心逻辑复用命令行版 ``bitbrowser_relay_agent.py`` 里的 ``Agent``。
+包一层 GUI，方便每位使用者在自己装有 BitBrowser 的电脑（Windows / macOS）上不用命令行
+也能填后端地址 + 系统账号并一键启停中继。核心逻辑复用命令行版
+``bitbrowser_relay_agent.py`` 里的 ``Agent``。
+
+默认是「专属中继」：用自己的系统账号登录，只转发自己的 BitBrowser 请求；填了
+「共享 Token」则作为全员共用的共享中继。
 
 本地运行::
 
@@ -35,7 +39,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from bitbrowser_relay_agent import Agent
+from bitbrowser_relay_agent import Agent, AgentAuthError
 
 log = logging.getLogger("bb-relay-agent")
 
@@ -61,10 +65,20 @@ class RelayWorker(QObject):
 
     stopped = pyqtSignal()
 
-    def __init__(self, server: str, token: str, bb_url: str, bb_api_key: str) -> None:
+    def __init__(
+        self,
+        server: str,
+        token: str,
+        bb_url: str,
+        bb_api_key: str,
+        username: str = "",
+        password: str = "",
+    ) -> None:
         super().__init__()
         self._server = server
         self._token = token
+        self._username = username
+        self._password = password
         self._bb_url = bb_url
         self._bb_api_key = bb_api_key
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -79,11 +93,20 @@ class RelayWorker(QObject):
         loop = asyncio.new_event_loop()
         self._loop = loop
         asyncio.set_event_loop(loop)
-        agent = Agent(self._server, self._token, self._bb_url, self._bb_api_key or None)
+        agent = Agent(
+            self._server,
+            self._token,
+            self._bb_url,
+            self._bb_api_key or None,
+            username=self._username,
+            password=self._password,
+        )
         try:
             self._task = loop.create_task(agent.run_forever())
             loop.run_until_complete(self._task)
         except asyncio.CancelledError:
+            pass
+        except AgentAuthError:
             pass
         except Exception as e:  # noqa: BLE001
             log.warning("中继异常退出：%s", e)
@@ -106,14 +129,19 @@ class MainWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("BitBrowser 中继 Agent")
-        self.resize(640, 480)
+        self.resize(640, 520)
         self._settings = QSettings("worldlink-jp", "BitBrowserRelayAgent")
         self._worker: RelayWorker | None = None
 
         self.server_edit = QLineEdit(self._settings.value("server", "", str))
-        self.server_edit.setPlaceholderText("如 https://后端域名或IP:8014")
+        self.server_edit.setPlaceholderText("如 https://后端域名或IP:8014（与浏览器里打开管理端的地址一致）")
+        self.username_edit = QLineEdit(self._settings.value("username", "", str))
+        self.username_edit.setPlaceholderText("登录管理端用的账号；中继只服务这个账号")
+        self.password_edit = QLineEdit(self._settings.value("password", "", str))
+        self.password_edit.setPlaceholderText("登录管理端用的密码")
+        self.password_edit.setEchoMode(QLineEdit.Password)
         self.token_edit = QLineEdit(self._settings.value("token", "", str))
-        self.token_edit.setPlaceholderText("后端 .env 中的 BITBROWSER_RELAY_AGENT_TOKEN")
+        self.token_edit.setPlaceholderText("仅全员共用一台 BitBrowser 电脑时填；填了就不用账号密码")
         self.token_edit.setEchoMode(QLineEdit.Password)
         self.bb_url_edit = QLineEdit(
             self._settings.value("bb_url", "http://127.0.0.1:54345", str)
@@ -124,7 +152,9 @@ class MainWindow(QWidget):
 
         form = QFormLayout()
         form.addRow("后端地址", self.server_edit)
-        form.addRow("Token", self.token_edit)
+        form.addRow("系统账号", self.username_edit)
+        form.addRow("系统密码", self.password_edit)
+        form.addRow("共享 Token（可选）", self.token_edit)
         form.addRow("BitBrowser Local API", self.bb_url_edit)
         form.addRow("Local API Token", self.bb_key_edit)
 
@@ -162,26 +192,36 @@ class MainWindow(QWidget):
 
     def _on_start(self) -> None:
         server = self.server_edit.text().strip()
+        username = self.username_edit.text().strip()
+        password = self.password_edit.text()
         token = self.token_edit.text().strip()
-        if not server or not token:
-            self.status_label.setText("请先填写后端地址和 Token")
+        if not server:
+            self.status_label.setText("请先填写后端地址")
+            return
+        if not token and not (username and password):
+            self.status_label.setText("请填写系统账号和密码（或共享 Token）")
             return
         bb_url = self.bb_url_edit.text().strip() or "http://127.0.0.1:54345"
         bb_api_key = self.bb_key_edit.text().strip()
 
         self._settings.setValue("server", server)
+        self._settings.setValue("username", username)
+        self._settings.setValue("password", password)
         self._settings.setValue("token", token)
         self._settings.setValue("bb_url", bb_url)
         self._settings.setValue("bb_api_key", bb_api_key)
 
-        self._worker = RelayWorker(server, token, bb_url, bb_api_key)
+        # 填了共享 Token 就走共享中继，否则用账号密码登录为专属中继
+        if token:
+            username, password = "", ""
+        self._worker = RelayWorker(server, token, bb_url, bb_api_key, username, password)
         self._worker.stopped.connect(self._on_worker_stopped, Qt.QueuedConnection)
         self._worker.start()
 
         self._set_inputs_enabled(False)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.status_label.setText("运行中")
+        self.status_label.setText("运行中（共享中继）" if token else f"运行中（专属中继：{username}）")
 
     def _on_stop(self) -> None:
         if self._worker is not None:
@@ -197,7 +237,14 @@ class MainWindow(QWidget):
         self.status_label.setText("已停止")
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
-        for w in (self.server_edit, self.token_edit, self.bb_url_edit, self.bb_key_edit):
+        for w in (
+            self.server_edit,
+            self.username_edit,
+            self.password_edit,
+            self.token_edit,
+            self.bb_url_edit,
+            self.bb_key_edit,
+        ):
             w.setEnabled(enabled)
 
     def closeEvent(self, event) -> None:  # noqa: N802
