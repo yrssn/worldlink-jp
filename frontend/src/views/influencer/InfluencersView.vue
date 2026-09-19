@@ -13,6 +13,7 @@ import {
   type ScrapeStageResult,
   type StageSkipped,
   type Influencer,
+  type InfluencerOwner,
   type InfluencerScrapeTask,
   type PlatformDetectItem,
   type PlatformOption,
@@ -28,6 +29,7 @@ import {
 } from '@/api/bitbrowser'
 import { dmApi, type DmContent, type DmOutreachJob, type DmOutreachJobDetail } from '@/api/dm'
 import { countryApi, type Country } from '@/api/country'
+import { useAuthStore } from '@/store/auth'
 
 // 各平台的输入提示（只有能自动抓资料的需要特别说明）
 const PLATFORM_PLACEHOLDERS: Partial<Record<ScrapePlatform, string>> = {
@@ -36,6 +38,7 @@ const PLATFORM_PLACEHOLDERS: Partial<Record<ScrapePlatform, string>> = {
 }
 
 const router = useRouter()
+const authStore = useAuthStore()
 const list = ref<Influencer[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -53,6 +56,9 @@ const outreachStatusFilter = ref<string>('')
 /** 私信时间筛选：最后一次私信时间落在该区间 */
 const outreachRange = ref<[string, string] | null>(null)
 const sort = ref<'id_desc' | 'followers_desc' | 'followers_asc'>('id_desc')
+/** 建联用户筛选：默认看自己的，清空 = 数据范围内全部 */
+const ownerFilter = ref<number | undefined>(authStore.user?.id)
+const owners = ref<InfluencerOwner[]>([])
 
 /** 当前筛选里的私信条件，列表与导出共用 */
 function outreachParams() {
@@ -1164,6 +1170,7 @@ async function refresh() {
       platform_id: platformFilter.value ?? undefined,
       followers_min: followersMin.value ?? undefined,
       followers_max: followersMax.value ?? undefined,
+      owner_id: ownerFilter.value ?? undefined,
       ...outreachParams(),
       sort: sort.value,
     })
@@ -1236,8 +1243,17 @@ async function exportList() {
     platform_id: platformFilter.value ?? undefined,
     followers_min: followersMin.value ?? undefined,
     followers_max: followersMax.value ?? undefined,
+    owner_id: ownerFilter.value ?? undefined,
     ...outreachParams(),
   })
+}
+
+async function loadOwners() {
+  try {
+    owners.value = await influencerApi.listOwners()
+  } catch {
+    owners.value = []
+  }
 }
 
 /** 清空全部筛选条件并回到第一页 */
@@ -1250,6 +1266,7 @@ function resetFilters() {
   followersMax.value = undefined
   outreachStatusFilter.value = ''
   outreachRange.value = null
+  ownerFilter.value = authStore.user?.id
   sort.value = 'id_desc'
   page.value = 1
   refresh()
@@ -1380,6 +1397,7 @@ async function remove(row: Influencer) {
 
 onMounted(() => {
   refresh()
+  loadOwners()
   loadPlatforms()
   loadPlatformOptions()
   loadCountries()
@@ -1455,6 +1473,21 @@ onUnmounted(() => {
           style="width: 110px"
         />
       </div>
+      <el-select
+        v-if="owners.length > 1"
+        v-model="ownerFilter"
+        placeholder="建联用户（全部）"
+        clearable
+        filterable
+        style="width: 150px"
+      >
+        <el-option
+          v-for="o in owners"
+          :key="o.id"
+          :label="o.id === authStore.user?.id ? `${o.full_name || o.username}（我）` : o.full_name || o.username"
+          :value="o.id"
+        />
+      </el-select>
       <el-select
         v-model="outreachStatusFilter"
         placeholder="私信结果"

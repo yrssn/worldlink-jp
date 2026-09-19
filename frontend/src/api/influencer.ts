@@ -383,6 +383,13 @@ export interface ImportOptions {
   fallback_platform?: ScrapePlatform | 'other'
 }
 
+/** 列表「建联用户」筛选选项 */
+export interface InfluencerOwner {
+  id: number
+  username: string
+  full_name?: string | null
+}
+
 export const influencerApi = {
   list: (params?: {
     page?: number
@@ -394,6 +401,8 @@ export const influencerApi = {
     platform_id?: number
     followers_min?: number
     followers_max?: number
+    /** 建联用户 id，空 = 数据范围内全部 */
+    owner_id?: number
     /** 私信结果：success / failed / none（未私信） */
     outreach_status?: string
     /** 私信时间起（YYYY-MM-DD） */
@@ -404,6 +413,7 @@ export const influencerApi = {
   }) => http.get<unknown, Paginated<Influencer>>('/influencers', { params }),
   listPlatformOptions: () =>
     http.get<unknown, PlatformOption[]>('/influencers/platform-options'),
+  listOwners: () => http.get<unknown, InfluencerOwner[]>('/influencers/owners'),
   /** 把存量达人的远端头像下载到服务器（国内免代理看图） */
   cacheAvatars: (limit = 200) =>
     http.post<unknown, AvatarCacheResult>('/influencers/avatars/cache', null, {
@@ -534,6 +544,7 @@ export const influencerApi = {
     platform_id?: number
     followers_min?: number
     followers_max?: number
+    owner_id?: number
     outreach_status?: string
     outreach_start?: string
     outreach_end?: string

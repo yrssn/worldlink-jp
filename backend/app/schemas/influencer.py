@@ -161,6 +161,16 @@ class InfluencerOut(InfluencerBase):
     updated_at: datetime
 
 
+class InfluencerOwnerOut(BaseModel):
+    """列表「建联用户」筛选选项。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    full_name: Optional[str] = None
+
+
 class InfluencerDetailOut(InfluencerOut):
     social_accounts: list[SocialAccountOut] = []
     source_post_ids: list[int] = []

@@ -33,6 +33,7 @@ from app.schemas.influencer import (
     ImportPreviewOut,
     ImportConflictOut,
     ImportResultOut,
+    InfluencerOwnerOut,
     InfluencerCreate,
     InfluencerDetailOut,
     InfluencerFromScrapeRequest,
@@ -59,7 +60,13 @@ from app.schemas.influencer import (
     SocialAccountUpdate,
     StageSkippedOut,
 )
-from app.services import apify_service, avatar_cache, influencer_import, influencer_service
+from app.services import (
+    apify_service,
+    avatar_cache,
+    influencer_import,
+    influencer_service,
+    rbac_service,
+)
 from app.utils.csv_export import build_csv, csv_response
 from app.utils.platform_detect import (
     KNOWN_PLATFORMS,
@@ -502,8 +509,11 @@ def _apply_influencer_filters(
     outreach_status: str | None = None,
     outreach_start: str | None = None,
     outreach_end: str | None = None,
+    owner_id: int | None = None,
 ):
-    """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台 / 粉丝区间 / 私信结果与时间）。"""
+    """达人列表/导出共用的过滤条件（关键词 / 状态 / 国家 / 关联平台 / 粉丝区间 / 私信结果与时间 / 建联用户）。"""
+    if owner_id:
+        q = q.filter(Influencer.owner_id == owner_id)
     if keyword:
         like = f"%{keyword}%"
         q = q.filter(
@@ -584,6 +594,7 @@ def list_influencers(
     outreach_start: str | None = Query(None, description="私信时间起（YYYY-MM-DD）"),
     outreach_end: str | None = Query(None, description="私信时间止（YYYY-MM-DD）"),
     sort: str = Query("id_desc", description="id_desc / followers_desc / followers_asc"),
+    owner_id: int | None = Query(None, description="建联用户 id，空 = 当前数据范围内全部"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -596,6 +607,7 @@ def list_influencers(
     q = _apply_influencer_filters(
         q, keyword, status_eq, country, platform_id, country_id,
         followers_min, followers_max, outreach_status, outreach_start, outreach_end,
+        owner_id,
     )
     total = q.count()
     if sort == "followers_desc":
@@ -674,6 +686,7 @@ def export_influencers(
     outreach_status: str | None = None,
     outreach_start: str | None = None,
     outreach_end: str | None = None,
+    owner_id: int | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -687,12 +700,28 @@ def export_influencers(
     q = _apply_influencer_filters(
         q, keyword, status_eq, country, platform_id, country_id,
         followers_min, followers_max, outreach_status, outreach_start, outreach_end,
+        owner_id,
     )
     rows = q.order_by(Influencer.id.desc()).all()
     _attach_accounts(db, rows)
     _mark_outreach_state(db, rows)
     data = build_csv(rows, INFLUENCER_CSV_COLUMNS)
     return csv_response("influencers.csv", data)
+
+
+@router.get("/owners", response_model=list[InfluencerOwnerOut])
+def list_influencer_owners(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """当前数据范围内可选的「建联用户」（供列表筛选；本人排最前）。"""
+    q = db.query(User).filter(User.is_active.is_(True))
+    ids = rbac_service.visible_owner_ids(user)
+    if ids is not None:
+        q = q.filter(User.id.in_(ids))
+    rows = q.order_by(User.id.asc()).all()
+    rows.sort(key=lambda u: u.id != user.id)
+    return rows
 
 
 @router.get("/countries", response_model=list[str])
