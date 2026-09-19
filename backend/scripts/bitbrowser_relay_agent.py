@@ -177,7 +177,9 @@ class Agent:
         extra = msg.get("headers")
         if isinstance(extra, dict):
             headers.update({str(k): str(v) for k, v in extra.items()})
-        if self.bb_api_key and "x-api-key" not in {k.lower() for k in headers}:
+        if self.bb_api_key:
+            # 本机 BitBrowser 的 Token 以 agent 配置为准，覆盖后端按用户/.env 推断的值
+            headers = {k: v for k, v in headers.items() if k.lower() != "x-api-key"}
             headers["x-api-key"] = self.bb_api_key
         try:
             async with httpx.AsyncClient(timeout=120, trust_env=False) as client:

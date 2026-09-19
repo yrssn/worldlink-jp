@@ -50,7 +50,7 @@ CDP 隧道（每个隧道 id 对应中继侧一条到本机 DevTools 的嵌套 W
 
 1. **标签页管理不用 DevTools 的 `/json/*` HTTP 接口**，统一用浏览器级 CDP 的 `Target.*` 命令（`cdp_transport.py`：`create_page`/`list_pages`/`close_target`/`activate_target`）。原因：`/json/*` 响应没有 CORS 头，页面中继里的 fetch 会被浏览器拦截（Failed to fetch）。
 2. **窗口启动参数必须带 `--remote-allow-origins=*`**（`bitbrowser_service._build_open_payload` 会自动加）。Chrome 111+ 默认拒绝跨源 DevTools WebSocket 握手；改参数后**已开的窗口要先关再开**才生效。
-3. **Local API 鉴权**：BitBrowser 客户端开启「Local API 鉴权」后所有请求要带 `x-api-key` 头。后端从用户配置或 `.env` 的 `BITBROWSER_API_KEY` 取值，经 `req.headers` 下发；agent 也可用 `--bb-api-key` 自带。
+3. **Local API 鉴权**：BitBrowser 客户端开启「Local API 鉴权」后所有请求要带 `x-api-key` 头。后端从用户配置或 `.env` 的 `BITBROWSER_API_KEY` 取值，经 `req.headers` 下发；agent 配了 `--bb-api-key`（GUI「Local API Token」）时**以 agent 为准覆盖**后端下发的值（每人本机 Token 不同，后端猜不到）。
 4. **自动化全部走原生 CDP（websockets 库），不是 Playwright**。`open_cdp(ws_url, user_id)` 是唯一连接入口：有中继走隧道，没有走直连。
 5. 中继断开时，隧道以 `OSError` 失败，自动化层把它转成 `CdpConnectionClosed` 快速失败。
 6. Vite dev 代理需要 `ws: true`（`vite.config.ts`），否则前端页面中继的 WS 永远连不上；nginx 反代需要 `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`。
@@ -81,7 +81,7 @@ python bitbrowser_relay_agent.py --server https://后端域名或IP:端口 --tok
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | WinError 10061 / Connection refused | 无任何中继，后端直连了 127.0.0.1 | 启动 agent 或打开管理页面 |
-| `API Token错误，请检查` | Local API 鉴权开了但请求没带 x-api-key | 配 `BITBROWSER_API_KEY` 或 `--bb-api-key` |
+| `API Token错误，请检查` / `header.x-api-key验证失败` 403 | Local API 鉴权开了但 x-api-key 缺失或不匹配 | 在 agent GUI「Local API Token」填本机比特浏览器「Local API 设置」里的 Token（会覆盖后端配置）；未开鉴权则留空 |
 | `Failed to fetch`（list targets） | 走了 `/json/*` HTTP（旧代码）被 CORS 拦截 | 升级到 Target.* 方案 |
 | `无法连接本机 CDP WebSocket` | 页面中继开在别的电脑；或窗口没带 `--remote-allow-origins=*` | agent 跑在 BitBrowser 同机；窗口先关再开 |
 | agent 连接被拒 HTTP 403 | 后端没有 agent 路由（代码旧）；共享 token 不匹配/未配置；专属模式下后端代码旧不认 JWT | 更新后端代码、核对 `.env` 令牌并重启 |
