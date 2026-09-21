@@ -84,6 +84,7 @@ python bitbrowser_relay_agent.py --server https://后端域名或IP:端口 --tok
 | `API Token错误，请检查` / `header.x-api-key验证失败` 403 | Local API 鉴权开了但 x-api-key 缺失或不匹配 | 在 agent GUI「Local API Token」填本机比特浏览器「Local API 设置」里的 Token（会覆盖后端配置）；未开鉴权则留空 |
 | `Failed to fetch`（list targets） | 走了 `/json/*` HTTP（旧代码）被 CORS 拦截 | 升级到 Target.* 方案 |
 | `无法连接本机 CDP WebSocket` | 页面中继开在别的电脑；或窗口没带 `--remote-allow-origins=*` | agent 跑在 BitBrowser 同机；窗口先关再开 |
+| agent 日志 `SSL: CERTIFICATE_VERIFY_FAILED ... unable to get local issuer certificate`（登录 200 但 WS 连不上） | PyInstaller 打包的 Python 没有系统根证书（尤其 macOS），websockets 默认不用 certifi | agent 已改为 wss 时用 `certifi` 的 CA（v1.0.3+）；升级 agent 包 |
 | agent 连接被拒 HTTP 403 | 后端没有 agent 路由（代码旧）；共享 token 不匹配/未配置；专属模式下后端代码旧不认 JWT | 更新后端代码、核对 `.env` 令牌并重启 |
 | agent 日忘「系统账号登录失败」 | 用户名/密码错或账号停用 | 核对后重新启动 |
 | 自己的 agent 在线但请求走了别人电脑 | 专属 agent 用了共享 Token 而非账号密码 | GUI 里清空「共享 Token」，填账号密码 |

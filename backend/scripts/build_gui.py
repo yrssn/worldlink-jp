@@ -6,7 +6,7 @@ macOS 上跑（Apple Silicon 与 Intel 也各打各的，或用 GitHub Actions �
 
 在目标电脑上执行::
 
-    pip install pyinstaller pyqt5 websockets httpx
+    pip install pyinstaller pyqt5 websockets httpx certifi
     python build_gui.py
 
 产物在 dist/ 下：

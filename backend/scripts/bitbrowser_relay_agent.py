@@ -32,9 +32,11 @@ import argparse
 import asyncio
 import json
 import logging
+import ssl
 from typing import Any
 from urllib.parse import quote
 
+import certifi
 import httpx
 import websockets
 
@@ -51,6 +53,13 @@ def _ws_base(server: str) -> str:
     elif not base.startswith(("ws://", "wss://")):
         base = "ws://" + base
     return base
+
+
+def _ssl_context(endpoint: str) -> ssl.SSLContext | None:
+    # 打包后的 Python 没有系统根证书，wss 一律用 certifi 自带的 CA
+    if not endpoint.startswith("wss://"):
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _http_base(server: str) -> str:
@@ -136,6 +145,7 @@ class Agent:
         # ping 保活：定期发送 ping，既能撑住中间代理的空闲超时，也能快速发现掉线重连
         async with websockets.connect(
             endpoint,
+            ssl=_ssl_context(endpoint),
             max_size=32 * 1024 * 1024,
             ping_interval=20,
             ping_timeout=60,

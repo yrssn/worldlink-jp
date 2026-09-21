@@ -33,7 +33,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install pyinstaller pyqt5 websockets httpx
+        run: pip install pyinstaller pyqt5 websockets httpx certifi
 
       - name: Build
         run: python build_gui.py

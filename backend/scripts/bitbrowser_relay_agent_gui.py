@@ -9,13 +9,13 @@
 
 本地运行::
 
-    pip install pyqt5 websockets httpx
+    pip install pyqt5 websockets httpx certifi
     python bitbrowser_relay_agent_gui.py
 
 打包（Windows 出 exe、macOS 出 .app，需在对应系统上执行，详见 build_gui.py；
 也可在 GitHub Actions 手动触发 "Build BitBrowser Relay Agent" 一次出齐三个平台）::
 
-    pip install pyinstaller pyqt5 websockets httpx
+    pip install pyinstaller pyqt5 websockets httpx certifi
     pyinstaller --noconfirm --clean --windowed --onefile \
         --name BitBrowserRelayAgent bitbrowser_relay_agent_gui.py
 """
