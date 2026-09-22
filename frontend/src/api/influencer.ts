@@ -282,6 +282,9 @@ export interface InfluencerScrapeTask {
   status: 'staged' | 'skipped' | 'pending' | 'running' | 'done' | 'failed' | 'contacted'
   error?: string | null
   result?: ScrapeTaskResult | null
+  /** 创建人 */
+  owner_id?: number | null
+  owner_name?: string | null
   created_at: string
   finished_at?: string | null
   influencer_id?: number | null
@@ -444,6 +447,7 @@ export const influencerApi = {
     platform?: ScrapePlatform
     batch?: string
     status?: string
+    owner_id?: number
   }) =>
     http.get<unknown, { items: InfluencerScrapeTask[]; total: number }>(
       '/influencers/scrape-profile',

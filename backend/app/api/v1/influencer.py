@@ -139,6 +139,8 @@ def _scrape_task_out(
 ) -> InfluencerScrapeTaskOut:
     """把任务序列化为输出，并补上「该主页是否已入库达人」的 influencer_id 和「与哪个对照账号重复」。"""
     out = InfluencerScrapeTaskOut.model_validate(task)
+    owner = task.owner
+    out.owner_name = (owner.full_name or owner.username) if owner else None
     out.duplicate_of = _task_duplicate_of(db, task, index_cache)
     result = task.result if isinstance(task.result, dict) else None
     if result:
@@ -1588,12 +1590,15 @@ def list_scrape_profiles(
     platform: str | None = None,
     batch: str | None = None,
     status_eq: str | None = Query(None, alias="status"),
+    owner_id: int | None = Query(None, description="创建人 id，空 = 当前数据范围内全部"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """抓取/暂存任务列表：按创建时间倒序分页，支持按 平台 / 批次 / 状态 过滤。"""
-    q = db.query(InfluencerScrapeTask)
+    """抓取/暂存任务列表：按创建时间倒序分页，支持按 平台 / 批次 / 状态 / 创建人 过滤。"""
+    q = db.query(InfluencerScrapeTask).options(joinedload(InfluencerScrapeTask.owner))
     q = owner_filter(q, InfluencerScrapeTask, user)
+    if owner_id:
+        q = q.filter(InfluencerScrapeTask.owner_id == owner_id)
     if platform:
         q = q.filter(InfluencerScrapeTask.platform == platform.strip().lower())
     if batch is not None:

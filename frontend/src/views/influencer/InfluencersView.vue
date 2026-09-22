@@ -407,6 +407,7 @@ const batchImporting = ref(false)
 const uploading = ref(false)
 const filterPlatform = ref<'' | ScrapePlatform>('')
 const filterStatus = ref<string>('')
+const filterTaskOwner = ref<number | undefined>(authStore.user?.id)
 const batchActing = ref(false)
 
 // 导入前预分类：按链接正则识别每条链接的平台
@@ -516,6 +517,7 @@ async function loadTasks() {
       page_size: tasksPageSize.value,
       platform: filterPlatform.value || undefined,
       status: filterStatus.value || undefined,
+      owner_id: filterTaskOwner.value ?? undefined,
     })
     tasks.value = r.items
     tasksTotal.value = r.total
@@ -1974,6 +1976,22 @@ onUnmounted(() => {
           <el-option label="已完成" value="done" />
           <el-option label="失败" value="failed" />
         </el-select>
+        <el-select
+          v-if="owners.length > 1"
+          v-model="filterTaskOwner"
+          placeholder="创建人（全部）"
+          clearable
+          filterable
+          style="width: 150px"
+          @change="resetTasksPage"
+        >
+          <el-option
+            v-for="o in owners"
+            :key="o.id"
+            :label="o.id === authStore.user?.id ? `${o.full_name || o.username}（我）` : o.full_name || o.username"
+            :value="o.id"
+          />
+        </el-select>
         <el-button :loading="tasksLoading" @click="loadTasks">刷新</el-button>
         <el-button
           type="primary"
@@ -2039,6 +2057,11 @@ onUnmounted(() => {
       >
         <el-table-column type="selection" width="44" />
         <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column v-if="owners.length > 1" label="创建人" width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.owner_name || '-' }}<span v-if="row.owner_id === authStore.user?.id">（我）</span>
+          </template>
+        </el-table-column>
         <el-table-column label="平台" width="130">
           <template #default="{ row }">
             <el-select

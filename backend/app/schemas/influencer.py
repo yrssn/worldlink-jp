@@ -256,6 +256,8 @@ class InfluencerScrapeTaskOut(BaseModel):
     status: str
     error: Optional[str] = None
     result: Optional[dict[str, Any]] = None
+    owner_id: Optional[int] = None
+    owner_name: Optional[str] = None
     created_at: datetime
     finished_at: Optional[datetime] = None
     # 该任务抓到的主页是否已入库建联达人（命中则为达人 id，便于前端展示「已存入」）
