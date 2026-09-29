@@ -136,6 +136,8 @@ class Influencer(Base, TimestampMixin):
     outreach_status: ClassVar[str | None] = None
     outreach_at: ClassVar[datetime | None] = None
     outreach_error: ClassVar[str | None] = None
+    # 非持久化：最后一次私信记录里的聊天截图列表
+    outreach_screenshots: ClassVar[list | None] = None
     # 非持久化：列表接口算出的粉丝数（FB 主字段与各关联账号取最大）
     followers: ClassVar[int | None] = None
 

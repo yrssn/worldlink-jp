@@ -674,6 +674,7 @@ def _mark_outreach_state(db: Session, items: list[Influencer]) -> None:
         i.outreach_status = log.status if log else None
         i.outreach_at = log.created_at if log else None
         i.outreach_error = log.error if log and log.status != "success" else None
+        i.outreach_screenshots = log.screenshots if log else None
 
 
 @router.get("/export")

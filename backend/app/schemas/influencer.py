@@ -159,6 +159,8 @@ class InfluencerOut(InfluencerBase):
     outreach_at: Optional[datetime] = None
     #: 最后一次私信的失败原因（成功时为空）
     outreach_error: Optional[str] = None
+    #: 最后一次私信的聊天截图列表（可多张，列表页悬停预览）
+    outreach_screenshots: Optional[list[str]] = None
     created_at: datetime
     updated_at: datetime
 

@@ -1287,6 +1287,12 @@ function formatFollowers(v?: number | null) {
   return v == null ? '—' : v.toLocaleString('en-US')
 }
 
+/** 时间展示（私信截图悬停里用） */
+function formatDateTime(v?: string | null) {
+  if (!v) return '—'
+  return new Date(v).toLocaleString('zh-CN')
+}
+
 // ─── 存量数据导入（选主页链接列 → 选状态 → 选是否抓取）──────────
 const importVisible = ref(false)
 const importFile = ref<File | null>(null)
@@ -1603,7 +1609,55 @@ onUnmounted(() => {
           <span style="font-weight: 600">{{ formatFollowers(row.followers) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="关联账号" min-width="230">
+      <el-table-column label="简介" min-width="170">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.bio" :content="row.bio" placement="top" :show-after="300">
+              <div class="bio-cell">{{ row.bio }}</div>
+            </el-tooltip>
+            <span v-else style="color: #c0c4cc">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="私信截图" width="100" align="center">
+          <template #default="{ row }">
+            <el-popover
+              v-if="row.outreach_screenshots && row.outreach_screenshots.length"
+              placement="left"
+              :width="280"
+              trigger="hover"
+            >
+              <template #reference>
+                <div class="shot-thumb">
+                  <el-image
+                    :src="row.outreach_screenshots[0]"
+                    fit="cover"
+                    style="width: 48px; height: 36px; border-radius: 4px"
+                  />
+                  <span
+                    v-if="row.outreach_screenshots.length > 1"
+                    class="shot-count"
+                  >{{ row.outreach_screenshots.length }}图</span>
+                </div>
+              </template>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap">
+                <el-image
+                  v-for="(s, idx) in row.outreach_screenshots"
+                  :key="idx"
+                  :src="s"
+                  :preview-src-list="row.outreach_screenshots"
+                  :initial-index="idx"
+                  preview-teleported
+                  fit="cover"
+                  style="width: 120px; height: 90px; border-radius: 4px; cursor: zoom-in"
+                />
+              </div>
+              <div style="color: #909399; font-size: 12px; margin-top: 6px">
+                私信时间：{{ formatDateTime(row.outreach_at) }}
+              </div>
+            </el-popover>
+            <span v-else style="color: #c0c4cc">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="关联账号" min-width="230">
         <template #default="{ row }">
           <div v-if="!accountRows(row).length" style="color: #909399">—</div>
           <div
@@ -2615,5 +2669,34 @@ onUnmounted(() => {
 .account-link {
   color: var(--el-color-primary);
   word-break: break-all;
+}
+
+.bio-cell {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-regular);
+  cursor: default;
+}
+
+.shot-thumb {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+}
+
+.shot-count {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 8px;
 }
 </style>

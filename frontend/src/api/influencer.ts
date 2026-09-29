@@ -158,6 +158,8 @@ export interface DmOutreachLog {
   error?: string | null
   /** 私信聊天截图列表（agent 上传，可多张），站点内路径 */
   screenshots?: string[] | null
+  /** 列表页附带：最后一次私信的聊天截图（悬停预览用） */
+  outreach_screenshots?: string[] | null
   owner_id?: number | null
   owner_name?: string | null
   created_at: string
