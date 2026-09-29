@@ -142,6 +142,8 @@ class DmOutreachLogOut(BaseModel):
     browser_name: Optional[str] = None
     status: str = "success"
     error: Optional[str] = None
+    #: 私信发送后的聊天截图（agent 上传），站点内路径
+    screenshot: Optional[str] = None
     owner_id: Optional[int] = None
     owner_name: Optional[str] = Field(None, description="发送人用户名")
     created_at: datetime

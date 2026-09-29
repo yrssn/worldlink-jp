@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends
 
 from app.api.v1 import (
+    ai_agent,
+    ai_mcp,
+    ai_workshop,
     apify_key,
     auth,
     bitbrowser,
@@ -32,3 +35,6 @@ api_router.include_router(influencer.router)
 api_router.include_router(apify_key.router)
 api_router.include_router(email_account.router)
 api_router.include_router(system.router)
+api_router.include_router(ai_workshop.router)
+api_router.include_router(ai_agent.router)
+api_router.include_router(ai_mcp.router)

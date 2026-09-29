@@ -62,6 +62,8 @@ class Influencer(Base, TimestampMixin):
 
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: 主页截图（agent 自动抓取/私信时上传的达人主页截图），存站点内相对路径
+    homepage_screenshot: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # 地区 / 语言
     #: 兼容字段：国家代码/名称的自由文本，新数据由 ``country_id`` 关联的国家代码同步写入

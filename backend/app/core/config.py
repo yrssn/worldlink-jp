@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     # ===== 达人头像本地缓存目录（抓到的远端头像下载到本机，免代理也能看图）=====
     avatar_cache_dir: str = "uploads/avatars"
 
+    # ===== 达人媒体目录（agent 上传的主页截图 / 私信截图）=====
+    influencer_media_dir: str = "uploads/influencer_media"
+
     # ===== Default admin =====
     default_admin_username: str = "admin"
     default_admin_password: str = "admin123"

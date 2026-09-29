@@ -28,6 +28,7 @@ from app.models import apify_key as _apify_key_model  # noqa: F401
 from app.models import email_account as _email_account_model  # noqa: F401
 from app.models import apify_signup_task as _apify_signup_task_model  # noqa: F401
 from app.models import influencer_scrape_task as _influencer_scrape_task_model  # noqa: F401
+from app.models import ai_workshop as _ai_workshop_model  # noqa: F401
 from app.models.user import User, UserRole
 
 
@@ -243,6 +244,8 @@ def _ensure_dm_outreach_log_columns() -> None:
         )
     if "error" not in cols:
         patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN error TEXT NULL")
+    if "screenshot" not in cols:
+        patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN screenshot VARCHAR(512) NULL")
     for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)
@@ -402,6 +405,7 @@ _INFLUENCER_PROFILE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("has_twitter", "TINYINT(1) NULL"),
     ("twitter_channel", "VARCHAR(128) NULL"),
     ("group_name", "VARCHAR(255) NULL"),
+    ("homepage_screenshot", "VARCHAR(512) NULL"),
 )
 
 

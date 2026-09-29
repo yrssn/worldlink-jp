@@ -678,6 +678,19 @@ onMounted(() => {
           </div>
         </template>
       </el-table-column>
+      <el-table-column label="截图" width="90" align="center">
+        <template #default="{ row }">
+          <el-image
+            v-if="row.screenshot"
+            :src="row.screenshot"
+            :preview-src-list="[row.screenshot]"
+            preview-teleported
+            fit="cover"
+            style="width: 56px; height: 42px; border-radius: 4px; cursor: zoom-in"
+          />
+          <span v-else style="color: #c0c4cc">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="发送" width="140">
         <template #default="{ row }">
           <el-tag v-if="row.text_sent" size="small" type="success">正文</el-tag>

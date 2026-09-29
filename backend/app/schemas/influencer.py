@@ -88,6 +88,8 @@ class InfluencerBase(InfluencerProfileFields):
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     cover_url: Optional[str] = None
+    #: 主页截图（agent 自动上传），存站点内路径，如 /api/v1/influencers/media/xxx.png
+    homepage_screenshot: Optional[str] = None
 
     country: Optional[str] = "JP"
     country_id: Optional[int] = Field(default=None, description="关联「国家管理」里的国家 id")

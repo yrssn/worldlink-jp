@@ -67,6 +67,14 @@ def create_app() -> FastAPI:
         name="dm_media",
     )
 
+    influencer_media_root = Path(settings.influencer_media_dir)
+    influencer_media_root.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/api/v1/influencers/media",
+        StaticFiles(directory=str(influencer_media_root.resolve())),
+        name="influencer_media",
+    )
+
     @app.get("/healthz", tags=["meta"])
     def healthz():
         return {"status": "ok", "app": settings.app_name}

@@ -1522,7 +1522,20 @@ onUnmounted(() => {
     >
       <el-table-column type="selection" width="40" />
       <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column label="昵称" min-width="190">
+      <el-table-column label="主页截图" width="90" align="center">
+          <template #default="{ row }">
+            <el-image
+              v-if="row.homepage_screenshot"
+              :src="row.homepage_screenshot"
+              :preview-src-list="[row.homepage_screenshot]"
+              preview-teleported
+              fit="cover"
+              style="width: 56px; height: 42px; border-radius: 4px; cursor: zoom-in"
+            />
+            <span v-else style="color: #c0c4cc">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="昵称" min-width="190">
         <template #default="{ row }">
           <el-popover placement="right" :width="340" trigger="hover">
             <template #reference>

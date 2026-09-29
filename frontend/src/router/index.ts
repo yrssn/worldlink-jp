@@ -127,6 +127,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '国家管理', code: 'countries' }
       },
       {
+        path: 'ai/workshop',
+        name: 'ai-workshop',
+        component: () => import('@/views/ai/WorkshopView.vue'),
+        meta: { title: 'AI 工坊', code: 'ai:workshop' }
+      },
+      {
         path: 'system/users',
         name: 'system-users',
         component: () => import('@/views/system/UsersView.vue'),

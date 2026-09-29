@@ -98,6 +98,8 @@ export interface Influencer extends InfluencerProfileFields {
   bio?: string | null
   avatar_url?: string | null
   cover_url?: string | null
+  /** 达人主页截图（agent 自动上传），站点内路径 */
+  homepage_screenshot?: string | null
   email?: string | null
   phone?: string | null
   website?: string | null
@@ -154,6 +156,8 @@ export interface DmOutreachLog {
   browser_name?: string | null
   status: 'success' | 'failed'
   error?: string | null
+  /** 私信聊天截图（agent 上传），站点内路径 */
+  screenshot?: string | null
   owner_id?: number | null
   owner_name?: string | null
   created_at: string

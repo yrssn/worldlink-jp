@@ -89,6 +89,8 @@ class DmOutreachLog(Base, TimestampMixin):
         String(16), default="success", nullable=False, comment="success / failed"
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True, comment="失败原因")
+    #: 私信发送后的聊天截图（agent 自动化上传），存站点内相对路径
+    screenshot: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="私信截图")
 
 
 class DmOutreachJob(Base, TimestampMixin):

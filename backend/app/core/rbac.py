@@ -218,6 +218,20 @@ MENU_SEEDS: list[MenuSeed] = [
         api_enforce_mode=ApiEnforceMode.write,
     ),
     MenuSeed(
+        "ai",
+        "AI 工坊",
+        icon="MagicStick",
+        type=MenuType.catalog,
+        children=[
+            MenuSeed(
+                "ai:workshop",
+                "Agent 接入",
+                path="/ai/workshop",
+                api_prefixes=["/api/v1/ai/keys", "/api/v1/ai/logs"],
+            ),
+        ],
+    ),
+    MenuSeed(
         "system",
         "系统管理",
         icon="Setting",
