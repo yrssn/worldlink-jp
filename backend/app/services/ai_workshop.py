@@ -355,10 +355,13 @@ def _resolve_country_id(db: Session, payload: dict[str, Any]) -> Optional[int]:
     if payload.get("country_id") is not None:
         return int(payload["country_id"])
     text = (payload.get("country") or "").strip()
-    if not text:
-        return None
-    lookup = influencer_import.country_lookup(db)
-    row = influencer_import.match_country(text, lookup)
+    if text:
+        lookup = influencer_import.country_lookup(db)
+        row = influencer_import.match_country(text, lookup)
+        if row is not None:
+            return row.id
+    # 没给国家时从地址/城市识别
+    row = influencer_import.country_from_address(db, payload.get("address"), payload.get("city"))
     return row.id if row else None
 
 
@@ -596,7 +599,7 @@ def run_scrape_tasks(
 ) -> dict[str, Any]:
     """触发暂存任务后台抓取（auto_save=True 抓完自动入库建联达人）。
 
-    只操作属主自己的 staged 任务；不支持自动抓取的平台（如 TikTok）计入 skipped。
+    只操作属主自己的 staged 任务；不支持自动抓取的平台计入 skipped。
     抓取是后台异步执行，用 get_scrape_task 轮询进度。
     """
     import threading

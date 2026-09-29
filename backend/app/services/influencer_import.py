@@ -222,3 +222,26 @@ def match_country(value: Optional[str], lookup: dict[str, Country]) -> Optional[
         if key in text or text in key:
             return row
     return None
+
+
+def country_from_address(db: Session, *texts: Optional[str]) -> Optional[Country]:
+    """从地址/城市等自由文本里按国家字典识别国家（抓取结果自动补国家用）。
+
+    只按中英文国名（>=3 字符）做包含匹配、长名优先，不用两位国家码，
+    避免「CA / JP」这类短码在地址里误命中（如 California）。
+    FB 主页地址通常以国名结尾（…, United States, 10017），识别率较高；
+    地址里没有国名时返回 None，由调用方走默认值。
+    """
+    if not any(texts):
+        return None
+    lookup = country_lookup(db)
+    # 长名优先：先匹配 "united states" 再轮到 "india"，降低子串误命中
+    keys = sorted(lookup.keys(), key=len, reverse=True)
+    for text in texts:
+        t = (text or "").strip().lower()
+        if not t:
+            continue
+        for key in keys:
+            if len(key) >= 3 and key in t:
+                return lookup[key]
+    return None

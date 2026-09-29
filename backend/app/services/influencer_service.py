@@ -23,7 +23,7 @@ from app.models.fb_group_scrape import FbGroupPost
 from app.models.influencer import Influencer, InfluencerSource
 from app.models.post import Post
 from app.models.social_account import InfluencerSocialAccount, SocialPlatform
-from app.services import avatar_cache
+from app.services import avatar_cache, influencer_import
 
 
 def normalize_fb_url(u: Optional[str]) -> str:
@@ -616,6 +616,12 @@ def create_influencer_from_form(
     data["source"] = InfluencerSource.scrape
     if notes:
         data["notes"] = notes
+    if data.get("country_id") is None:
+        # 抓取结果没有国家时从地址/城市识别（FB 主页地址通常以国名结尾）
+        row = influencer_import.country_from_address(db, data.get("address"), data.get("city"))
+        if row is not None:
+            data["country_id"] = row.id
+            data["country"] = row.code
 
     existing = find_duplicate(
         db,
@@ -972,6 +978,12 @@ def enrich_influencer_from_form(
             continue
         if getattr(inf, field, None) in (None, "", []):
             setattr(inf, field, value)
+    if inf.country_id is None:
+        # 回填时同样从地址识别国家，修正「没抓到国家走了默认值」的记录
+        row = influencer_import.country_from_address(db, form.get("address"), form.get("city"))
+        if row is not None:
+            inf.country_id = row.id
+            inf.country = row.code
     if isinstance(form.get("_ig_profile"), dict):
         inf.raw_profile = form["_ig_profile"]
 
