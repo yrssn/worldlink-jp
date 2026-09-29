@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.ai_auth import hash_api_key
@@ -223,6 +223,8 @@ def search_influencers(
     platform: Optional[str] = None,
     country: Optional[str] = None,
     status: Optional[str] = None,
+    followers_min: Optional[int] = None,
+    followers_max: Optional[int] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict[str, Any]:
