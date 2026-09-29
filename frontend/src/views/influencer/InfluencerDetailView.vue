@@ -678,16 +678,20 @@ onMounted(() => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="截图" width="90" align="center">
+      <el-table-column label="截图" min-width="180">
         <template #default="{ row }">
-          <el-image
-            v-if="row.screenshot"
-            :src="row.screenshot"
-            :preview-src-list="[row.screenshot]"
-            preview-teleported
-            fit="cover"
-            style="width: 56px; height: 42px; border-radius: 4px; cursor: zoom-in"
-          />
+          <div v-if="row.screenshots && row.screenshots.length" style="display: flex; gap: 4px; flex-wrap: wrap">
+            <el-image
+              v-for="(shot, idx) in row.screenshots"
+              :key="idx"
+              :src="shot"
+              :preview-src-list="row.screenshots"
+              :initial-index="idx"
+              preview-teleported
+              fit="cover"
+              style="width: 56px; height: 42px; border-radius: 4px; cursor: zoom-in"
+            />
+          </div>
           <span v-else style="color: #c0c4cc">—</span>
         </template>
       </el-table-column>

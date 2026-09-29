@@ -1,4 +1,4 @@
-"""Add screenshot fields: influencers.homepage_screenshot / dm_outreach_logs.screenshot.
+"""Add screenshot fields: influencers.homepage_screenshot / dm_outreach_logs.screenshots.
 
 Revision ID: 018
 Revises: 017
@@ -31,11 +31,9 @@ def upgrade() -> None:
 
     if inspector.has_table("dm_outreach_logs"):
         cols = {c["name"] for c in inspector.get_columns("dm_outreach_logs")}
-        if "screenshot" not in cols:
-            op.add_column(
-                "dm_outreach_logs",
-                sa.Column("screenshot", sa.String(length=512), nullable=True),
-            )
+        if "screenshots" not in cols:
+            # 私信截图列表（JSON），早期版本的单张 screenshot 列保留但不再使用
+            op.add_column("dm_outreach_logs", sa.Column("screenshots", sa.JSON(), nullable=True))
 
 
 def downgrade() -> None:
@@ -45,8 +43,8 @@ def downgrade() -> None:
 
     if inspector.has_table("dm_outreach_logs"):
         cols = {c["name"] for c in inspector.get_columns("dm_outreach_logs")}
-        if "screenshot" in cols:
-            op.drop_column("dm_outreach_logs", "screenshot")
+        if "screenshots" in cols:
+            op.drop_column("dm_outreach_logs", "screenshots")
 
     if inspector.has_table("influencers"):
         cols = {c["name"] for c in inspector.get_columns("influencers")}

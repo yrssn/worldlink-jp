@@ -750,12 +750,14 @@ def record_outreach(
     url: str,
     content_text: Optional[str] = None,
     influencer_id: Optional[int] = None,
-    screenshot_base64: Optional[str] = None,
+    screenshots_base64: Optional[list[str]] = None,
     status: str = "success",
     error: Optional[str] = None,
     set_status: Optional[str] = None,
+    dm_at: Optional[str] = None,
 ) -> dict[str, Any]:
-    """记录一次 agent 自动私信（自包含快照：正文直接存，不依赖内容库模板；截图落盘）。
+    """记录一次 agent 自动私信（自包含快照：正文直接存，不依赖内容库模板；
+    可附多张聊天截图；dm_at 可指定实际私信时间，缺省为记录时间）。
 
     url 定位达人（也可显式传 influencer_id）；找到达人时关联记录并按 set_status 更新建联状态。
     """
@@ -773,17 +775,27 @@ def record_outreach(
     if inf is None:
         inf = _find_influencer_by_url(db, user, link)
 
-    screenshot = _save_media_image(screenshot_base64) if screenshot_base64 else None
+    shots: list[str] = []
+    for b64 in screenshots_base64 or []:
+        shots.append(_save_media_image(str(b64)))
     log = DmOutreachLog(
         owner_id=user.id,
         influencer_id=inf.id if inf is not None else None,
         url=link[:512],
         content_text=(content_text or None) and str(content_text)[:5000],
-        screenshot=screenshot,
+        screenshots=shots or None,
         text_sent=bool(content_text),
         status=status,
         error=(error or None) and str(error)[:2000],
     )
+    if dm_at:
+        # 把这条记录的时间改成实际私信时间
+        try:
+            from datetime import datetime as _dt
+
+            log.created_at = _dt.fromisoformat(str(dm_at).replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError as e:
+            raise ValueError(f"dm_at 格式无效（应为 ISO 时间，如 2026-09-29T14:30:00）: {dm_at}") from e
     db.add(log)
     status_applied: Optional[str] = None
     if inf is not None and set_status:
@@ -799,7 +811,8 @@ def record_outreach(
         "outreach_log_id": log.id,
         "influencer_id": inf.id if inf is not None else None,
         "matched_influencer": inf is not None,
-        "screenshot": screenshot,
+        "screenshots": shots,
+        "dm_at": log.created_at.isoformat() if log.created_at else None,
         "status": status,
         "influencer_status": status_applied,
     }

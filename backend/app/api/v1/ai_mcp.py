@@ -189,7 +189,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "record_outreach",
             "description": (
                 "记录一次 agent 自动私信的结果（自包含：私信正文直接存快照，不依赖内容库模板；"
-                "可附聊天截图）。用主页 url 关联达人（需已入库），set_status 可顺带更新建联状态"
+                "可附多张聊天截图 screenshots_base64 数组，截图会和私信日期一起挂在达人档案的私信记录里）。"
+                "用主页 url 关联达人（需已入库），set_status 可顺带更新建联状态"
                 "（如 contacting=建联中）。status=success/failed，失败时 error 传原因。"
             ),
             "inputSchema": _tool_schema(
@@ -197,7 +198,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "url": {"type": "string", "description": "达人主页链接（必填，用于关联/追溯）"},
                     "content_text": {"type": "string", "description": "实际发出的私信正文"},
                     "influencer_id": {"type": "integer", "description": "达人 ID（可选，不传则按 url 匹配）"},
-                    "screenshot_base64": {"type": "string", "description": "聊天截图 base64（可选）"},
+                    "screenshots_base64": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "聊天截图 base64 数组（可多张，按顺序展示）",
+                    },
+                    "screenshot_base64": {"type": "string", "description": "单张截图（兼容旧参数，等价于 screenshots_base64 单元素）"},
+                    "dm_at": {"type": "string", "description": "实际私信时间（ISO 格式，如 2026-09-29T14:30:00），缺省为记录时间"},
                     "status": {"type": "string", "enum": ["success", "failed"], "description": "发送结果，默认 success"},
                     "error": {"type": "string", "description": "失败原因（status=failed 时传）"},
                     "set_status": {
@@ -321,16 +328,22 @@ def _call_tool(
             link = args.get("url")
             if not link or not str(link).strip():
                 raise ValueError("缺少参数 url（达人主页链接）")
+            shots = []
+            if args.get("screenshot_base64"):
+                shots.append(str(args["screenshot_base64"]))
+            if isinstance(args.get("screenshots_base64"), list):
+                shots.extend(str(s) for s in args["screenshots_base64"] if s)
             result = svc.record_outreach(
                 db,
                 agent.user,
                 url=str(link),
                 content_text=args.get("content_text"),
                 influencer_id=args.get("influencer_id"),
-                screenshot_base64=args.get("screenshot_base64"),
+                screenshots_base64=shots or None,
                 status=str(args.get("status") or "success"),
                 error=args.get("error"),
                 set_status=args.get("set_status"),
+                dm_at=args.get("dm_at"),
             )
         elif name == "list_platforms":
             result = svc.list_platforms(db)

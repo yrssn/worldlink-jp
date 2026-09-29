@@ -156,8 +156,8 @@ export interface DmOutreachLog {
   browser_name?: string | null
   status: 'success' | 'failed'
   error?: string | null
-  /** 私信聊天截图（agent 上传），站点内路径 */
-  screenshot?: string | null
+  /** 私信聊天截图列表（agent 上传，可多张），站点内路径 */
+  screenshots?: string[] | null
   owner_id?: number | null
   owner_name?: string | null
   created_at: string

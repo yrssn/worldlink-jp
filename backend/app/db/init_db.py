@@ -244,8 +244,8 @@ def _ensure_dm_outreach_log_columns() -> None:
         )
     if "error" not in cols:
         patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN error TEXT NULL")
-    if "screenshot" not in cols:
-        patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN screenshot VARCHAR(512) NULL")
+    if "screenshots" not in cols:
+        patches.append("ALTER TABLE dm_outreach_logs ADD COLUMN screenshots JSON NULL")
     for sql in patches:
         try:
             logger.info("[schema-patch] {}", sql)
