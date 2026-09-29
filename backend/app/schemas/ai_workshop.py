@@ -109,5 +109,8 @@ class AgentInfluencerUpsertRequest(BaseModel):
 class AgentUpsertResultOut(BaseModel):
     action: str
     matched_by: Optional[str] = None
-    influencer_id: int
+    influencer_id: Optional[int] = None
     display_name: Optional[str] = None
+    #: action=skipped_cross_user 时：该主页已在哪个对照账号名下
+    duplicate_of: Optional[str] = None
+    hint: Optional[str] = None

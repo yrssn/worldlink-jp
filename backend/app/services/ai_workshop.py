@@ -414,6 +414,25 @@ def upsert_influencer(db: Session, user: User, payload: dict[str, Any]) -> dict[
         if payload.get(field) is not None and str(payload[field]).strip() != "":
             person_values[field] = str(payload[field]).strip()
 
+    # --- 对照账号跨用户查重（与暂存链路同一套规则）：命中则不重复入库 ---
+    if existing is None:
+        index = influencer_service.cross_user_index(db, user)
+        dup_owner = index.match(
+            platform.value if platform else None,
+            url=url,
+            page_id=page_id,
+            handle=handle,
+        )
+        if dup_owner:
+            return {
+                "action": "skipped_cross_user",
+                "matched_by": None,
+                "influencer_id": None,
+                "display_name": display_name,
+                "duplicate_of": dup_owner,
+                "hint": f"该主页已在对照账号「{dup_owner}」名下，按链接对照规则不重复入库",
+            }
+
     action = "updated"
     if existing is not None:
         inf = existing
